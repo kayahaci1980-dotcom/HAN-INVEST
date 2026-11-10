@@ -90,7 +90,7 @@ class MainActivity : Activity() {
             )
             connection.setRequestProperty(
                 "User-Agent",
-                "HAN-INVEST-Android/1.0"
+                "HAN-INVEST-Android/1.1"
             )
 
             val code = connection.responseCode
@@ -175,7 +175,6 @@ class MainActivity : Activity() {
             }
 
             "Дата курса: $date\n\n$out" +
-            "Источник: Frankfurter\n" +
             "Справочные курсы, не банковские."
         }
     }
@@ -233,11 +232,10 @@ class MainActivity : Activity() {
             }
 
             if (found == 0) {
-                "В ответе источника не найдены нужные инструменты.\n"
+                "Рыночные данные пока недоступны.\n"
             } else {
                 out.toString()
             } +
-            "Источник: $sourceName\n" +
             "Данные дневные, возможна задержка публикации."
         }
     }
@@ -326,7 +324,6 @@ class MainActivity : Activity() {
             } else {
                 out.toString()
             } +
-            "Источник: Snapdata\n" +
             "Это индексы, а не котировки отдельных акций."
         }
     }
@@ -381,7 +378,6 @@ class MainActivity : Activity() {
             } else {
                 out.toString()
             } +
-            "Источник: CoinGecko\n" +
             "Котировки могут иметь задержку."
         }
     }
