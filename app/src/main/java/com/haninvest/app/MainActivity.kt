@@ -4,97 +4,289 @@ package com.haninvest.app
 import android.app.Activity
 import android.os.Bundle
 import android.graphics.Color
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.LinearGradient
+import android.graphics.Shader
 import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
 import android.widget.*
+import android.text.InputType
+import android.graphics.drawable.GradientDrawable
+import java.util.Locale
 
 class MainActivity : Activity() {
 
-    private val dark = Color.rgb(15, 23, 42)
-    private val green = Color.rgb(22, 163, 74)
+    private val blue = Color.rgb(55, 105, 245)
+    private val purple = Color.rgb(125, 75, 235)
+    private val green = Color.rgb(25, 175, 115)
+    private val dark = Color.rgb(30, 42, 65)
+    private val muted = Color.rgb(125, 137, 158)
+    private val page = Color.rgb(246, 248, 253)
+
+    private fun dp(v: Int): Int =
+        (v * resources.displayMetrics.density).toInt()
+
+    private fun bg(color: Int, radius: Int = 18) =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radius).toFloat()
+        }
+
+    private fun label(
+        value: String,
+        size: Float,
+        color: Int,
+        bold: Boolean = false
+    ) = TextView(this).apply {
+        text = value
+        textSize = size
+        setTextColor(color)
+        if (bold) setTypeface(null, android.graphics.Typeface.BOLD)
+    }
+
+    private fun card() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(18), dp(16), dp(18), dp(16))
+        background = bg(Color.WHITE, 20)
+        elevation = dp(3).toFloat()
+    }
+
+    private fun space(height: Int = 14) =
+        View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(1, dp(height))
+        }
+
+    private fun input(hintText: String, type: Int) =
+        EditText(this).apply {
+            hint = hintText
+            inputType = type
+            textSize = 15f
+            setTextColor(dark)
+            setHintTextColor(muted)
+            background = bg(page, 12)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        window.statusBarColor = page
+        window.navigationBarColor = page
+        window.decorView.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+
         val scroll = ScrollView(this)
-        val layout = LinearLayout(this).apply {
+
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(24, 30, 24, 30)
-            setBackgroundColor(dark)
+            setPadding(dp(20), dp(22), dp(20), dp(28))
+            setBackgroundColor(page)
         }
 
-        fun text(value: String, size: Float, color: Int) =
-            TextView(this).apply {
-                text = value
-                textSize = size
-                setTextColor(color)
-                setPadding(0, 12, 0, 12)
+        // HEADER
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        header.addView(label("HAN", 26f, blue, true))
+        header.addView(label(" INVEST", 26f, purple, true))
+
+        val spacer = View(this)
+        header.addView(
+            spacer,
+            LinearLayout.LayoutParams(0, 1, 1f)
+        )
+
+        header.addView(
+            label("●", 22f, green, true).apply {
+                background = bg(Color.WHITE, 30)
+                setPadding(dp(13), dp(8), dp(13), dp(8))
+            }
+        )
+
+        root.addView(header)
+        root.addView(label("Инвестиционная платформа", 14f, muted))
+        root.addView(space(18))
+
+        // MAIN BANNER
+        val banner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(22), dp(22), dp(22))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(blue, purple)
+            ).apply {
+                cornerRadius = dp(22).toFloat()
+            }
+        }
+
+        banner.addView(
+            label("УМНЫЕ ИНВЕСТИЦИИ", 12f, Color.WHITE, true)
+        )
+        banner.addView(space(8))
+        banner.addView(
+            label("Ваш капитал.\nВаши возможности.", 27f, Color.WHITE, true)
+        )
+        banner.addView(space(8))
+        banner.addView(
+            label(
+                "Анализируйте рынки и находите инвестиционные возможности.",
+                14f,
+                Color.WHITE
+            )
+        )
+
+        root.addView(banner)
+        root.addView(space(20))
+
+        // PORTFOLIO
+        root.addView(label("Мой портфель", 21f, dark, true))
+        root.addView(space(10))
+
+        val portfolio = card()
+        portfolio.addView(
+            label("ОБЩИЙ КАПИТАЛ", 12f, muted, true)
+        )
+        portfolio.addView(space(5))
+        portfolio.addView(label("$0.00", 34f, dark, true))
+        portfolio.addView(space(5))
+        portfolio.addView(
+            label("Начните с анализа своих возможностей", 13f, muted)
+        )
+
+        root.addView(portfolio)
+        root.addView(space(20))
+
+        // MARKETS
+        root.addView(label("Рынки для анализа", 21f, dark, true))
+        root.addView(space(10))
+
+        val markets = listOf(
+            "📈  Акции" to blue,
+            "🥇  Золото" to purple,
+            "💱  Валюты" to green,
+            "🏠  Недвижимость" to Color.rgb(235, 145, 45),
+            "₿  Криптовалюты" to Color.rgb(30, 165, 185),
+            "🏭  Бизнес и производство" to Color.rgb(225, 95, 135)
+        )
+
+        for ((name, color) in markets) {
+            val item = card().apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
             }
 
-        layout.addView(text("HAN INVEST", 30f, Color.WHITE))
-        layout.addView(text(
-            "Умная система инвестиционного анализа",
-            16f, Color.LTGRAY
-        ))
+            item.addView(label(name, 16f, dark, true))
 
-        layout.addView(text("ГЛАВНАЯ ПАНЕЛЬ", 18f, green))
-        layout.addView(text(
-            "Рынки: Все рынки\n" +
-            "Режим: Самостоятельный анализ\n" +
-            "Капитал: Любая сумма",
-            16f, Color.WHITE
-        ))
+            val gap = View(this)
+            item.addView(
+                gap,
+                LinearLayout.LayoutParams(0, 1, 1f)
+            )
+            item.addView(label("›", 26f, color, true))
 
-        layout.addView(text("ИНВЕСТИЦИОННЫЙ КАЛЬКУЛЯТОР",
-            18f, green))
-
-        val capital = EditText(this).apply {
-            hint = "Сумма вложений ($)"
-            inputType = 8194
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.LTGRAY)
+            root.addView(item)
+            root.addView(space(9))
         }
 
-        val rate = EditText(this).apply {
-            hint = "Ожидаемая доходность в год (%)"
-            inputType = 8194
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.LTGRAY)
-        }
+        // CHART
+        root.addView(space(8))
+        root.addView(label("Динамика инвестиций", 21f, dark, true))
+        root.addView(space(10))
 
-        val years = EditText(this).apply {
-            hint = "Срок инвестирования (лет)"
-            inputType = 2
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.LTGRAY)
-        }
+        val chartCard = card()
+        chartCard.addView(label("Пример графика", 13f, muted))
+        chartCard.addView(space(8))
+        chartCard.addView(
+            InvestmentChart(this),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(150)
+            )
+        )
+        chartCard.addView(space(5))
+        chartCard.addView(
+            label(
+                "Демонстрационные данные, не реальные котировки",
+                11f,
+                muted
+            )
+        )
 
-        layout.addView(capital)
-        layout.addView(rate)
-        layout.addView(years)
+        root.addView(chartCard)
+        root.addView(space(20))
 
-        val result = text("Здесь появится расчёт", 17f, Color.WHITE)
+        // CALCULATOR
+        root.addView(label("Калькулятор доходности", 21f, dark, true))
+        root.addView(space(10))
 
-        val calculate = Button(this).apply {
+        val calc = card()
+
+        val money = input(
+            "Сумма инвестиций, USD",
+            InputType.TYPE_CLASS_NUMBER or
+                InputType.TYPE_NUMBER_FLAG_DECIMAL
+        )
+
+        val percent = input(
+            "Доходность в год, %",
+            InputType.TYPE_CLASS_NUMBER or
+                InputType.TYPE_NUMBER_FLAG_DECIMAL or
+                InputType.TYPE_NUMBER_FLAG_SIGNED
+        )
+
+        val years = input(
+            "Срок инвестирования, лет",
+            InputType.TYPE_CLASS_NUMBER
+        )
+
+        calc.addView(money)
+        calc.addView(space(10))
+        calc.addView(percent)
+        calc.addView(space(10))
+        calc.addView(years)
+        calc.addView(space(14))
+
+        val result = label(
+            "Здесь появится результат расчёта",
+            15f,
+            dark,
+            true
+        )
+
+        val button = Button(this).apply {
             text = "РАССЧИТАТЬ ДОХОДНОСТЬ"
+            setTextColor(Color.WHITE)
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(blue, purple)
+            ).apply {
+                cornerRadius = dp(14).toFloat()
+            }
+
             setOnClickListener {
                 try {
-                    val money = capital.text.toString().toDouble()
-                    val percent = rate.text.toString().toDouble()
+                    val capital = money.text.toString().toDouble()
+                    val rate = percent.text.toString().toDouble()
                     val period = years.text.toString().toInt()
 
-                    require(money > 0 && percent > -100 && period > 0)
+                    require(capital > 0 && rate > -100 && period > 0)
 
-                    val future = money *
-                        Math.pow(1 + percent / 100, period.toDouble())
-                    val profit = future - money
+                    val total = capital *
+                        Math.pow(1 + rate / 100, period.toDouble())
+
+                    val profit = total - capital
 
                     result.text = String.format(
-                        java.util.Locale.US,
-                        "Итоговая сумма: \$%.2f\n" +
-                        "Прибыль: \$%.2f\n" +
-                        "Первоначальный капитал: \$%.2f\n\n" +
-                        "Расчёт теоретический, без учёта налогов и комиссий.",
-                        future, profit, money
+                        Locale.US,
+                        "Итоговая сумма: \$%.2f\nПрибыль: \$%.2f\nКапитал: \$%.2f",
+                        total,
+                        profit,
+                        capital
                     )
                 } catch (e: Exception) {
                     result.text = "Проверьте введённые данные."
@@ -102,26 +294,79 @@ class MainActivity : Activity() {
             }
         }
 
-        layout.addView(calculate)
-        layout.addView(result)
+        calc.addView(button)
+        calc.addView(space(12))
+        calc.addView(result)
 
-        layout.addView(text("НАПРАВЛЕНИЯ АНАЛИЗА", 18f, green))
-        layout.addView(text(
-            "• Акции и фондовый рынок\n" +
-            "• Валюты и золото\n" +
-            "• Недвижимость\n" +
-            "• Бизнес и производство\n" +
-            "• Криптовалюты\n" +
-            "• Международные инвестиции",
-            16f, Color.WHITE
-        ))
+        root.addView(calc)
+        root.addView(space(20))
 
-        layout.addView(text(
-            "HAN INVEST v1.0\nИнвестиции требуют оценки рисков.",
-            13f, Color.LTGRAY
-        ))
+        // FOOTER
+        root.addView(label("HAN INVEST", 20f, blue, true))
+        root.addView(
+            label(
+                "Инвестиционный анализ и оценка рисков.\n" +
+                    "Прогнозы не гарантируют доходность.",
+                12f,
+                muted
+            )
+        )
 
-        scroll.addView(layout)
+        scroll.addView(root)
         setContentView(scroll)
+    }
+}
+
+class InvestmentChart(context: android.content.Context) : View(context) {
+
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+
+        val w = width.toFloat()
+        val h = height.toFloat()
+
+        paint.color = Color.rgb(235, 239, 248)
+        paint.strokeWidth = 1f
+
+        for (i in 1..3) {
+            val y = h * i / 4
+            canvas.drawLine(0f, y, w, y, paint)
+        }
+
+        val points = floatArrayOf(
+            0f, h * 0.72f,
+            w * 0.16f, h * 0.60f,
+            w * 0.32f, h * 0.68f,
+            w * 0.48f, h * 0.40f,
+            w * 0.64f, h * 0.49f,
+            w * 0.80f, h * 0.25f,
+            w, h * 0.16f
+        )
+
+        val path = Path()
+        path.moveTo(points[0], points[1])
+
+        var i = 2
+        while (i < points.size) {
+            path.lineTo(points[i], points[i + 1])
+            i += 2
+        }
+
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 6f
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.strokeJoin = Paint.Join.ROUND
+        paint.shader = LinearGradient(
+            0f, 0f, w, 0f,
+            Color.rgb(55, 105, 245),
+            Color.rgb(25, 175, 115),
+            Shader.TileMode.CLAMP
+        )
+
+        canvas.drawPath(path, paint)
+        paint.shader = null
+        paint.style = Paint.Style.FILL
     }
 }
