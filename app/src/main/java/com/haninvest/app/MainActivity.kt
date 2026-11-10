@@ -15,6 +15,9 @@ import android.view.ViewGroup
 import android.widget.*
 import android.text.InputType
 import android.graphics.drawable.GradientDrawable
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
 
 class MainActivity : Activity() {
@@ -44,7 +47,10 @@ class MainActivity : Activity() {
         text = value
         textSize = size
         setTextColor(color)
-        if (bold) setTypeface(null, android.graphics.Typeface.BOLD)
+        if (bold) setTypeface(
+            null,
+            android.graphics.Typeface.BOLD
+        )
     }
 
     private fun card() = LinearLayout(this).apply {
@@ -56,7 +62,10 @@ class MainActivity : Activity() {
 
     private fun space(height: Int = 14) =
         View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(1, dp(height))
+            layoutParams = LinearLayout.LayoutParams(
+                1,
+                dp(height)
+            )
         }
 
     private fun input(hintText: String, type: Int) =
@@ -70,6 +79,102 @@ class MainActivity : Activity() {
             setPadding(dp(14), dp(10), dp(14), dp(10))
         }
 
+    // ЗАГРУЗКА РЕАЛЬНЫХ ВАЛЮТНЫХ КУРСОВ
+
+    private fun loadCurrencyRates(target: TextView) {
+        target.text = "Загружаем валютные курсы..."
+
+        Thread {
+            var connection: HttpURLConnection? = null
+
+            try {
+                val url = URL(
+                    "https://api.frankfurter.dev/v1/latest?base=USD"
+                )
+
+                connection =
+                    url.openConnection() as HttpURLConnection
+
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 15000
+                connection.readTimeout = 15000
+                connection.setRequestProperty(
+                    "Accept",
+                    "application/json"
+                )
+
+                val responseCode = connection.responseCode
+
+                if (responseCode !in 200..299) {
+                    throw Exception("HTTP $responseCode")
+                }
+
+                val response = connection.inputStream
+                    .bufferedReader()
+                    .use { it.readText() }
+
+                val json = JSONObject(response)
+                val rates = json.getJSONObject("rates")
+                val date = json.optString(
+                    "date",
+                    "не указана"
+                )
+
+                val currencies = listOf(
+                    "EUR" to "Евро",
+                    "GBP" to "Фунт стерлингов",
+                    "CNY" to "Китайский юань",
+                    "TRY" to "Турецкая лира",
+                    "CHF" to "Швейцарский франк",
+                    "JPY" to "Японская иена"
+                )
+
+                val lines = StringBuilder()
+
+                for ((code, name) in currencies) {
+                    if (rates.has(code)) {
+                        val value = rates.getDouble(code)
+
+                        lines.append(
+                            String.format(
+                                Locale.US,
+                                "1 USD = %.4f %s\n%s\n\n",
+                                value,
+                                code,
+                                name
+                            )
+                        )
+                    }
+                }
+
+                if (lines.isEmpty()) {
+                    lines.append(
+                        "Валюты временно недоступны."
+                    )
+                }
+
+                val result =
+                    "Дата курса: $date\n\n" +
+                    lines.toString() +
+                    "Источник: Frankfurter API\n" +
+                    "Курсы справочные, не банковские."
+
+                runOnUiThread {
+                    target.text = result
+                }
+
+            } catch (e: Exception) {
+                runOnUiThread {
+                    target.text =
+                        "Не удалось загрузить курсы.\n" +
+                        "Проверьте интернет и нажмите обновить."
+                }
+            } finally {
+                connection?.disconnect()
+            }
+        }.start()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -82,20 +187,32 @@ class MainActivity : Activity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(22), dp(20), dp(28))
+            setPadding(
+                dp(20),
+                dp(22),
+                dp(20),
+                dp(28)
+            )
             setBackgroundColor(page)
         }
 
-        // HEADER
+        // ШАПКА
+
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        header.addView(label("HAN", 26f, blue, true))
-        header.addView(label(" INVEST", 26f, purple, true))
+        header.addView(
+            label("HAN", 26f, blue, true)
+        )
+
+        header.addView(
+            label(" INVEST", 26f, purple, true)
+        )
 
         val spacer = View(this)
+
         header.addView(
             spacer,
             LinearLayout.LayoutParams(0, 1, 1f)
@@ -104,18 +221,38 @@ class MainActivity : Activity() {
         header.addView(
             label("●", 22f, green, true).apply {
                 background = bg(Color.WHITE, 30)
-                setPadding(dp(13), dp(8), dp(13), dp(8))
+                setPadding(
+                    dp(13),
+                    dp(8),
+                    dp(13),
+                    dp(8)
+                )
             }
         )
 
         root.addView(header)
-        root.addView(label("Инвестиционная платформа", 14f, muted))
+
+        root.addView(
+            label(
+                "Инвестиционная платформа",
+                14f,
+                muted
+            )
+        )
+
         root.addView(space(18))
 
-        // MAIN BANNER
+        // ГЛАВНЫЙ БАННЕР
+
         val banner = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(22), dp(22), dp(22))
+            setPadding(
+                dp(22),
+                dp(22),
+                dp(22),
+                dp(22)
+            )
+
             background = GradientDrawable(
                 GradientDrawable.Orientation.LEFT_RIGHT,
                 intArrayOf(blue, purple)
@@ -125,13 +262,27 @@ class MainActivity : Activity() {
         }
 
         banner.addView(
-            label("УМНЫЕ ИНВЕСТИЦИИ", 12f, Color.WHITE, true)
+            label(
+                "УМНЫЕ ИНВЕСТИЦИИ",
+                12f,
+                Color.WHITE,
+                true
+            )
         )
+
         banner.addView(space(8))
+
         banner.addView(
-            label("Ваш капитал.\nВаши возможности.", 27f, Color.WHITE, true)
+            label(
+                "Ваш капитал.\nВаши возможности.",
+                27f,
+                Color.WHITE,
+                true
+            )
         )
+
         banner.addView(space(8))
+
         banner.addView(
             label(
                 "Анализируйте рынки и находите инвестиционные возможности.",
@@ -143,26 +294,45 @@ class MainActivity : Activity() {
         root.addView(banner)
         root.addView(space(20))
 
-        // PORTFOLIO
-        root.addView(label("Мой портфель", 21f, dark, true))
+        // ПОРТФЕЛЬ
+
+        root.addView(
+            label("Мой портфель", 21f, dark, true)
+        )
+
         root.addView(space(10))
 
         val portfolio = card()
+
         portfolio.addView(
             label("ОБЩИЙ КАПИТАЛ", 12f, muted, true)
         )
+
         portfolio.addView(space(5))
-        portfolio.addView(label("$0.00", 34f, dark, true))
-        portfolio.addView(space(5))
+
         portfolio.addView(
-            label("Начните с анализа своих возможностей", 13f, muted)
+            label("$0.00", 34f, dark, true)
+        )
+
+        portfolio.addView(space(5))
+
+        portfolio.addView(
+            label(
+                "Начните с анализа своих возможностей",
+                13f,
+                muted
+            )
         )
 
         root.addView(portfolio)
         root.addView(space(20))
 
-        // MARKETS
-        root.addView(label("Рынки для анализа", 21f, dark, true))
+        // РЫНКИ
+
+        root.addView(
+            label("Рынки для анализа", 21f, dark, true)
+        )
+
         root.addView(space(10))
 
         val markets = listOf(
@@ -180,27 +350,95 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER_VERTICAL
             }
 
-            item.addView(label(name, 16f, dark, true))
+            item.addView(
+                label(name, 16f, dark, true)
+            )
 
             val gap = View(this)
+
             item.addView(
                 gap,
                 LinearLayout.LayoutParams(0, 1, 1f)
             )
-            item.addView(label("›", 26f, color, true))
+
+            item.addView(
+                label("›", 26f, color, true)
+            )
 
             root.addView(item)
             root.addView(space(9))
         }
 
-        // CHART
+        // ВАЛЮТНЫЕ КУРСЫ
+
         root.addView(space(8))
-        root.addView(label("Динамика инвестиций", 21f, dark, true))
+
+        root.addView(
+            label(
+                "Реальные валютные курсы",
+                21f,
+                dark,
+                true
+            )
+        )
+
+        root.addView(space(10))
+
+        val currencyCard = card()
+
+        val currencyText = label(
+            "Загрузка валютных данных...",
+            14f,
+            dark
+        )
+
+        currencyCard.addView(currencyText)
+        currencyCard.addView(space(10))
+
+        val refreshRates = Button(this).apply {
+            text = "ОБНОВИТЬ ВАЛЮТНЫЕ КУРСЫ"
+            setTextColor(Color.WHITE)
+
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(blue, purple)
+            ).apply {
+                cornerRadius = dp(14).toFloat()
+            }
+
+            setOnClickListener {
+                loadCurrencyRates(currencyText)
+            }
+        }
+
+        currencyCard.addView(refreshRates)
+        root.addView(currencyCard)
+
+        loadCurrencyRates(currencyText)
+
+        root.addView(space(20))
+
+        // ГРАФИК
+
+        root.addView(
+            label(
+                "Динамика инвестиций",
+                21f,
+                dark,
+                true
+            )
+        )
+
         root.addView(space(10))
 
         val chartCard = card()
-        chartCard.addView(label("Пример графика", 13f, muted))
+
+        chartCard.addView(
+            label("Демонстрационный график", 13f, muted)
+        )
+
         chartCard.addView(space(8))
+
         chartCard.addView(
             InvestmentChart(this),
             LinearLayout.LayoutParams(
@@ -208,10 +446,12 @@ class MainActivity : Activity() {
                 dp(150)
             )
         )
+
         chartCard.addView(space(5))
+
         chartCard.addView(
             label(
-                "Демонстрационные данные, не реальные котировки",
+                "График пока демонстрационный, не реальные котировки.",
                 11f,
                 muted
             )
@@ -220,8 +460,17 @@ class MainActivity : Activity() {
         root.addView(chartCard)
         root.addView(space(20))
 
-        // CALCULATOR
-        root.addView(label("Калькулятор доходности", 21f, dark, true))
+        // КАЛЬКУЛЯТОР ДОХОДНОСТИ
+
+        root.addView(
+            label(
+                "Калькулятор доходности",
+                21f,
+                dark,
+                true
+            )
+        )
+
         root.addView(space(10))
 
         val calc = card()
@@ -229,14 +478,14 @@ class MainActivity : Activity() {
         val money = input(
             "Сумма инвестиций, USD",
             InputType.TYPE_CLASS_NUMBER or
-                InputType.TYPE_NUMBER_FLAG_DECIMAL
+            InputType.TYPE_NUMBER_FLAG_DECIMAL
         )
 
         val percent = input(
             "Доходность в год, %",
             InputType.TYPE_CLASS_NUMBER or
-                InputType.TYPE_NUMBER_FLAG_DECIMAL or
-                InputType.TYPE_NUMBER_FLAG_SIGNED
+            InputType.TYPE_NUMBER_FLAG_DECIMAL or
+            InputType.TYPE_NUMBER_FLAG_SIGNED
         )
 
         val years = input(
@@ -246,8 +495,10 @@ class MainActivity : Activity() {
 
         calc.addView(money)
         calc.addView(space(10))
+
         calc.addView(percent)
         calc.addView(space(10))
+
         calc.addView(years)
         calc.addView(space(14))
 
@@ -261,6 +512,7 @@ class MainActivity : Activity() {
         val button = Button(this).apply {
             text = "РАССЧИТАТЬ ДОХОДНОСТЬ"
             setTextColor(Color.WHITE)
+
             background = GradientDrawable(
                 GradientDrawable.Orientation.LEFT_RIGHT,
                 intArrayOf(blue, purple)
@@ -270,26 +522,42 @@ class MainActivity : Activity() {
 
             setOnClickListener {
                 try {
-                    val capital = money.text.toString().toDouble()
-                    val rate = percent.text.toString().toDouble()
-                    val period = years.text.toString().toInt()
+                    val capital =
+                        money.text.toString().toDouble()
 
-                    require(capital > 0 && rate > -100 && period > 0)
+                    val rate =
+                        percent.text.toString().toDouble()
+
+                    val period =
+                        years.text.toString().toInt()
+
+                    require(
+                        capital > 0 &&
+                        rate > -100 &&
+                        period > 0
+                    )
 
                     val total = capital *
-                        Math.pow(1 + rate / 100, period.toDouble())
+                        Math.pow(
+                            1 + rate / 100,
+                            period.toDouble()
+                        )
 
                     val profit = total - capital
 
                     result.text = String.format(
                         Locale.US,
-                        "Итоговая сумма: \$%.2f\nПрибыль: \$%.2f\nКапитал: \$%.2f",
+                        "Итоговая сумма: $%.2f\n" +
+                        "Прибыль: $%.2f\n" +
+                        "Начальный капитал: $%.2f",
                         total,
                         profit,
                         capital
                     )
+
                 } catch (e: Exception) {
-                    result.text = "Проверьте введённые данные."
+                    result.text =
+                        "Проверьте введённые данные."
                 }
             }
         }
@@ -301,12 +569,16 @@ class MainActivity : Activity() {
         root.addView(calc)
         root.addView(space(20))
 
-        // FOOTER
-        root.addView(label("HAN INVEST", 20f, blue, true))
+        // ИНФОРМАЦИЯ
+
+        root.addView(
+            label("HAN INVEST", 20f, blue, true)
+        )
+
         root.addView(
             label(
                 "Инвестиционный анализ и оценка рисков.\n" +
-                    "Прогнозы не гарантируют доходность.",
+                "Прогнозы не гарантируют доходность.",
                 12f,
                 muted
             )
@@ -317,9 +589,14 @@ class MainActivity : Activity() {
     }
 }
 
-class InvestmentChart(context: android.content.Context) : View(context) {
+// ДЕМОНСТРАЦИОННЫЙ ГРАФИК
 
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+class InvestmentChart(
+    context: android.content.Context
+) : View(context) {
+
+    private val paint =
+        Paint(Paint.ANTI_ALIAS_FLAG)
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -349,6 +626,7 @@ class InvestmentChart(context: android.content.Context) : View(context) {
         path.moveTo(points[0], points[1])
 
         var i = 2
+
         while (i < points.size) {
             path.lineTo(points[i], points[i + 1])
             i += 2
@@ -358,14 +636,19 @@ class InvestmentChart(context: android.content.Context) : View(context) {
         paint.strokeWidth = 6f
         paint.strokeCap = Paint.Cap.ROUND
         paint.strokeJoin = Paint.Join.ROUND
+
         paint.shader = LinearGradient(
-            0f, 0f, w, 0f,
+            0f,
+            0f,
+            w,
+            0f,
             Color.rgb(55, 105, 245),
             Color.rgb(25, 175, 115),
             Shader.TileMode.CLAMP
         )
 
         canvas.drawPath(path, paint)
+
         paint.shader = null
         paint.style = Paint.Style.FILL
     }
