@@ -140,6 +140,80 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict):
         return None
 
 
+async def _scan_coingecko(client: httpx.AsyncClient, limit: int, min_volume: float):
+    response = await client.get(
+        "https://api.coingecko.com/api/v3/coins/markets",
+        params={
+            "vs_currency": "usd",
+            "order": "volume_desc",
+            "per_page": 100,
+            "page": 1,
+            "sparkline": "false",
+            "price_change_percentage": "24h,7d,30d",
+        },
+        headers={"accept": "application/json"},
+    )
+    response.raise_for_status()
+    rows = response.json()
+    if not isinstance(rows, list):
+        raise ValueError("CoinGecko returned an unexpected response")
+
+    assets = []
+    for coin in rows:
+        if not isinstance(coin, dict):
+            continue
+        symbol = str(coin.get("symbol", "")).upper()
+        volume = float(coin.get("total_volume") or 0)
+        price = coin.get("current_price")
+        if not symbol or price is None or volume < min_volume:
+            continue
+        if symbol in {"USDT", "USDC", "DAI", "FDUSD", "TUSD", "USDE"}:
+            continue
+
+        change_24h = float(coin.get("price_change_percentage_24h") or 0)
+        change_7d = float(coin.get("price_change_percentage_7d_in_currency") or 0)
+        change_30d = float(coin.get("price_change_percentage_30d_in_currency") or 0)
+
+        trend_score = 25 if change_7d > 0 and change_30d > 0 else (
+            15 if change_7d > 0 else 5
+        )
+        momentum_score = max(0, min(25, round(12.5 + change_24h * 1.5)))
+        medium_score = max(0, min(25, round(12.5 + change_7d * 0.5)))
+        liquidity_score = min(25, max(0, round(math.log10(max(volume, 1)) * 2)))
+        score = trend_score + momentum_score + medium_score + liquidity_score
+
+        assets.append({
+            "symbol": f"{symbol}USDT",
+            "name": coin.get("name"),
+            "price": float(price),
+            "change_24h_pct": round(change_24h, 2),
+            "momentum_6h_pct": None,
+            "momentum_24h_pct": round(change_24h, 2),
+            "quote_volume_24h": round(volume, 2),
+            "volume_ratio": None,
+            "ma20": None,
+            "ma50": None,
+            "hourly_volatility_pct": None,
+            "score": score,
+            "signal": "WATCH" if score >= 60 else "HOLD",
+            "risk": "Не рассчитан: резервный источник",
+            "market_cap_rank": coin.get("market_cap_rank"),
+        })
+
+    assets.sort(key=lambda item: item["score"], reverse=True)
+    return {
+        "source": "CoinGecko public market data (резервный режим)",
+        "scanned": min(len(assets), limit),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "assets": assets[:limit],
+        "notice": (
+            "Резервная оценка ограничена: нет часовых свечей, MA20/MA50 и оценки "
+            "волатильности. Сигналы BUY не выдаются. Оценка не гарантирует прибыль; "
+            "перед сделкой проверьте доступность актива на выбранной бирже."
+        ),
+    }
+
+
 @router.get("/api/v1/crypto/scan")
 async def scan_crypto(
     limit: int = Query(30, ge=5, le=50),
@@ -169,11 +243,22 @@ async def scan_crypto(
                 *[_analyze_symbol(client, item) for item in selected]
             )
     except BinanceCooldownError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Binance временно ограничила запросы. Повторите сканирование примерно через {exc.retry_after} сек.",
-            headers={"Retry-After": str(exc.retry_after)},
-        ) from exc
+        logger.warning("Binance cooldown active; switching to CoinGecko fallback")
+        try:
+            async with httpx.AsyncClient(timeout=20) as fallback_client:
+                payload = await _scan_coingecko(fallback_client, limit, min_volume)
+            _cache[cache_key] = (time.time(), payload)
+            return payload
+        except (httpx.HTTPError, ValueError, TypeError) as fallback_exc:
+            logger.exception("CoinGecko fallback failed: %s", type(fallback_exc).__name__)
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Binance временно ограничила запросы, а резервный источник "
+                    "CoinGecko сейчас недоступен."
+                ),
+                headers={"Retry-After": str(exc.retry_after)},
+            ) from fallback_exc
     except HTTPException:
         raise
     except (httpx.HTTPError, ValueError, TypeError) as exc:
