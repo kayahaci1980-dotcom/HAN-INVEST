@@ -1,6 +1,7 @@
 
 import os
 import time
+import asyncio
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -11,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(
     title="HAN INVEST API",
     description="Market research and investment analysis service",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 app.add_middleware(
@@ -25,8 +26,10 @@ SEC_USER_AGENT = os.getenv(
     "SEC_USER_AGENT",
     "HAN INVEST contact@example.com"
 )
+
 CACHE_TTL = int(os.getenv("CACHE_TTL", "900"))
-TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "20"))
+NEWS_CACHE_TTL = int(os.getenv("NEWS_CACHE_TTL", "3600"))
+TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "25"))
 
 _cache: dict[str, tuple[float, Any]] = {}
 
@@ -42,7 +45,24 @@ FINANCE_TERMS = (
 )
 
 
-async def fetch_json(url: str, headers: dict | None = None):
+def get_cache(key: str, ttl: int):
+    cached = _cache.get(key)
+
+    if cached and time.time() - cached[0] < ttl:
+        return cached[1]
+
+    return None
+
+
+def save_cache(key: str, data: Any):
+    _cache[key] = (time.time(), data)
+
+
+async def fetch_json(
+    url: str,
+    headers: dict | None = None,
+    retries: int = 2
+):
     request_headers = {
         "User-Agent": SEC_USER_AGENT,
         "Accept": "application/json",
@@ -51,35 +71,55 @@ async def fetch_json(url: str, headers: dict | None = None):
     if headers:
         request_headers.update(headers)
 
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            response = await client.get(
-                url,
-                headers=request_headers
-            )
-            response.raise_for_status()
-            return response.json()
+    for attempt in range(retries + 1):
+        try:
+            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+                response = await client.get(
+                    url,
+                    headers=request_headers
+                )
 
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"External provider error: {str(exc)}",
-        )
+                if response.status_code == 429:
+                    if attempt < retries:
+                        await asyncio.sleep(3 * (attempt + 1))
+                        continue
+
+                    raise HTTPException(
+                        status_code=503,
+                        detail="News provider is temporarily limiting requests. Please try again later."
+                    )
+
+                response.raise_for_status()
+                return response.json()
+
+        except HTTPException:
+            raise
+
+        except httpx.HTTPError as exc:
+            if attempt < retries:
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+
+            raise HTTPException(
+                status_code=502,
+                detail=f"External provider error: {str(exc)}",
+            )
 
 
 async def cached_json(
     key: str,
     url: str,
-    headers: dict | None = None
+    headers: dict | None = None,
+    ttl: int | None = None
 ):
-    now = time.time()
-    cached = _cache.get(key)
+    cache_ttl = ttl if ttl is not None else CACHE_TTL
+    cached = get_cache(key, cache_ttl)
 
-    if cached and now - cached[0] < CACHE_TTL:
-        return cached[1]
+    if cached is not None:
+        return cached
 
     data = await fetch_json(url, headers)
-    _cache[key] = (now, data)
+    save_cache(key, data)
 
     return data
 
@@ -88,7 +128,8 @@ async def cached_json(
 async def health():
     return {
         "status": "ok",
-        "service": "HAN INVEST API"
+        "service": "HAN INVEST API",
+        "version": "0.3.0"
     }
 
 
@@ -118,6 +159,12 @@ async def universe():
 async def news(
     q: str = Query(..., min_length=2, max_length=100)
 ):
+    cache_key = f"news:finance:{q.lower()}"
+    cached = get_cache(cache_key, NEWS_CACHE_TTL)
+
+    if cached is not None:
+        return cached
+
     finance_query = (
         f'"{q}" AND '
         '(stock OR shares OR earnings OR revenue OR profit '
@@ -134,13 +181,22 @@ async def news(
         "&sort=DateDesc&maxrecords=50"
     )
 
-    data = await cached_json(
-        f"news:finance:{q.lower()}",
-        url
-    )
+    try:
+        data = await fetch_json(url, retries=2)
+
+    except HTTPException as exc:
+        if exc.status_code == 503:
+            return {
+                "query": q,
+                "source": "GDELT",
+                "count": 0,
+                "articles": [],
+                "status": "temporarily_unavailable",
+                "message": "Новостной источник временно ограничил запросы. Попробуйте позже."
+            }
+        raise
 
     articles = data.get("articles", [])
-
     relevant_articles = []
 
     for article in articles:
@@ -149,12 +205,16 @@ async def news(
         if any(term in title for term in FINANCE_TERMS):
             relevant_articles.append(article)
 
-    return {
+    result = {
         "query": q,
         "source": "GDELT",
         "count": len(relevant_articles),
         "articles": relevant_articles,
+        "status": "ok"
     }
+
+    save_cache(cache_key, result)
+    return result
 
 
 @app.get("/api/v1/sec/{ticker}/filings")
