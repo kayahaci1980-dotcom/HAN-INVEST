@@ -1,5 +1,6 @@
 import asyncio
 import math
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -8,6 +9,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 # Binance documents this host specifically for public market-data-only requests.
 BASE_URL = "https://data-api.binance.vision"
 CACHE_TTL = 60
@@ -131,6 +133,7 @@ async def scan_crypto(
     except HTTPException:
         raise
     except (httpx.HTTPError, ValueError, TypeError) as exc:
+        logger.exception("Binance market-data request failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=503,
             detail="Криптовалютные данные Binance временно недоступны.",
