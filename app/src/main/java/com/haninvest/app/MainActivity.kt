@@ -81,7 +81,7 @@ class MainActivity : Activity() {
             connection.readTimeout = 15000
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty(
-                "User-Agent", "HAN-INVEST-Android/2.0"
+                "User-Agent", "HAN-INVEST-Android/2.1"
             )
             if (connection.responseCode !in 200..299) {
                 throw Exception("HTTP ${connection.responseCode}")
@@ -102,7 +102,7 @@ class MainActivity : Activity() {
             connection.connectTimeout = 20000
             connection.readTimeout = 20000
             connection.setRequestProperty(
-                "User-Agent", "HAN-INVEST-Android/2.0"
+                "User-Agent", "HAN-INVEST-Android/2.1"
             )
             if (connection.responseCode !in 200..299) {
                 throw Exception("HTTP ${connection.responseCode}")
@@ -537,18 +537,8 @@ class MainActivity : Activity() {
             ::loadTreasury
         )
 
-        root.addView(label("📊 Отдельные акции", 20f, dark, true))
-        root.addView(space(8))
-        val stocks = card()
-        stocks.addView(
-            label(
-                "Следующий этап: подключение котировок отдельных " +
-                "акций США, Европы и Азии.\n\n" +
-                "Индивидуальные цены акций пока не подключены.",
-                14f, dark
-            )
-        )
-        root.addView(stocks)
+        // НОВЫЙ СКАНЕР АКЦИЙ И ETF
+        root.addView(StockScanner(this).createView())
         root.addView(space(18))
 
         root.addView(
@@ -648,14 +638,14 @@ class MainActivity : Activity() {
         val risk = card()
         risk.addView(
             label(
-                "Планируемые функции HAN INVEST:\n\n" +
+                "Функции HAN INVEST:\n\n" +
                 "• История цен и динамика рынка\n" +
                 "• Волатильность и риск потерь\n" +
                 "• Сравнение активов\n" +
                 "• Краткосрочные и долгосрочные сценарии\n" +
                 "• Поиск инвестиционных возможностей\n\n" +
-                "Автоматические рекомендации появятся после " +
-                "подключения исторических данных и проверки алгоритмов.",
+                "Результаты сканера основаны на исторических " +
+                "данных и не являются гарантированным прогнозом.",
                 14f, dark
             )
         )
