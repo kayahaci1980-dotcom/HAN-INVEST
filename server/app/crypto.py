@@ -8,7 +8,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 
 router = APIRouter()
-BASE_URL = "https://api.binance.com"
+# Binance documents this host specifically for public market-data-only requests.
+BASE_URL = "https://data-api.binance.vision"
 CACHE_TTL = 60
 _cache: dict[str, tuple[float, Any]] = {}
 _semaphore = asyncio.Semaphore(5)
