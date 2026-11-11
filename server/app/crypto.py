@@ -187,7 +187,7 @@ async def _scan_coingecko(client: httpx.AsyncClient, limit: int, min_volume: flo
             "quote_currency": "USD",
             "exchange_pair_verified": False,
             "trade_ready": False,
-            "name": name,
+            "name": coin.get("name"),
             "price": float(price),
             "change_24h_pct": round(change_24h, 2),
             "momentum_6h_pct": None,
@@ -262,7 +262,10 @@ async def _scan_coinpaprika(client: httpx.AsyncClient, limit: int, min_volume: f
         score = trend_score + momentum_score + short_score + liquidity_score
 
         assets.append({
-            "symbol": f"{symbol}USDT",
+            "symbol": symbol,
+            "quote_currency": "USD",
+            "exchange_pair_verified": False,
+            "trade_ready": False,
             "name": coin.get("name"),
             "price": float(price),
             "change_24h_pct": round(change_24h, 2),
