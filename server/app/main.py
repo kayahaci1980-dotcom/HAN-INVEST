@@ -1,3 +1,4 @@
+
 import os
 import time
 from typing import Any
@@ -10,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(
     title="HAN INVEST API",
     description="Market research and investment analysis service",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 app.add_middleware(
@@ -29,20 +30,36 @@ TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "20"))
 
 _cache: dict[str, tuple[float, Any]] = {}
 
+FINANCE_TERMS = (
+    "stock", "stocks", "share", "shares", "earnings",
+    "revenue", "profit", "loss", "forecast", "analyst",
+    "valuation", "market", "investor", "investment",
+    "dividend", "buyback", "upgrade", "downgrade",
+    "merger", "acquisition", "lawsuit", "regulation",
+    "tariff", "supply", "demand", "quarter",
+    "guidance", "nasdaq", "nyse", "sec filing",
+    "ceo", "financial results", "trading"
+)
+
 
 async def fetch_json(url: str, headers: dict | None = None):
     request_headers = {
         "User-Agent": SEC_USER_AGENT,
         "Accept": "application/json",
     }
+
     if headers:
         request_headers.update(headers)
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            response = await client.get(url, headers=request_headers)
+            response = await client.get(
+                url,
+                headers=request_headers
+            )
             response.raise_for_status()
             return response.json()
+
     except httpx.HTTPError as exc:
         raise HTTPException(
             status_code=502,
@@ -50,7 +67,11 @@ async def fetch_json(url: str, headers: dict | None = None):
         )
 
 
-async def cached_json(key: str, url: str, headers: dict | None = None):
+async def cached_json(
+    key: str,
+    url: str,
+    headers: dict | None = None
+):
     now = time.time()
     cached = _cache.get(key)
 
@@ -59,17 +80,22 @@ async def cached_json(key: str, url: str, headers: dict | None = None):
 
     data = await fetch_json(url, headers)
     _cache[key] = (now, data)
+
     return data
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "HAN INVEST API"}
+    return {
+        "status": "ok",
+        "service": "HAN INVEST API"
+    }
 
 
 @app.get("/api/v1/universe")
 async def universe():
     url = "https://www.sec.gov/files/company_tickers.json"
+
     data = await cached_json("sec_universe", url)
 
     companies = [
@@ -89,19 +115,45 @@ async def universe():
 
 
 @app.get("/api/v1/news")
-async def news(q: str = Query(..., min_length=2, max_length=100)):
-    url = (
-        "https://api.gdeltproject.org/api/v2/doc/doc"
-        f"?query={quote_plus(q)}"
-        "&mode=ArtList&format=json&sort=DateDesc&maxrecords=25"
+async def news(
+    q: str = Query(..., min_length=2, max_length=100)
+):
+    finance_query = (
+        f'"{q}" AND '
+        '(stock OR shares OR earnings OR revenue OR profit '
+        'OR forecast OR analyst OR valuation OR dividend '
+        'OR buyback OR merger OR acquisition OR lawsuit '
+        'OR regulation OR tariff OR financial results '
+        'OR investor OR trading)'
     )
 
-    data = await cached_json(f"news:{q.lower()}", url)
+    url = (
+        "https://api.gdeltproject.org/api/v2/doc/doc"
+        f"?query={quote_plus(finance_query)}"
+        "&mode=ArtList&format=json"
+        "&sort=DateDesc&maxrecords=50"
+    )
+
+    data = await cached_json(
+        f"news:finance:{q.lower()}",
+        url
+    )
+
+    articles = data.get("articles", [])
+
+    relevant_articles = []
+
+    for article in articles:
+        title = (article.get("title") or "").lower()
+
+        if any(term in title for term in FINANCE_TERMS):
+            relevant_articles.append(article)
 
     return {
         "query": q,
         "source": "GDELT",
-        "articles": data.get("articles", []),
+        "count": len(relevant_articles),
+        "articles": relevant_articles,
     }
 
 
@@ -123,14 +175,22 @@ async def sec_filings(ticker: str):
     )
 
     if not company:
-        raise HTTPException(status_code=404, detail="Ticker not found")
+        raise HTTPException(
+            status_code=404,
+            detail="Ticker not found"
+        )
 
     cik = str(company["cik_str"]).zfill(10)
 
     url = f"https://data.sec.gov/submissions/CIK{cik}.json"
-    data = await cached_json(f"filings:{cik}", url)
+
+    data = await cached_json(
+        f"filings:{cik}",
+        url
+    )
 
     recent = data.get("filings", {}).get("recent", {})
+
     forms = recent.get("form", [])
     dates = recent.get("filingDate", [])
     accessions = recent.get("accessionNumber", [])
@@ -147,7 +207,7 @@ async def sec_filings(ticker: str):
             "date": dates[i],
             "document": document,
             "url": (
-                f"https://www.sec.gov/Archives/edgar/data/"
+                "https://www.sec.gov/Archives/edgar/data/"
                 f"{int(cik)}/{accession}/{document}"
             ),
         })
