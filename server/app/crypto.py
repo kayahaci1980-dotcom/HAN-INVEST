@@ -241,7 +241,12 @@ async def _scan_coinpaprika(client: httpx.AsyncClient, limit: int, min_volume: f
         rank = int(coin.get("rank") or 0)
         if not symbol or price is None or volume < min_volume or rank <= 0:
             continue
-        if symbol in {"USDT", "USDC", "DAI", "FDUSD", "TUSD", "USDE"}:
+        if symbol in {
+            "USDT", "USDC", "DAI", "FDUSD", "TUSD", "USDE",
+            "USDS", "USD1", "USDG", "RLUSD", "USDP", "PYUSD",
+            "GUSD", "FRAX", "USDD", "UST", "USTC", "USDX",
+            "U", "USDJ", "EURC", "EURS",
+        }:
             continue
         # Exclude tokenized equities and securities from the crypto-only scanner.
         if any(term in normalized_name for term in (
