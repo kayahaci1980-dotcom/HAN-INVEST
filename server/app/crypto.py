@@ -183,8 +183,11 @@ async def _scan_coingecko(client: httpx.AsyncClient, limit: int, min_volume: flo
         score = trend_score + momentum_score + medium_score + liquidity_score
 
         assets.append({
-            "symbol": f"{symbol}USDT",
-            "name": coin.get("name"),
+            "symbol": symbol,
+            "quote_currency": "USD",
+            "exchange_pair_verified": False,
+            "trade_ready": False,
+            "name": name,
             "price": float(price),
             "change_24h_pct": round(change_24h, 2),
             "momentum_6h_pct": None,
@@ -231,11 +234,20 @@ async def _scan_coinpaprika(client: httpx.AsyncClient, limit: int, min_volume: f
             continue
         quote = (coin.get("quotes") or {}).get("USD") or {}
         symbol = str(coin.get("symbol") or "").upper()
+        name = str(coin.get("name") or "")
+        normalized_name = name.lower()
         price = quote.get("price")
         volume = float(quote.get("volume_24h") or 0)
-        if not symbol or price is None or volume < min_volume:
+        rank = int(coin.get("rank") or 0)
+        if not symbol or price is None or volume < min_volume or rank <= 0:
             continue
         if symbol in {"USDT", "USDC", "DAI", "FDUSD", "TUSD", "USDE"}:
+            continue
+        # Exclude tokenized equities and securities from the crypto-only scanner.
+        if any(term in normalized_name for term in (
+            "tokenized stock", "xstock", "backpack securities",
+            "tokenized equity", "wrapped stock",
+        )):
             continue
 
         change_6h = float(quote.get("percent_change_6h") or 0)
@@ -264,7 +276,8 @@ async def _scan_coinpaprika(client: httpx.AsyncClient, limit: int, min_volume: f
             "score": score,
             "signal": "WATCH" if score >= 60 else "HOLD",
             "risk": "Не рассчитан: резервный источник",
-            "market_cap_rank": coin.get("rank"),
+            "market_cap_rank": rank,
+            "data_updated_at": coin.get("last_updated"),
         })
 
     assets.sort(key=lambda item: item["score"], reverse=True)
@@ -275,8 +288,9 @@ async def _scan_coinpaprika(client: httpx.AsyncClient, limit: int, min_volume: f
         "assets": assets[:limit],
         "notice": (
             "Резервная оценка ограничена: нет часовых свечей и расчёта MA20/MA50 "
-            "и волатильности. Сигналы BUY не выдаются. Проверьте актуальность "
-            "last_updated и доступность пары на выбранной бирже. "
+            "и волатильности. Сигналы BUY не выдаются. Цены и объёмы CoinPaprika "
+            "агрегированы по рынкам в USD и не являются котировкой пары USDT на бирже. "
+            "Перед сделкой отдельно проверьте торговую пару и ликвидность на выбранной бирже. "
             "Источник: CoinPaprika."
         ),
     }
