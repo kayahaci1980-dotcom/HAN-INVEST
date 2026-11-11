@@ -9,6 +9,7 @@ from urllib.parse import quote_plus
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
+from app.crypto import router as crypto_router
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
@@ -16,6 +17,8 @@ app = FastAPI(
     description="Market research and investment analysis service",
     version="0.5.0",
 )
+
+app.include_router(crypto_router)
 
 app.add_middleware(
     CORSMiddleware,
