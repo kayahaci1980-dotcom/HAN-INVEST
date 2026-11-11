@@ -2,6 +2,7 @@ import asyncio
 import math
 import logging
 import time
+from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,7 +15,29 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://data-api.binance.vision"
 CACHE_TTL = 60
 _cache: dict[str, tuple[float, Any]] = {}
-_semaphore = asyncio.Semaphore(5)
+_semaphore = asyncio.Semaphore(2)
+_blocked_until = 0.0
+
+
+class BinanceCooldownError(Exception):
+    def __init__(self, retry_after: int):
+        self.retry_after = retry_after
+        super().__init__(f"Binance rate limit; retry after {retry_after}s")
+
+
+def _retry_after_seconds(value: str | None) -> int:
+    if value:
+        try:
+            return max(1, int(float(value)))
+        except (TypeError, ValueError):
+            try:
+                retry_at = parsedate_to_datetime(value)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                return max(1, int((retry_at - datetime.now(timezone.utc)).total_seconds()))
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return 300
 
 EXCLUDED_SUFFIXES = ("UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT")
 
@@ -28,8 +51,23 @@ def _score_change(value: float, scale: float = 5.0) -> int:
 
 
 async def _get_json(client: httpx.AsyncClient, path: str, params: dict | None = None):
+    global _blocked_until
     async with _semaphore:
+        remaining = int(_blocked_until - time.time())
+        if remaining > 0:
+            raise BinanceCooldownError(remaining)
+
         response = await client.get(f"{BASE_URL}{path}", params=params)
+        if response.status_code in (418, 429):
+            retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+            _blocked_until = max(_blocked_until, time.time() + retry_after)
+            logger.warning(
+                "Binance returned HTTP %s; pausing requests for %s seconds",
+                response.status_code,
+                retry_after,
+            )
+            raise BinanceCooldownError(retry_after)
+
         response.raise_for_status()
         return response.json()
 
@@ -130,6 +168,12 @@ async def scan_crypto(
             results = await asyncio.gather(
                 *[_analyze_symbol(client, item) for item in selected]
             )
+    except BinanceCooldownError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Binance временно ограничила запросы. Повторите сканирование примерно через {exc.retry_after} сек.",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
     except HTTPException:
         raise
     except (httpx.HTTPError, ValueError, TypeError) as exc:
