@@ -3,6 +3,7 @@ import os
 import time
 import asyncio
 import re
+import json
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -13,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(
     title="HAN INVEST API",
     description="Market research and investment analysis service",
-    version="0.4.0",
+    version="0.5.0",
 )
 
 app.add_middleware(
@@ -73,6 +74,8 @@ async def fetch_json(
     if headers:
         request_headers.update(headers)
 
+    last_error = "External provider returned an invalid response."
+
     for attempt in range(retries + 1):
         try:
             async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -82,30 +85,57 @@ async def fetch_json(
                 )
 
                 if response.status_code == 429:
+                    last_error = "Provider rate limit reached."
+
                     if attempt < retries:
                         await asyncio.sleep(3 * (attempt + 1))
                         continue
 
                     raise HTTPException(
                         status_code=503,
-                        detail="News provider is temporarily limiting requests."
+                        detail=last_error
                     )
 
                 response.raise_for_status()
-                return response.json()
+
+                try:
+                    data = response.json()
+                except (json.JSONDecodeError, ValueError):
+                    last_error = "Provider returned empty or invalid JSON."
+
+                    if attempt < retries:
+                        await asyncio.sleep(2 * (attempt + 1))
+                        continue
+
+                    raise HTTPException(
+                        status_code=503,
+                        detail=last_error
+                    )
+
+                if not isinstance(data, dict):
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Provider returned an unexpected data format."
+                    )
+
+                return data
 
         except HTTPException:
             raise
 
-        except httpx.HTTPError as exc:
+        except httpx.HTTPError:
+            last_error = "External provider is temporarily unavailable."
+
             if attempt < retries:
                 await asyncio.sleep(2 * (attempt + 1))
                 continue
 
             raise HTTPException(
-                status_code=502,
-                detail=f"External provider error: {str(exc)}",
+                status_code=503,
+                detail=last_error
             )
+
+    raise HTTPException(status_code=503, detail=last_error)
 
 
 async def cached_json(
@@ -127,11 +157,6 @@ async def cached_json(
 
 
 async def resolve_company(query: str):
-    """
-    Resolve a ticker through SEC EDGAR.
-    If the query is a company name, use that name directly.
-    """
-
     clean = query.strip()
     upper = clean.upper()
 
@@ -149,8 +174,11 @@ async def resolve_company(query: str):
                         "name": item["title"],
                     }
 
-        except HTTPException:
-            pass
+        except (HTTPException, KeyError, TypeError):
+            return {
+                "ticker": upper,
+                "name": clean,
+            }
 
     return {
         "ticker": None,
@@ -159,17 +187,11 @@ async def resolve_company(query: str):
 
 
 def company_matches_title(title: str, company: dict) -> bool:
-    """
-    Require the actual company name or ticker in the headline.
-    This prevents unrelated companies from entering the results.
-    """
-
     title_lower = title.lower()
     name = company["name"].strip()
 
     aliases = [name]
 
-    # Common company-name aliases.
     known_aliases = {
         "Apple Inc.": ["Apple", "Apple Inc"],
         "NVIDIA Corporation": ["NVIDIA", "Nvidia Corporation"],
@@ -205,7 +227,7 @@ async def health():
     return {
         "status": "ok",
         "service": "HAN INVEST API",
-        "version": "0.4.0"
+        "version": "0.5.0"
     }
 
 
@@ -240,7 +262,7 @@ async def news(
     company_name = company["name"]
     ticker = company.get("ticker")
 
-    cache_key = f"news:v2:{company_name.lower()}"
+    cache_key = f"news:v3:{company_name.lower()}"
 
     cached = get_cache(cache_key, NEWS_CACHE_TTL)
 
@@ -266,24 +288,32 @@ async def news(
     try:
         data = await fetch_json(url, retries=2)
 
-    except HTTPException as exc:
-        if exc.status_code == 503:
-            return {
-                "query": q,
-                "company": company_name,
-                "ticker": ticker,
-                "source": "GDELT",
-                "count": 0,
-                "articles": [],
-                "status": "temporarily_unavailable",
-                "message": "Новостной источник временно ограничил запросы."
-            }
-        raise
+    except HTTPException:
+        return {
+            "query": q,
+            "company": company_name,
+            "ticker": ticker,
+            "source": "GDELT",
+            "count": 0,
+            "articles": [],
+            "status": "temporarily_unavailable",
+            "message": (
+                "Новостной источник временно недоступен "
+                "или вернул некорректный ответ. Попробуйте позже."
+            )
+        }
 
     articles = data.get("articles", [])
+
+    if not isinstance(articles, list):
+        articles = []
+
     relevant_articles = []
 
     for article in articles:
+        if not isinstance(article, dict):
+            continue
+
         title = article.get("title") or ""
 
         if company_matches_title(title, company):
