@@ -2,6 +2,7 @@
 import os
 import time
 import asyncio
+import re
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -12,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(
     title="HAN INVEST API",
     description="Market research and investment analysis service",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 app.add_middleware(
@@ -41,7 +42,8 @@ FINANCE_TERMS = (
     "merger", "acquisition", "lawsuit", "regulation",
     "tariff", "supply", "demand", "quarter",
     "guidance", "nasdaq", "nyse", "sec filing",
-    "ceo", "financial results", "trading"
+    "ceo", "financial results", "trading",
+    "business", "company", "sales", "growth"
 )
 
 
@@ -86,7 +88,7 @@ async def fetch_json(
 
                     raise HTTPException(
                         status_code=503,
-                        detail="News provider is temporarily limiting requests. Please try again later."
+                        detail="News provider is temporarily limiting requests."
                     )
 
                 response.raise_for_status()
@@ -124,12 +126,86 @@ async def cached_json(
     return data
 
 
+async def resolve_company(query: str):
+    """
+    Resolve a ticker through SEC EDGAR.
+    If the query is a company name, use that name directly.
+    """
+
+    clean = query.strip()
+    upper = clean.upper()
+
+    if upper.isalpha() and len(upper) <= 5:
+        try:
+            data = await cached_json(
+                "sec_universe",
+                "https://www.sec.gov/files/company_tickers.json",
+            )
+
+            for item in data.values():
+                if item["ticker"].upper() == upper:
+                    return {
+                        "ticker": upper,
+                        "name": item["title"],
+                    }
+
+        except HTTPException:
+            pass
+
+    return {
+        "ticker": None,
+        "name": clean,
+    }
+
+
+def company_matches_title(title: str, company: dict) -> bool:
+    """
+    Require the actual company name or ticker in the headline.
+    This prevents unrelated companies from entering the results.
+    """
+
+    title_lower = title.lower()
+    name = company["name"].strip()
+
+    aliases = [name]
+
+    # Common company-name aliases.
+    known_aliases = {
+        "Apple Inc.": ["Apple", "Apple Inc"],
+        "NVIDIA Corporation": ["NVIDIA", "Nvidia Corporation"],
+        "Microsoft Corporation": ["Microsoft"],
+        "Amazon.com, Inc.": ["Amazon"],
+        "Alphabet Inc.": ["Alphabet", "Google"],
+        "Meta Platforms, Inc.": ["Meta", "Facebook"],
+        "Tesla, Inc.": ["Tesla"],
+    }
+
+    aliases.extend(known_aliases.get(name, []))
+
+    ticker = company.get("ticker")
+    if ticker:
+        aliases.append(ticker)
+
+    for alias in aliases:
+        alias = alias.strip().lower()
+
+        if not alias:
+            continue
+
+        pattern = r"(?<!\w)" + re.escape(alias) + r"(?!\w)"
+
+        if re.search(pattern, title_lower):
+            return True
+
+    return False
+
+
 @app.get("/health")
 async def health():
     return {
         "status": "ok",
         "service": "HAN INVEST API",
-        "version": "0.3.0"
+        "version": "0.4.0"
     }
 
 
@@ -159,19 +235,25 @@ async def universe():
 async def news(
     q: str = Query(..., min_length=2, max_length=100)
 ):
-    cache_key = f"news:finance:{q.lower()}"
+    company = await resolve_company(q)
+
+    company_name = company["name"]
+    ticker = company.get("ticker")
+
+    cache_key = f"news:v2:{company_name.lower()}"
+
     cached = get_cache(cache_key, NEWS_CACHE_TTL)
 
     if cached is not None:
         return cached
 
     finance_query = (
-        f'"{q}" AND '
+        f'"{company_name}" AND '
         '(stock OR shares OR earnings OR revenue OR profit '
         'OR forecast OR analyst OR valuation OR dividend '
         'OR buyback OR merger OR acquisition OR lawsuit '
         'OR regulation OR tariff OR financial results '
-        'OR investor OR trading)'
+        'OR investor OR trading OR business OR company)'
     )
 
     url = (
@@ -188,11 +270,13 @@ async def news(
         if exc.status_code == 503:
             return {
                 "query": q,
+                "company": company_name,
+                "ticker": ticker,
                 "source": "GDELT",
                 "count": 0,
                 "articles": [],
                 "status": "temporarily_unavailable",
-                "message": "Новостной источник временно ограничил запросы. Попробуйте позже."
+                "message": "Новостной источник временно ограничил запросы."
             }
         raise
 
@@ -200,20 +284,23 @@ async def news(
     relevant_articles = []
 
     for article in articles:
-        title = (article.get("title") or "").lower()
+        title = article.get("title") or ""
 
-        if any(term in title for term in FINANCE_TERMS):
+        if company_matches_title(title, company):
             relevant_articles.append(article)
 
     result = {
         "query": q,
+        "company": company_name,
+        "ticker": ticker,
         "source": "GDELT",
         "count": len(relevant_articles),
-        "articles": relevant_articles,
+        "articles": relevant_articles[:20],
         "status": "ok"
     }
 
     save_cache(cache_key, result)
+
     return result
 
 
