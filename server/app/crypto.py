@@ -214,6 +214,74 @@ async def _scan_coingecko(client: httpx.AsyncClient, limit: int, min_volume: flo
     }
 
 
+async def _scan_coinpaprika(client: httpx.AsyncClient, limit: int, min_volume: float):
+    response = await client.get(
+        "https://api.coinpaprika.com/v1/tickers",
+        params={"quotes": "USD"},
+        headers={"accept": "application/json"},
+    )
+    response.raise_for_status()
+    rows = response.json()
+    if not isinstance(rows, list):
+        raise ValueError("CoinPaprika returned an unexpected response")
+
+    assets = []
+    for coin in rows:
+        if not isinstance(coin, dict):
+            continue
+        quote = (coin.get("quotes") or {}).get("USD") or {}
+        symbol = str(coin.get("symbol") or "").upper()
+        price = quote.get("price")
+        volume = float(quote.get("volume_24h") or 0)
+        if not symbol or price is None or volume < min_volume:
+            continue
+        if symbol in {"USDT", "USDC", "DAI", "FDUSD", "TUSD", "USDE"}:
+            continue
+
+        change_6h = float(quote.get("percent_change_6h") or 0)
+        change_24h = float(quote.get("percent_change_24h") or 0)
+        change_7d = float(quote.get("percent_change_7d") or 0)
+        trend_score = 25 if change_7d > 0 and change_24h > 0 else (
+            15 if change_7d > 0 else 5
+        )
+        momentum_score = max(0, min(25, round(12.5 + change_24h * 1.5)))
+        short_score = max(0, min(25, round(12.5 + change_6h)))
+        liquidity_score = min(25, max(0, round(math.log10(max(volume, 1)) * 2)))
+        score = trend_score + momentum_score + short_score + liquidity_score
+
+        assets.append({
+            "symbol": f"{symbol}USDT",
+            "name": coin.get("name"),
+            "price": float(price),
+            "change_24h_pct": round(change_24h, 2),
+            "momentum_6h_pct": round(change_6h, 2),
+            "momentum_24h_pct": round(change_24h, 2),
+            "quote_volume_24h": round(volume, 2),
+            "volume_ratio": None,
+            "ma20": None,
+            "ma50": None,
+            "hourly_volatility_pct": None,
+            "score": score,
+            "signal": "WATCH" if score >= 60 else "HOLD",
+            "risk": "Не рассчитан: резервный источник",
+            "market_cap_rank": coin.get("rank"),
+        })
+
+    assets.sort(key=lambda item: item["score"], reverse=True)
+    return {
+        "source": "CoinPaprika public market data (резервный режим)",
+        "scanned": min(len(assets), limit),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "assets": assets[:limit],
+        "notice": (
+            "Резервная оценка ограничена: нет часовых свечей и расчёта MA20/MA50 "
+            "и волатильности. Сигналы BUY не выдаются. Проверьте актуальность "
+            "last_updated и доступность пары на выбранной бирже. "
+            "Источник: CoinPaprika."
+        ),
+    }
+
+
 @router.get("/api/v1/crypto/scan")
 async def scan_crypto(
     limit: int = Query(30, ge=5, le=50),
@@ -250,15 +318,22 @@ async def scan_crypto(
             _cache[cache_key] = (time.time(), payload)
             return payload
         except (httpx.HTTPError, ValueError, TypeError) as fallback_exc:
-            logger.exception("CoinGecko fallback failed: %s", type(fallback_exc).__name__)
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Binance временно ограничила запросы, а резервный источник "
-                    "CoinGecko сейчас недоступен."
-                ),
-                headers={"Retry-After": str(exc.retry_after)},
-            ) from fallback_exc
+            logger.warning("CoinGecko fallback failed: %s", type(fallback_exc).__name__)
+            try:
+                async with httpx.AsyncClient(timeout=20) as third_client:
+                    payload = await _scan_coinpaprika(third_client, limit, min_volume)
+                _cache[cache_key] = (time.time(), payload)
+                return payload
+            except (httpx.HTTPError, ValueError, TypeError) as third_exc:
+                logger.exception("CoinPaprika fallback failed: %s", type(third_exc).__name__)
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Binance и CoinGecko временно ограничили запросы; "
+                        "резервный источник CoinPaprika сейчас недоступен."
+                    ),
+                    headers={"Retry-After": str(exc.retry_after)},
+                ) from third_exc
     except HTTPException:
         raise
     except (httpx.HTTPError, ValueError, TypeError) as exc:
