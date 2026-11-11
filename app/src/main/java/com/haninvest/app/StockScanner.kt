@@ -23,8 +23,6 @@ class StockScanner(private val context: Context) {
 
     private val dark = Color.rgb(30, 42, 65)
     private val blue = Color.rgb(55, 105, 245)
-    private val green = Color.rgb(25, 175, 115)
-    private val red = Color.rgb(220, 65, 65)
     private val muted = Color.rgb(125, 137, 158)
 
     private val symbols = listOf(
@@ -310,7 +308,10 @@ class StockScanner(private val context: Context) {
             14f, dark
         )
 
-        val button = Button(context).apply {
+        // Кнопка создаётся отдельно, чтобы избежать ошибки инициализации
+        val button = Button(context)
+
+        button.apply {
             text = "НАЙТИ ЛУЧШИЕ ВОЗМОЖНОСТИ"
             setTextColor(Color.WHITE)
             setBackgroundColor(blue)
