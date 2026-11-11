@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(
     title="HAN INVEST API",
     description="Market research and investment analysis service",
-    version="0.5.0",
+    version="0.6.0",
 )
 
 app.include_router(crypto_router)
@@ -230,7 +230,7 @@ async def health():
     return {
         "status": "ok",
         "service": "HAN INVEST API",
-        "version": "0.5.0"
+        "version": "0.6.0"
     }
 
 
