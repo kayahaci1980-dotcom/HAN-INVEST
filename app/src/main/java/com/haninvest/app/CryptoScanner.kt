@@ -103,7 +103,7 @@ class CryptoScanner(private val context: Context) {
                     val signal = coin.optString("signal", "WATCH")
                     out.append("${i + 1}. $name ($symbol)\n")
                     if (!price.isNaN()) {
-                        out.append(String.format(Locale.US, "Цена: $%.6f USD\n", price))
+                        out.append(String.format(Locale.US, "Цена: \\$%.6f USD\n", price))
                     }
                     if (!change.isNaN()) {
                         out.append(String.format(Locale.US, "Изменение 24ч: %.2f%%\n", change))
