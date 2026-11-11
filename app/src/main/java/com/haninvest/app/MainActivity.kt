@@ -81,7 +81,7 @@ class MainActivity : Activity() {
             connection.readTimeout = 15000
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty(
-                "User-Agent", "HAN-INVEST-Android/2.2"
+                "User-Agent", "HAN-INVEST-Android/2.3"
             )
             if (connection.responseCode !in 200..299) {
                 throw Exception("HTTP ${connection.responseCode}")
@@ -102,7 +102,7 @@ class MainActivity : Activity() {
             connection.connectTimeout = 20000
             connection.readTimeout = 20000
             connection.setRequestProperty(
-                "User-Agent", "HAN-INVEST-Android/2.2"
+                "User-Agent", "HAN-INVEST-Android/2.3"
             )
             if (connection.responseCode !in 200..299) {
                 throw Exception("HTTP ${connection.responseCode}")
@@ -538,6 +538,10 @@ class MainActivity : Activity() {
 
         // СКАНЕР АКЦИЙ И ETF
         root.addView(StockScanner(this).createView())
+        root.addView(space(18))
+
+        // ИСТОРИЧЕСКОЕ ТЕСТИРОВАНИЕ 2.3
+        root.addView(BacktestEngine(this).createView())
         root.addView(space(18))
 
         root.addView(
