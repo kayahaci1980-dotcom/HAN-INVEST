@@ -81,7 +81,7 @@ class MainActivity : Activity() {
             connection.readTimeout = 15000
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty(
-                "User-Agent", "HAN-INVEST-Android/2.1"
+                "User-Agent", "HAN-INVEST-Android/2.2"
             )
             if (connection.responseCode !in 200..299) {
                 throw Exception("HTTP ${connection.responseCode}")
@@ -102,7 +102,7 @@ class MainActivity : Activity() {
             connection.connectTimeout = 20000
             connection.readTimeout = 20000
             connection.setRequestProperty(
-                "User-Agent", "HAN-INVEST-Android/2.1"
+                "User-Agent", "HAN-INVEST-Android/2.2"
             )
             if (connection.responseCode !in 200..299) {
                 throw Exception("HTTP ${connection.responseCode}")
@@ -390,8 +390,7 @@ class MainActivity : Activity() {
             }
 
             out.append(
-                "\nИсточник: Министерство финансов США.\n" +
-                "Это рыночная доходность казначейских бумаг, " +
+                "\nЭто рыночная доходность казначейских бумаг, " +
                 "а не гарантированная прибыль инвестора."
             )
             out.toString()
@@ -537,7 +536,7 @@ class MainActivity : Activity() {
             ::loadTreasury
         )
 
-        // НОВЫЙ СКАНЕР АКЦИЙ И ETF
+        // СКАНЕР АКЦИЙ И ETF
         root.addView(StockScanner(this).createView())
         root.addView(space(18))
 
@@ -660,6 +659,41 @@ class MainActivity : Activity() {
                 12f, muted
             )
         )
+
+        // РАСКРЫВАЮЩИЙСЯ РАЗДЕЛ ИСТОЧНИКОВ ДАННЫХ
+        val sourcesToggle = Button(this).apply {
+            text = "О ПРИЛОЖЕНИИ И ИСТОЧНИКАХ ДАННЫХ"
+            setTextColor(blue)
+            background = bg(Color.WHITE, 13)
+        }
+
+        val sourcesInfo = label(
+            "Источники рыночных данных:\n" +
+            "• Валюты — Frankfurter API\n" +
+            "• Золото, серебро, нефть и индексы — SnapData\n" +
+            "• Криптовалюты — CoinGecko\n" +
+            "• Облигации США — Министерство финансов США\n" +
+            "• Акции и ETF — Alpha Vantage\n\n" +
+            "Методология: приложение показывает опубликованные котировки " +
+            "и рассчитывает показатели на основе исторических данных. " +
+            "Данные могут иметь задержку. Анализ не гарантирует доходность.",
+            12f, muted
+        )
+
+        sourcesInfo.visibility = View.GONE
+
+        sourcesToggle.setOnClickListener {
+            sourcesInfo.visibility =
+                if (sourcesInfo.visibility == View.VISIBLE)
+                    View.GONE
+                else
+                    View.VISIBLE
+        }
+
+        root.addView(space(10))
+        root.addView(sourcesToggle)
+        root.addView(space(6))
+        root.addView(sourcesInfo)
 
         scroll.addView(root)
         setContentView(scroll)
