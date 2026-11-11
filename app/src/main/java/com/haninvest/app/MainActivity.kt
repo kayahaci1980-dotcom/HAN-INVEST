@@ -520,11 +520,8 @@ class MainActivity : Activity() {
             "Мировые цены на нефть за баррель.",
             ::loadOil
         )
-        addMarketCard(
-            root, "₿ Криптовалюты",
-            "BTC, ETH, SOL и BNB. Изменение за 24 часа.",
-            ::loadCrypto
-        )
+        root.addView(CryptoScanner(this).createView())
+        root.addView(space(17))
         addMarketCard(
             root, "📈 Биржевые индексы",
             "Опубликованные значения доступных индексов.",
