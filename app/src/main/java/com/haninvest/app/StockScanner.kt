@@ -13,6 +13,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
 import kotlin.math.sqrt
+import kotlin.math.max
 
 class StockScanner(private val context: Context) {
 
@@ -22,12 +23,31 @@ class StockScanner(private val context: Context) {
 
     private val dark = Color.rgb(30, 42, 65)
     private val blue = Color.rgb(55, 105, 245)
+    private val green = Color.rgb(25, 175, 115)
+    private val red = Color.rgb(220, 65, 65)
     private val muted = Color.rgb(125, 137, 158)
+
+    private val symbols = listOf(
+        "AAPL", "MSFT", "NVDA", "AMZN",
+        "GOOGL", "SPY", "QQQ", "TSLA"
+    )
+
+    private data class Candidate(
+        val symbol: String,
+        val price: Double,
+        val change5: Double,
+        val change20: Double,
+        val volatility: Double,
+        val stopPercent: Double,
+        val score: Int,
+        val signal: String,
+        val date: String
+    )
 
     private fun dp(value: Int): Int =
         (value * context.resources.displayMetrics.density).toInt()
 
-    private fun text(
+    private fun makeText(
         value: String,
         size: Float,
         color: Int,
@@ -39,7 +59,10 @@ class StockScanner(private val context: Context) {
         if (bold) setTypeface(null, Typeface.BOLD)
     }
 
-    private fun request(symbol: String, key: String): String {
+    private fun request(
+        symbol: String,
+        key: String
+    ): Candidate {
         val encoded = URLEncoder.encode(symbol, "UTF-8")
         val address =
             "https://www.alphavantage.co/query" +
@@ -53,7 +76,7 @@ class StockScanner(private val context: Context) {
             connection.connectTimeout = 20000
             connection.readTimeout = 20000
             connection.setRequestProperty(
-                "User-Agent", "HAN-INVEST-Android/2.1"
+                "User-Agent", "HAN-INVEST-Android/2.2"
             )
 
             if (connection.responseCode !in 200..299) {
@@ -75,15 +98,13 @@ class StockScanner(private val context: Context) {
 
             val series = json.optJSONObject(
                 "Time Series (Daily)"
-            ) ?: throw Exception(
-                "Нет истории цен. Проверьте тикер и API-ключ."
-            )
+            ) ?: throw Exception("История цен недоступна")
 
             val dates = series.keys().asSequence()
                 .sortedDescending().toList()
 
-            if (dates.size < 21) {
-                throw Exception("Недостаточно исторических данных")
+            if (dates.size < 60) {
+                throw Exception("Недостаточно истории")
             }
 
             val prices = dates.map {
@@ -91,61 +112,164 @@ class StockScanner(private val context: Context) {
             }
 
             val latest = prices[0]
-            val old20 = prices[20]
-            val old60 = prices.getOrNull(60) ?: prices.last()
+            val ma20 = prices.take(20).average()
+            val ma50 = prices.take(50).average()
 
-            val return20 = (latest / old20 - 1) * 100
-            val return60 = (latest / old60 - 1) * 100
+            val change5 =
+                (latest / prices[5] - 1) * 100
 
-            val dailyReturns = (0 until minOf(60, prices.size - 1))
-                .map { prices[it] / prices[it + 1] - 1 }
+            val change20 =
+                (latest / prices[20] - 1) * 100
+
+            val dailyReturns =
+                (0 until 20).map {
+                    prices[it] / prices[it + 1] - 1
+                }
 
             val average = dailyReturns.average()
             val variance = dailyReturns.map {
                 (it - average) * (it - average)
             }.average()
 
-            val volatility = sqrt(variance) * sqrt(252.0) * 100
+            val dailyVolatility = sqrt(variance)
+            val annualVolatility =
+                dailyVolatility * sqrt(252.0) * 100
 
-            var peak = 0.0
-            var maxDrawdown = 0.0
+            val stopPercent = max(
+                2.0,
+                dailyVolatility * 2.0 * 100
+            )
 
-            for (price in prices.asReversed()) {
-                if (price > peak) peak = price
-                if (peak > 0) {
-                    val drawdown = (price / peak - 1) * 100
-                    if (drawdown < maxDrawdown) {
-                        maxDrawdown = drawdown
-                    }
-                }
+            var score = 0
+
+            if (latest > ma20) score += 25
+            if (ma20 > ma50) score += 25
+            if (change5 > 0) score += 20
+            if (change20 > 0) score += 20
+            if (annualVolatility < 50) score += 10
+
+            val signal = when {
+                score >= 80 && annualVolatility < 50 ->
+                    "НАБЛЮДАТЬ: сильный сигнал"
+                score >= 60 ->
+                    "НАБЛЮДАТЬ"
+                else ->
+                    "НЕ ВХОДИТЬ"
             }
 
-            val risk = when {
-                volatility < 15 -> "Относительно низкая"
-                volatility < 30 -> "Средняя"
-                volatility < 50 -> "Высокая"
-                else -> "Очень высокая"
-            }
-
-            return String.format(
-                Locale.US,
-                "АКТИВ: %s\n" +
-                "Дата последней цены: %s\n" +
-                "Последняя цена закрытия: $%.2f\n\n" +
-                "Изменение за 20 торговых дней: %.2f%%\n" +
-                "Изменение примерно за 60 дней: %.2f%%\n\n" +
-                "Годовая волатильность: %.2f%%\n" +
-                "Максимальная просадка в выборке: %.2f%%\n" +
-                "Оценка риска: %s\n\n" +
-                "Источник: Alpha Vantage.\n" +
-                "Используются дневные цены закрытия. " +
-                "Это исторический анализ, не прогноз.",
-                symbol, dates[0], latest, return20,
-                return60, volatility, maxDrawdown, risk
+            return Candidate(
+                symbol = symbol,
+                price = latest,
+                change5 = change5,
+                change20 = change20,
+                volatility = annualVolatility,
+                stopPercent = stopPercent,
+                score = score,
+                signal = signal,
+                date = dates[0]
             )
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun analyze(
+        key: String,
+        capital: Double
+    ): String {
+        val results = mutableListOf<Candidate>()
+        val errors = mutableListOf<String>()
+
+        for (symbol in symbols) {
+            try {
+                results.add(request(symbol, key))
+            } catch (e: Exception) {
+                errors.add("$symbol: ${e.message}")
+            }
+        }
+
+        if (results.isEmpty()) {
+            return "Не удалось получить данные.\n\n" +
+                errors.joinToString("\n")
+        }
+
+        val sorted = results.sortedWith(
+            compareByDescending<Candidate> { it.score }
+                .thenBy { it.volatility }
+        )
+
+        val out = StringBuilder()
+
+        out.append("HAN INVEST — РЕЗУЛЬТАТЫ СКАНИРОВАНИЯ\n")
+        out.append("Горизонт анализа: 1–3 дня\n")
+        out.append("Капитал: $")
+        out.append(String.format(Locale.US, "%.2f", capital))
+        out.append("\nПлановый риск: 2% на сделку\n")
+        out.append("Дата котировок: ${sorted.first().date}\n\n")
+
+        for ((index, item) in sorted.withIndex()) {
+            val riskMoney = capital * 0.02
+            val position = riskMoney /
+                (item.stopPercent / 100.0)
+
+            val safePosition = position.coerceAtMost(capital)
+            val stop = item.price *
+                (1 - item.stopPercent / 100.0)
+            val target = item.price *
+                (1 + item.stopPercent * 2 / 100.0)
+
+            out.append("${index + 1}. ${item.symbol}\n")
+            out.append("Оценка сигнала: ${item.score}/100\n")
+            out.append("${item.signal}\n")
+            out.append(
+                String.format(
+                    Locale.US,
+                    "Цена закрытия: $%.2f\n" +
+                    "Изменение за 5 дней: %.2f%%\n" +
+                    "Изменение за 20 дней: %.2f%%\n" +
+                    "Годовая волатильность: %.2f%%\n" +
+                    "Расчётная сумма позиции: $%.2f\n" +
+                    "Условный стоп: $%.2f\n" +
+                    "Цель 2:1: $%.2f\n\n",
+                    item.price,
+                    item.change5,
+                    item.change20,
+                    item.volatility,
+                    safePosition,
+                    stop,
+                    target
+                )
+            )
+        }
+
+        val best = sorted.firstOrNull {
+            it.score >= 80 && it.volatility < 50
+        }
+
+        out.append(
+            if (best == null) {
+                "ИТОГ: подходящего сигнала нет. " +
+                    "Сегодня лучше не входить."
+            } else {
+                "ЛУЧШИЙ КАНДИДАТ: ${best.symbol}\n" +
+                    "Это кандидат для дальнейшей проверки, " +
+                    "а не команда покупать."
+            }
+        )
+
+        if (errors.isNotEmpty()) {
+            out.append("\n\nНе удалось проверить:\n")
+            out.append(errors.joinToString("\n"))
+        }
+
+        out.append(
+            "\n\nВажно: используются дневные цены закрытия. " +
+            "Сигналы не являются прогнозом. " +
+            "Стоп не гарантирует ограничение фактического убытка. " +
+            "Комиссии и проскальзывание не учтены."
+        )
+
+        return out.toString()
     }
 
     fun createView(): View {
@@ -155,75 +279,75 @@ class StockScanner(private val context: Context) {
             setBackgroundColor(Color.WHITE)
         }
 
-        box.addView(text(
-            "Сканер акций и ETF", 20f, dark, true
+        box.addView(makeText(
+            "Автоматический сканер", 20f, dark, true
         ))
-        box.addView(text(
-            "Анализ исторических цен мировых активов",
+
+        box.addView(makeText(
+            "Поиск возможностей на срок до 3 дней",
             13f, muted
         ))
 
         val keyInput = EditText(context).apply {
-            hint = "API-ключ Alpha Vantage"
+            hint = "Ключ доступа"
             inputType = InputType.TYPE_CLASS_TEXT or
                 InputType.TYPE_TEXT_VARIATION_PASSWORD
             setText(prefs.getString("alpha_key", ""))
         }
 
-        val ticker = EditText(context).apply {
-            hint = "Тикер: AAPL, MSFT, TSLA, SPY"
-            inputType = InputType.TYPE_CLASS_TEXT
-            setSingleLine(true)
+        val capitalInput = EditText(context).apply {
+            hint = "Размер капитала в USD"
+            inputType = InputType.TYPE_CLASS_NUMBER or
+                InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setText("1000")
         }
 
         box.addView(keyInput)
-        box.addView(ticker)
+        box.addView(capitalInput)
 
-        val result = text(
-            "Введите API-ключ и тикер акции или ETF.",
+        val result = makeText(
+            "Введите ключ доступа и капитал, затем запустите сканирование.",
             14f, dark
         )
 
         val button = Button(context).apply {
-            text = "АНАЛИЗИРОВАТЬ"
+            text = "НАЙТИ ЛУЧШИЕ ВОЗМОЖНОСТИ"
             setTextColor(Color.WHITE)
             setBackgroundColor(blue)
 
             setOnClickListener {
                 val key = keyInput.text.toString().trim()
-                val symbol = ticker.text.toString()
-                    .trim().uppercase(Locale.US)
+                val capital = capitalInput.text.toString()
+                    .replace(",", ".").toDoubleOrNull()
 
-                if (key.isBlank() || symbol.isBlank()) {
-                    result.text = "Введите API-ключ и тикер."
+                if (key.isBlank() || capital == null ||
+                    capital <= 0
+                ) {
+                    result.text =
+                        "Введите ключ доступа и правильный размер капитала."
                     return@setOnClickListener
                 }
 
-                if (!symbol.matches(
-                    Regex("[A-Z0-9.\\-]{1,20}")
-                )) {
-                    result.text = "Проверьте формат тикера."
-                    return@setOnClickListener
-                }
+                prefs.edit()
+                    .putString("alpha_key", key)
+                    .apply()
 
-                prefs.edit().putString("alpha_key", key).apply()
-                result.text = "Загружаем историю цен..."
+                isEnabled = false
+                result.text =
+                    "Проверяем 8 активов. Это может занять время..."
 
                 Thread {
-                    try {
-                        val answer = request(symbol, key)
-                        (context as? android.app.Activity)
-                            ?.runOnUiThread {
-                                result.text = answer
-                            }
+                    val answer = try {
+                        analyze(key, capital)
                     } catch (e: Exception) {
-                        (context as? android.app.Activity)
-                            ?.runOnUiThread {
-                                result.text =
-                                    "Не удалось выполнить анализ.\n\n" +
-                                    (e.message ?: "Попробуйте позже.")
-                            }
+                        "Ошибка анализа: ${e.message}"
                     }
+
+                    (context as? android.app.Activity)
+                        ?.runOnUiThread {
+                            result.text = answer
+                            button.isEnabled = true
+                        }
                 }.start()
             }
         }
