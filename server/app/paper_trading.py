@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.crypto import scan_crypto
 from app.bybit import scan_bybit
+from app.exchange_scanners import scan_coinbase, scan_okx
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/paper", tags=["paper-trading"])
@@ -301,11 +302,13 @@ async def _scan_cycle() -> None:
                 scan_bybit(limit=50, min_volume=1_000_000,
                            capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
                            fee_rate=_FEE_RATE),
+                scan_coinbase(limit=50, min_volume=1_000_000),
+                scan_okx(limit=50, min_volume=1_000_000),
                 return_exceptions=True,
             )
             errors = []
             successes = 0
-            for exchange, payload in zip(("Binance", "Bybit"), results):
+            for exchange, payload in zip(("Binance", "Bybit", "Coinbase Exchange", "OKX"), results):
                 if isinstance(payload, BaseException):
                     errors.append(exchange + ": " + type(payload).__name__)
                     continue
