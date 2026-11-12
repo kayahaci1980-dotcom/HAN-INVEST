@@ -126,6 +126,7 @@ class CryptoScanner(private val context: Context) {
         var risk = 1.0
         var binance: ExchangeResult? = null
         var bybit: ExchangeResult? = null
+        var marketContext: JSONObject? = null
         var loadingCount = 0
 
         lateinit var render: () -> Unit
@@ -157,6 +158,7 @@ class CryptoScanner(private val context: Context) {
             val atr = coin.optDouble("atr_14", Double.NaN)
             val momentum = coin.optDouble("momentum_6h_pct", Double.NaN)
             val volumeRatio = coin.optDouble("volume_ratio", Double.NaN)
+            val relativeStrength = coin.optDouble("relative_strength_vs_btc_24h_pct", Double.NaN)
             val quoteVolume = coin.optDouble("quote_volume_24h", 0.0)
             val sizing = coin.optJSONObject("position_sizing")
             val plannedLoss = sizing?.optDouble("potential_loss_at_stop_usdt", Double.NaN) ?: Double.NaN
@@ -170,6 +172,7 @@ class CryptoScanner(private val context: Context) {
                 !atr.isNaN() && atr > 0.0 &&
                 !momentum.isNaN() && momentum >= 1.0 &&
                 !volumeRatio.isNaN() && volumeRatio >= 1.2 &&
+                !relativeStrength.isNaN() && relativeStrength > 0.0 &&
                 quoteVolume >= 1_000_000.0 &&
                 coin.optBoolean("volume_confirmed", false) &&
                 btcOk &&
@@ -207,6 +210,7 @@ class CryptoScanner(private val context: Context) {
                 13f, dark
             ))
             card.addView(label("ATR(14) дневной (1D): ${coin.optString("atr_14_1d", coin.optString("atr_14", "—"))}", 13f, dark))
+            card.addView(label("Сила против BTC за 24 ч.: ${coin.optString("relative_strength_vs_btc_24h_pct", "—")}%", 13f, dark))
             card.addView(label(
                 "Объём к среднему: ${coin.optString("volume_ratio", "—")}x   |   Подтверждён: ${if (coin.optBoolean("volume_confirmed")) "ДА" else "НЕТ"}",
                 13f, dark
@@ -257,6 +261,43 @@ class CryptoScanner(private val context: Context) {
             } else {
             val maxRisk = capital * risk / 100.0
             if (selectedTab == "HOME") {
+                marketContext?.let { context ->
+                    val market = context.optJSONObject("market")
+                    if (market != null && market.optBoolean("available")) {
+                        content.addView(label(
+                            "ОБЩИЙ КРИПТОРЫНОК  •  ${market.optString("market_state_label", "—")}",
+                            14f, dark, true
+                        ))
+                        content.addView(label(
+                            "Доминирование BTC: ${market.optString("btc_dominance_pct", "—")}%  |  Изменение капитализации за 24 ч.: ${market.optString("market_cap_change_24h_pct", "—")}%",
+                            12f, muted
+                        ))
+                        content.addView(label(
+                            "Капитализация: ${formatNumber(market.optDouble("total_market_cap_usd", 0.0), 0)} USD",
+                            12f, muted
+                        ))
+                    } else {
+                        content.addView(label("Общий рынок: данные временно недоступны.", 12f, muted))
+                    }
+                    val news = context.optJSONObject("news")
+                    if (news != null && news.optBoolean("available")) {
+                        content.addView(label("ПОСЛЕДНИЕ КРИПТОНОВОСТИ", 14f, dark, true))
+                        val articles = news.optJSONArray("articles") ?: JSONArray()
+                        for (i in 0 until minOf(articles.length(), 5)) {
+                            val article = articles.optJSONObject(i) ?: continue
+                            content.addView(label(
+                                "• ${article.optString("title", "")}",
+                                12f, dark
+                            ))
+                            content.addView(label(
+                                "${article.optString("source", "Источник")}  |  ${article.optString("sentiment", "Без оценки")}",
+                                10f, muted
+                            ))
+                        }
+                    } else {
+                        content.addView(label("Новости: источник временно недоступен.", 12f, muted))
+                    }
+                }
                 content.addView(label(
                     "Сравнение Binance и Bybit. В рейтинге учитывается оценка, а не порядок ответа API.",
                     12f, muted
@@ -328,6 +369,30 @@ class CryptoScanner(private val context: Context) {
             }.start()
         }
 
+        fun fetchMarketContext() {
+            Thread {
+                val result = try {
+                    val connection = URL("https://han-invest-api-test.onrender.com/api/v1/crypto/market-context").openConnection() as HttpURLConnection
+                    try {
+                        connection.requestMethod = "GET"
+                        connection.connectTimeout = 15000
+                        connection.readTimeout = 20000
+                        connection.setRequestProperty("Accept", "application/json")
+                        if (connection.responseCode !in 200..299) throw Exception("HTTP ${connection.responseCode}")
+                        JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+                    } finally {
+                        connection.disconnect()
+                    }
+                } catch (_: Exception) {
+                    null
+                }
+                Handler(Looper.getMainLooper()).post {
+                    marketContext = result
+                    render()
+                }
+            }.start()
+        }
+
         fun loadAll() {
             capital = capitalInput.text.toString().trim().toDoubleOrNull() ?: 0.0
             risk = riskInput.text.toString().trim().toDoubleOrNull() ?: 0.0
@@ -341,6 +406,8 @@ class CryptoScanner(private val context: Context) {
             }
             binance = null
             bybit = null
+            marketContext = null
+            fetchMarketContext()
             loadingCount = 2
             status.text = "Загружаем Binance и Bybit независимо..."
             render()
