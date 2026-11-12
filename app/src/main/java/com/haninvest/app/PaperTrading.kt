@@ -28,6 +28,126 @@ class PaperTrading(private val context: Context) {
     private fun positions() = readArray("positions")
     private fun history() = readArray("history")
 
+    // Получает реальные публичные Spot-котировки обеих бирж и обновляет только уже открытые PAPER-позиции.
+    // При недоступности одной биржи её старые цены сохраняются; данные не подменяются нулями.
+    fun refreshOpenPositionsFromExchanges(): String {
+        val open = positions()
+        if (open.length() == 0) return "Нет открытых PAPER-позиций для обновления."
+
+        val needBinance = (0 until open.length()).any {
+            !open.optJSONObject(it)?.optString("exchange", "Binance Spot").orEmpty().contains("Bybit", true)
+        }
+        val needBybit = (0 until open.length()).any {
+            open.optJSONObject(it)?.optString("exchange", "Binance Spot").orEmpty().contains("Bybit", true)
+        }
+        val prices = mutableMapOf<String, MutableMap<String, Double>>()
+        val errors = mutableListOf<String>()
+
+        fun fetchText(address: String): String {
+            val connection = URL(address).openConnection() as HttpURLConnection
+            return try {
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 12000
+                connection.readTimeout = 20000
+                connection.setRequestProperty("Accept", "application/json")
+                connection.setRequestProperty("User-Agent", "HAN-INVEST-Android/2.7")
+                if (connection.responseCode !in 200..299) {
+                    throw IllegalStateException("HTTP ${connection.responseCode}")
+                }
+                connection.inputStream.bufferedReader().use { it.readText() }
+            } finally {
+                connection.disconnect()
+            }
+        }
+
+        if (needBinance) {
+            try {
+                val list = JSONArray(fetchText("https://api.binance.com/api/v3/ticker/price"))
+                val map = mutableMapOf<String, Double>()
+                for (i in 0 until list.length()) {
+                    val item = list.optJSONObject(i) ?: continue
+                    val symbol = item.optString("symbol")
+                    val price = item.optString("price").toDoubleOrNull() ?: continue
+                    if (symbol.isNotBlank() && price > 0.0) map[symbol] = price
+                }
+                prices["Binance"] = map
+            } catch (e: Exception) {
+                errors.add("Binance: ${e.message ?: "нет данных"}")
+            }
+        }
+
+        if (needBybit) {
+            try {
+                val response = JSONObject(fetchText("https://api.bybit.com/v5/market/tickers?category=spot"))
+                if (response.optInt("retCode", -1) != 0) {
+                    throw IllegalStateException(response.optString("retMsg", "ошибка API"))
+                }
+                val list = response.optJSONObject("result")?.optJSONArray("list") ?: JSONArray()
+                val map = mutableMapOf<String, Double>()
+                for (i in 0 until list.length()) {
+                    val item = list.optJSONObject(i) ?: continue
+                    val symbol = item.optString("symbol")
+                    val price = item.optString("lastPrice").toDoubleOrNull() ?: continue
+                    if (symbol.isNotBlank() && price > 0.0) map[symbol] = price
+                }
+                prices["Bybit"] = map
+            } catch (e: Exception) {
+                errors.add("Bybit: ${e.message ?: "нет данных"}")
+            }
+        }
+
+        var cash = balance()
+        val remaining = JSONArray()
+        val log = history()
+        val now = System.currentTimeMillis()
+        var updated = 0
+        var closed = 0
+        for (i in 0 until open.length()) {
+            val position = open.optJSONObject(i) ?: continue
+            val exchange = position.optString("exchange", "Binance Spot")
+            val symbol = position.optString("symbol")
+            val exchangeKey = if (exchange.contains("Bybit", true)) "Bybit" else "Binance"
+            val price = prices[exchangeKey]?.get(symbol)
+            if (price == null || price <= 0.0 || price.isNaN()) {
+                remaining.put(position)
+                continue
+            }
+
+            updated++
+            position.put("last_price", price)
+            position.put("last_updated", now)
+            val entry = position.optDouble("entry")
+            val quantity = position.optDouble("quantity")
+            val stop = position.optDouble("stop")
+            val reason = when {
+                stop > 0.0 && price <= stop -> "STOP LOSS"
+                price >= entry * 1.10 -> "TAKE PROFIT +10%"
+                else -> ""
+            }
+            if (reason.isNotEmpty()) {
+                cash += quantity * price
+                log.put(JSONObject()
+                    .put("type", "SELL")
+                    .put("symbol", symbol)
+                    .put("exchange", exchange)
+                    .put("price", price)
+                    .put("quantity", quantity)
+                    .put("pnl", (price - entry) * quantity)
+                    .put("reason", reason)
+                    .put("time", now))
+                closed++
+            } else {
+                remaining.put(position)
+            }
+        }
+
+        prefs.edit().putFloat("cash", cash.toFloat()).apply()
+        saveArray("positions", remaining)
+        saveArray("history", log)
+        val errorText = if (errors.isEmpty()) "" else " Ошибки: " + errors.joinToString("; ")
+        return "Котировки бирж обновлены: $updated из ${open.length()} позиций; закрыто по Stop/Take: $closed.$errorText"
+    }
+
     fun processScan(json: JSONObject): String {
         var cash = balance()
         val open = positions()
@@ -83,10 +203,9 @@ class PaperTrading(private val context: Context) {
             val price = coin.optDouble("price", Double.NaN)
             val score = coin.optInt("score", 0)
             val positionKey = "$exchange:$symbol"
-            // Покупаем только по реальной подтверждённой Spot-паре выбранной биржи.
-            // Технические фильтры BUY/объёма/BTC не применяются.
+            // Единственные условия PAPER-покупки: известная биржа, цена, ещё нет позиции и score >= 83.
             if (symbol.isBlank() || exchange.isBlank() || positionKey in held ||
-                !coin.optBoolean("trade_ready", false) || price <= 0 || price.isNaN() || score < 83) continue
+                price <= 0 || price.isNaN() || score < 83) continue
             val spend = minOf(100.0, cash)
             if (spend < 5.0) continue
             val stopValue = coin.optDouble("stop_loss", Double.NaN)
@@ -244,6 +363,26 @@ class PaperTrading(private val context: Context) {
             }
         }
         box.addView(scan)
+        val refreshQuotes = Button(context).apply {
+            text = "ОБНОВИТЬ ЦЕНЫ PAPER С BINANCE + BYBIT"
+            setOnClickListener {
+                isEnabled = false
+                status.text = "Получаем актуальные котировки напрямую с бирж..."
+                Thread {
+                    val message = try {
+                        refreshOpenPositionsFromExchanges()
+                    } catch (e: Exception) {
+                        "Не удалось обновить котировки: ${e.message}"
+                    }
+                    (context as? android.app.Activity)?.runOnUiThread {
+                        status.text = message
+                        isEnabled = true
+                        render(details)
+                    }
+                }.start()
+            }
+        }
+        box.addView(refreshQuotes)
         val reset = Button(context).apply {
             text = "СБРОСИТЬ СЧЁТ ДО \\$1 000"
             setOnClickListener {
