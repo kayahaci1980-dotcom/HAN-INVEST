@@ -508,7 +508,7 @@ class CryptoScanner(private val context: Context) {
                     }
                 }
                 content.addView(label(
-                    "Сравнение Binance и Bybit. В рейтинге учитывается оценка, а не порядок ответа API.",
+                    "Сравнение Binance, Bybit, Coinbase Exchange и OKX. В рейтинге учитывается оценка, а не порядок ответа API.",
                     12f, muted
                 ))
                 val combined = mutableListOf<Pair<JSONObject, ExchangeResult>>()
