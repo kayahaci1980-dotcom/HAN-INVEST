@@ -5,6 +5,7 @@ import asyncio
 import re
 import json
 from typing import Any
+from contextlib import asynccontextmanager
 from urllib.parse import quote_plus
 
 import httpx
@@ -16,10 +17,21 @@ from app.paper_trading import router as paper_router, start_paper_worker, stop_p
 from app.exchange_scanners import router as exchange_router
 from fastapi.middleware.cors import CORSMiddleware
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Run virtual trading on the server, independently of the Android app.
+    start_paper_worker()
+    try:
+        yield
+    finally:
+        await stop_paper_worker()
+
+
 app = FastAPI(
     title="HAN INVEST API",
     description="Market research and investment analysis service",
-    version="0.6.0",
+    version="0.7.0",
+    lifespan=lifespan,
 )
 
 app.include_router(crypto_router)
