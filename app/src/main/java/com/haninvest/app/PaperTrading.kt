@@ -33,8 +33,6 @@ class PaperTrading(private val context: Context) {
         val open = positions()
         val log = history()
         val assets = json.optJSONArray("assets") ?: throw Exception("Сканер не вернул список активов")
-        val btc = json.optJSONObject("btc_market_filter")
-        val buyAllowed = btc?.optBoolean("buy_allowed", false) == true
         val now = System.currentTimeMillis()
 
         // Сначала проверяем уже открытые виртуальные позиции.
@@ -68,35 +66,28 @@ class PaperTrading(private val context: Context) {
             }
         }
 
-        // Покупаем только подтверждённые BUY-сигналы, без повторного входа в тот же актив.
-        val held = (0 until remaining.length()).mapNotNull { remaining.optJSONObject(it)?.optString("symbol") }.toSet()
-        if (buyAllowed) {
-            for (i in 0 until assets.length()) {
-                val coin = assets.optJSONObject(i) ?: continue
-                val symbol = coin.optString("symbol")
-                val price = coin.optDouble("price", Double.NaN)
-                val score = coin.optInt("score", 0)
-                if (symbol.isBlank() || symbol in held || price <= 0 || price.isNaN()) continue
-                if (coin.optString("signal") != "BUY" || score < 83 ||
-                    !coin.optBoolean("trade_ready") || !coin.optBoolean("volume_confirmed")) continue
-                val stopValue = coin.optDouble("stop_loss", Double.NaN)
-                val stop = if (!stopValue.isNaN() && stopValue > 0 && stopValue < price) stopValue else price * 0.97
-                val riskBudget = (cash + remainingValue(remaining)) * 0.01
-                val riskPerUnit = price - stop
-                val qtyByRisk = riskBudget / riskPerUnit
-                val maxSpend = (cash + remainingValue(remaining)) * 0.20
-                val spend = minOf(cash, maxSpend, qtyByRisk * price)
-                if (spend < 5.0) continue
-                val qty = spend / price
-                cash -= spend
-                remaining.put(JSONObject().put("symbol", symbol).put("entry", price)
-                    .put("last_price", price).put("stop", stop).put("quantity", qty)
-                    .put("cost", spend).put("opened_at", now).put("score", score))
-                held.plus(symbol)
-                log.put(JSONObject().put("type", "BUY").put("symbol", symbol)
-                    .put("price", price).put("quantity", qty).put("cost", spend)
-                    .put("score", score).put("time", now))
-            }
+        // Покупаем любой актив со score >= 83: без проверки BUY, объёма и BTC-фильтра.
+        // На каждую новую позицию выделяется фиксированно до 100 USDT.
+        val held = (0 until remaining.length()).mapNotNull { remaining.optJSONObject(it)?.optString("symbol") }.toMutableSet()
+        for (i in 0 until assets.length()) {
+            val coin = assets.optJSONObject(i) ?: continue
+            val symbol = coin.optString("symbol")
+            val price = coin.optDouble("price", Double.NaN)
+            val score = coin.optInt("score", 0)
+            if (symbol.isBlank() || symbol in held || price <= 0 || price.isNaN() || score < 83) continue
+            val spend = minOf(100.0, cash)
+            if (spend < 5.0) continue
+            val stopValue = coin.optDouble("stop_loss", Double.NaN)
+            val stop = if (!stopValue.isNaN() && stopValue > 0 && stopValue < price) stopValue else price * 0.97
+            val qty = spend / price
+            cash -= spend
+            remaining.put(JSONObject().put("symbol", symbol).put("entry", price)
+                .put("last_price", price).put("stop", stop).put("quantity", qty)
+                .put("cost", spend).put("opened_at", now).put("score", score))
+            held.add(symbol)
+            log.put(JSONObject().put("type", "BUY").put("symbol", symbol)
+                .put("price", price).put("quantity", qty).put("cost", spend)
+                .put("score", score).put("time", now))
         }
         prefs.edit().putFloat("cash", cash.toFloat()).putLong("last_scan", now).apply()
         saveArray("positions", remaining)
