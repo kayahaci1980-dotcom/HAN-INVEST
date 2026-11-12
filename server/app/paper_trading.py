@@ -349,6 +349,14 @@ async def paper_state():
 
 @router.post("/enable")
 async def enable_paper_trading():
+    if not _STORAGE_PERSISTENT:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Автоматический режим не включён: сначала настройте постоянный диск "
+                "и переменную PAPER_DB_PATH. Сейчас хранилище временное."
+            ),
+        )
     _init_db()
     with _connect() as db:
         db.execute(
