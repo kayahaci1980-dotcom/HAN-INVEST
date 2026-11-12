@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main
+      - ui-exchange-tabs-top3
 
 jobs:
   build:
