@@ -40,8 +40,13 @@ class PaperTrading(private val context: Context) {
         for (i in 0 until open.length()) {
             val p = open.getJSONObject(i)
             val symbol = p.optString("symbol")
+            // Старые позиции без exchange считаем Binance, поскольку прежний PAPER-сканер был Binance-only.
+            val exchange = p.optString("exchange", "Binance Spot")
             val coin = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
-                .firstOrNull { it.optString("symbol") == symbol }
+                .firstOrNull {
+                    it.optString("symbol") == symbol &&
+                    it.optString("exchange", "Binance Spot") == exchange
+                }
             val price = coin?.optDouble("price", Double.NaN) ?: Double.NaN
             val score = coin?.optInt("score", 0) ?: 0
             val entry = p.optDouble("entry")
@@ -58,7 +63,7 @@ class PaperTrading(private val context: Context) {
                 val proceeds = qty * price
                 cash += proceeds
                 log.put(JSONObject().put("type", "SELL").put("symbol", symbol)
-                    .put("price", price).put("quantity", qty)
+                    .put("exchange", exchange).put("price", price).put("quantity", qty)
                     .put("pnl", (price - entry) * qty).put("reason", reason).put("time", now))
             } else {
                 if (!price.isNaN()) p.put("last_price", price)
@@ -68,25 +73,32 @@ class PaperTrading(private val context: Context) {
 
         // Покупаем любой актив со score >= 83: без проверки BUY, объёма и BTC-фильтра.
         // На каждую новую позицию выделяется фиксированно до 100 USDT.
-        val held = (0 until remaining.length()).mapNotNull { remaining.optJSONObject(it)?.optString("symbol") }.toMutableSet()
+        val held = (0 until remaining.length()).mapNotNull { p ->
+            p?.let { it.optString("exchange", "Binance Spot") + ":" + it.optString("symbol") }
+        }.toMutableSet()
         for (i in 0 until assets.length()) {
             val coin = assets.optJSONObject(i) ?: continue
             val symbol = coin.optString("symbol")
+            val exchange = coin.optString("exchange")
             val price = coin.optDouble("price", Double.NaN)
             val score = coin.optInt("score", 0)
-            if (symbol.isBlank() || symbol in held || price <= 0 || price.isNaN() || score < 83) continue
+            val positionKey = "$exchange:$symbol"
+            // Покупаем только по реальной подтверждённой Spot-паре выбранной биржи.
+            // Технические фильтры BUY/объёма/BTC не применяются.
+            if (symbol.isBlank() || exchange.isBlank() || positionKey in held ||
+                !coin.optBoolean("trade_ready", false) || price <= 0 || price.isNaN() || score < 83) continue
             val spend = minOf(100.0, cash)
             if (spend < 5.0) continue
             val stopValue = coin.optDouble("stop_loss", Double.NaN)
             val stop = if (!stopValue.isNaN() && stopValue > 0 && stopValue < price) stopValue else price * 0.97
             val qty = spend / price
             cash -= spend
-            remaining.put(JSONObject().put("symbol", symbol).put("entry", price)
+            remaining.put(JSONObject().put("symbol", symbol).put("exchange", exchange).put("entry", price)
                 .put("last_price", price).put("stop", stop).put("quantity", qty)
                 .put("cost", spend).put("opened_at", now).put("score", score))
-            held.add(symbol)
+            held.add(positionKey)
             log.put(JSONObject().put("type", "BUY").put("symbol", symbol)
-                .put("price", price).put("quantity", qty).put("cost", spend)
+                .put("exchange", exchange).put("price", price).put("quantity", qty).put("cost", spend)
                 .put("score", score).put("time", now))
         }
         prefs.edit().putFloat("cash", cash.toFloat()).putLong("last_scan", now).apply()
@@ -122,7 +134,7 @@ class PaperTrading(private val context: Context) {
         for (i in 0 until open.length()) {
             val p = open.getJSONObject(i)
             val price = p.optDouble("last_price", p.optDouble("entry"))
-            out.append(p.optString("symbol")).append(" | вход ").append(money(p.optDouble("entry")))
+            out.append(p.optString("exchange", "Binance Spot")).append(" ").append(p.optString("symbol")).append(" | вход ").append(money(p.optDouble("entry")))
                 .append(" | сейчас ").append(money(price))
                 .append(" | P/L ").append(money((price-p.optDouble("entry"))*p.optDouble("quantity")))
                 .append("\n")
@@ -131,8 +143,8 @@ class PaperTrading(private val context: Context) {
         if (log.length() == 0) out.append("История пока пустая.\n")
         for (i in (log.length()-1 downTo maxOf(0, log.length()-10))) {
             val t = log.optJSONObject(i) ?: continue
-            out.append(t.optString("type")).append(" ").append(t.optString("symbol"))
-                .append(" @ ").append(money(t.optDouble("price")))
+            out.append(t.optString("type")).append(" ").append(t.optString("exchange", "Binance Spot"))
+                .append(" ").append(t.optString("symbol")).append(" @ ").append(money(t.optDouble("price")))
             if (t.optString("type") == "SELL") out.append(" | ").append(t.optString("reason"))
                 .append(" | P/L ").append(money(t.optDouble("pnl")))
             out.append("\n")
@@ -184,14 +196,39 @@ class PaperTrading(private val context: Context) {
                 status.text = "Получаем сигналы рынка..."
                 Thread {
                     try {
-                        val conn = URL("https://han-invest-api-test.onrender.com/api/v1/crypto/scan?limit=30&universe_limit=100&min_volume=1000000&risk_pct=1&capital_usdt=1000").openConnection() as HttpURLConnection
-                        val body = try {
-                            conn.connectTimeout = 20000
-                            conn.readTimeout = 30000
-                            if (conn.responseCode !in 200..299) throw Exception("HTTP ${conn.responseCode}")
-                            conn.inputStream.bufferedReader().use { it.readText() }
-                        } finally { conn.disconnect() }
-                        val message = processScan(JSONObject(body))
+                        val urls = listOf(
+                            "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?limit=30&universe_limit=100&min_volume=1000000&risk_pct=1&capital_usdt=1000",
+                            "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000"
+                        )
+                        val combined = JSONObject()
+                        val combinedAssets = JSONArray()
+                        val errors = mutableListOf<String>()
+                        for (url in urls) {
+                            try {
+                                val conn = URL(url).openConnection() as HttpURLConnection
+                                val body = try {
+                                    conn.connectTimeout = 20000
+                                    conn.readTimeout = 45000
+                                    if (conn.responseCode !in 200..299) throw Exception("HTTP ${conn.responseCode}")
+                                    conn.inputStream.bufferedReader().use { it.readText() }
+                                } finally { conn.disconnect() }
+                                val response = JSONObject(body)
+                                val list = response.optJSONArray("assets") ?: continue
+                                for (i in 0 until list.length()) {
+                                    val coin = list.optJSONObject(i) ?: continue
+                                    if (!coin.has("exchange")) {
+                                        coin.put("exchange", if (url.contains("/bybit/")) "Bybit Spot" else "Binance Spot")
+                                    }
+                                    combinedAssets.put(coin)
+                                }
+                            } catch (e: Exception) {
+                                errors.add(e.message ?: "ошибка соединения")
+                            }
+                        }
+                        if (combinedAssets.length() == 0) throw Exception("Обе биржи недоступны: " + errors.joinToString("; "))
+                        combined.put("assets", combinedAssets)
+                        val message = processScan(combined) + " Binance + Bybit."
+                        
                         (context as? android.app.Activity)?.runOnUiThread {
                             status.text = message
                             isEnabled = true
