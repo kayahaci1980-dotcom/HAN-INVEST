@@ -40,6 +40,10 @@ class CryptoScanner(private val context: Context) {
     private fun dp(value: Int): Int =
         (value * context.resources.displayMetrics.density).toInt()
 
+    private fun formatNumber(value: Double, digits: Int = 6): String =
+        if (value.isNaN() || value.isInfinite()) "—"
+        else String.format(Locale.US, "%,.${digits}f", value)
+
     private fun rounded(color: Int, radius: Int = 14) = GradientDrawable().apply {
         setColor(color)
         cornerRadius = dp(radius).toFloat()
@@ -122,6 +126,7 @@ class CryptoScanner(private val context: Context) {
         section.addView(scroll)
 
         var selectedTab = "HOME"
+        lateinit var render: () -> Unit
         val paperPrefs = context.getSharedPreferences("han_invest_paper", Context.MODE_PRIVATE)
         var paperCash = paperPrefs.getFloat("cash_usdt", 1000f).toDouble()
         var paperPositions = try { JSONObject(paperPrefs.getString("positions", "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
@@ -180,8 +185,6 @@ class CryptoScanner(private val context: Context) {
         var marketContext: JSONObject? = null
         var loadingCount = 0
 
-        lateinit var render: () -> Unit
-
         fun addTab(title: String, key: String, color: Int) {
             val b = Button(context).apply {
                 text = title
@@ -197,10 +200,6 @@ class CryptoScanner(private val context: Context) {
             }
             tabs.addView(b)
         }
-
-        fun formatNumber(value: Double, digits: Int = 6): String =
-            if (value.isNaN() || value.isInfinite()) "—"
-            else String.format(Locale.US, "%,.${digits}f", value)
 
         fun tradeReady(coin: JSONObject, result: ExchangeResult, maxRisk: Double): Boolean {
             val price = coin.optDouble("price", Double.NaN)
