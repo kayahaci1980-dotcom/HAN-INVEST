@@ -222,6 +222,38 @@ class CryptoScanner(private val context: Context) {
                     }
                     out.append("Объём подтверждён: ${if (coin.optBoolean("volume_confirmed")) "ДА" else "НЕТ"}\n")
                     out.append("MA20: ${coin.optString("ma20", "—")} | MA50: ${coin.optString("ma50", "—")}\n")
+                    // Explain every failed condition behind BUY / EARLY BUY.
+                    val ma20Value = coin.optDouble("ma20", Double.NaN)
+                    val ma50Value = coin.optDouble("ma50", Double.NaN)
+                    val currentPrice = coin.optDouble("price", Double.NaN)
+                    val change6h = coin.optDouble("momentum_6h_pct", Double.NaN)
+                    val quoteVolume = coin.optDouble("quote_volume_24h", 0.0)
+                    val checksFailed = mutableListOf<String>()
+                    if (score < 80) checksFailed.add("Оценка ниже 80 (сейчас $score)")
+                    if (ma20Value.isNaN() || ma50Value.isNaN() || currentPrice.isNaN() ||
+                        !(currentPrice > ma20Value && ma20Value > ma50Value)) {
+                        checksFailed.add("Тренд: цена должна быть выше MA20, а MA20 выше MA50")
+                    }
+                    if (change6h.isNaN() || change6h < 1.0) {
+                        checksFailed.add("Рост за 6 часов меньше 1% или нет данных")
+                    }
+                    if (volumeRatio.isNaN() || volumeRatio < 1.2) {
+                        checksFailed.add("Объём ниже 1.2x")
+                    }
+                    if (quoteVolume < 1_000_000) {
+                        checksFailed.add("Оборот за 24 часа ниже 1 млн USDT")
+                    }
+                    val btcState = btc?.optString("market_state", "UNKNOWN") ?: "UNKNOWN"
+                    if (btcState != "SIDEWAYS" && btcState != "BULLISH") {
+                        checksFailed.add("Рынок BTC не боковой — ранний BUY не разрешён")
+                    }
+                    if (signal != "BUY" && earlySignal != "EARLY BUY") {
+                        out.append("ПОЧЕМУ НЕТ BUY: ")
+                        out.append(if (checksFailed.isEmpty()) "условия сигнала не подтверждены\n"
+                                   else checksFailed.joinToString("; ") + "\n")
+                    } else if (earlySignal == "EARLY BUY") {
+                        out.append("ПОЧЕМУ EARLY BUY: условия актива выполнены, BTC в боковом рынке. Это предупреждение, не подтверждённая покупка.\n")
+                    }
                     out.append("ATR(14): ${coin.optString("atr_14", "—")}\n")
                     if (signal == "BUY") {
                         out.append("Вход: ${coin.optString("entry_price", "—")} USDT\n")
