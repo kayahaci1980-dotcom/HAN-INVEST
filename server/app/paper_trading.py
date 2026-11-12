@@ -6,6 +6,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import psycopg
+from psycopg.rows import dict_row
+
 from fastapi import APIRouter, HTTPException
 
 from app.crypto import scan_crypto
@@ -15,10 +18,10 @@ from app.exchange_scanners import scan_coinbase, scan_okx
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/paper", tags=["paper-trading"])
 
-# Configure PAPER_DB_PATH to a persistent mounted disk in production.
-# Without it, the default /tmp database is intentionally marked non-durable.
+# Supabase PostgreSQL is the durable store. SQLite remains a local/test fallback only.
 _DB_PATH = Path(os.getenv("PAPER_DB_PATH", "/tmp/han-invest-paper.sqlite3"))
-_STORAGE_PERSISTENT = bool(os.getenv("PAPER_DB_PATH"))
+_DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+_STORAGE_PERSISTENT = bool(_DATABASE_URL or os.getenv("PAPER_DB_PATH"))
 _INITIAL_CASH = 1000.0
 _FEE_RATE = 0.001
 _RISK_PCT = 1.0
@@ -29,7 +32,32 @@ _scan_requested = asyncio.Event()
 _cycle_lock = asyncio.Lock()
 
 
-def _connect() -> sqlite3.Connection:
+class _PostgresCompatConnection:
+    """Small adapter that keeps the existing SQLite-style query code portable."""
+    def __init__(self, connection: psycopg.Connection):
+        self.connection = connection
+
+    def execute(self, query: str, parameters: tuple = ()):
+        return self.connection.execute(query.replace("?", "%s"), parameters)
+
+    def __enter__(self):
+        self.connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return self.connection.__exit__(exc_type, exc_value, traceback)
+
+
+def _connect():
+    if _DATABASE_URL:
+        connection = psycopg.connect(
+            _DATABASE_URL,
+            row_factory=dict_row,
+            connect_timeout=10,
+            sslmode="require",
+        )
+        return _PostgresCompatConnection(connection)
+
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(str(_DB_PATH), timeout=30)
     connection.row_factory = sqlite3.Row
@@ -38,11 +66,24 @@ def _connect() -> sqlite3.Connection:
     return connection
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _now():
+    return datetime.now(timezone.utc)
 
 
 def _init_db() -> None:
+    if _DATABASE_URL:
+        # Tables are provisioned by the reviewed Supabase migration.
+        with _connect() as db:
+            db.execute(
+                """INSERT INTO paper_account
+                   (id, initial_cash, cash, enabled, updated_at)
+                   VALUES (1, ?, ?, FALSE, ?)
+                   ON CONFLICT (id) DO NOTHING""",
+                (_INITIAL_CASH, _INITIAL_CASH, _now()),
+            )
+        return
+
+    # Local/test fallback; never treated as durable on Render unless PAPER_DB_PATH is set.
     with _connect() as db:
         db.executescript("""
         CREATE TABLE IF NOT EXISTS paper_account (
@@ -112,7 +153,7 @@ def _account_snapshot() -> dict[str, Any]:
         "history": [dict(t) for t in trades],
         "last_scan_at": account["last_scan_at"],
         "last_error": account["last_error"],
-        "storage": "persistent_disk" if _STORAGE_PERSISTENT else "temporary_container_storage",
+        "storage": "supabase_postgres" if _DATABASE_URL else ("persistent_disk" if _STORAGE_PERSISTENT else "temporary_container_storage"),
         "storage_persistent_configured": _STORAGE_PERSISTENT,
         "scan_interval_seconds": _SCAN_INTERVAL_SECONDS,
         "fee_rate_per_side": _FEE_RATE,
@@ -120,13 +161,15 @@ def _account_snapshot() -> dict[str, Any]:
         "max_open_positions": _MAX_POSITIONS,
         "notice": (
             "Виртуальная Spot-торговля. Реальные ордера на биржи не отправляются. "
-            "Для сохранения счёта между перезапусками задайте PAPER_DB_PATH на постоянный диск; "
-            "для круглосуточной работы нужен постоянно работающий сервер."
+            "Счёт сохраняется в Supabase PostgreSQL." if _DATABASE_URL else
+            "Виртуальная Spot-торговля. Реальные ордера на биржи не отправляются. "
+            "Для сохранения счёта настройте DATABASE_URL (Supabase PostgreSQL) или постоянный диск. "
+            "Бесплатный Render может засыпать; круглосуточная работа не гарантируется."
         ),
     }
 
 
-def _close_position(db: sqlite3.Connection, position: sqlite3.Row,
+def _close_position(db, position,
                     price: float, reason: str) -> None:
     quantity = float(position["quantity"])
     gross = quantity * price
@@ -151,7 +194,7 @@ def _close_position(db: sqlite3.Connection, position: sqlite3.Row,
     )
 
 
-def _open_position(db: sqlite3.Connection, exchange: str,
+def _open_position(db, exchange: str,
                    asset: dict[str, Any], reason: str) -> bool:
     """Open a virtual spot position using ATR risk sizing."""
     symbol = str(asset.get("symbol") or "")
@@ -389,8 +432,8 @@ async def enable_paper_trading():
         raise HTTPException(
             status_code=409,
             detail=(
-                "Автоматический режим не включён: сначала настройте постоянный диск "
-                "и переменную PAPER_DB_PATH. Сейчас хранилище временное."
+                "Автоматический режим не включён: сначала подключите Supabase PostgreSQL "
+                "через DATABASE_URL или настройте постоянный диск."
             ),
         )
     _init_db()
