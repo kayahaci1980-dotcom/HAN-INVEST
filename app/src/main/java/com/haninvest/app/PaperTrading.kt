@@ -28,7 +28,7 @@ class PaperTrading(private val context: Context) {
     private fun positions() = readArray("positions")
     private fun history() = readArray("history")
 
-    private fun process(json: JSONObject): String {
+    fun processScan(json: JSONObject): String {
         var cash = balance()
         val open = positions()
         val log = history()
@@ -53,7 +53,7 @@ class PaperTrading(private val context: Context) {
             val reason = when {
                 !price.isNaN() && price <= stop -> "STOP LOSS"
                 !price.isNaN() && price >= take -> "TAKE PROFIT +10%"
-                score < 83 -> "Сигнал ниже 83"
+                coin != null && score < 83 -> "Сигнал ниже 83"
                 else -> ""
             }
             if (reason.isNotEmpty() && !price.isNaN()) {
@@ -200,7 +200,7 @@ class PaperTrading(private val context: Context) {
                             if (conn.responseCode !in 200..299) throw Exception("HTTP ${conn.responseCode}")
                             conn.inputStream.bufferedReader().use { it.readText() }
                         } finally { conn.disconnect() }
-                        val message = process(JSONObject(body))
+                        val message = processScan(JSONObject(body))
                         (context as? android.app.Activity)?.runOnUiThread {
                             status.text = message
                             isEnabled = true
@@ -217,7 +217,7 @@ class PaperTrading(private val context: Context) {
         }
         box.addView(scan)
         val reset = Button(context).apply {
-            text = "СБРОСИТЬ СЧЁТ ДО $1 000"
+            text = "СБРОСИТЬ СЧЁТ ДО \\$1 000"
             setOnClickListener {
                 prefs.edit().putFloat("cash", 1000f).putString("positions", "[]")
                     .putString("history", "[]").putLong("last_scan", 0L).apply()
