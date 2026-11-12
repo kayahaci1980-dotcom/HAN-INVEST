@@ -318,22 +318,22 @@ class CryptoScanner(private val context: Context) {
                             if (coin.optString("early_signal") == "EARLY BUY") {
                                 out.append(" | EARLY BUY — только наблюдение, не покупка")
                             }
-                            out.append("\\nMA20: ${coin.optString("ma20")} | MA50: ${coin.optString("ma50")}\\n")
-                            out.append("ATR(14): ${coin.optString("atr_14", "—")}\\n")
-                            out.append("Объём: ${coin.optString("volume_ratio", "—")}x | Подтверждён: ${if (coin.optBoolean("volume_confirmed")) "ДА" else "НЕТ"}\\n")
-                            out.append("Пара Spot: ${if (coin.optBoolean("trade_ready")) "ДА" else "НЕТ"}\\n")
+                            out.append("\nMA20: ${coin.optString("ma20")} | MA50: ${coin.optString("ma50")}\n")
+                            out.append("ATR(14): ${coin.optString("atr_14", "—")}\n")
+                            out.append("Объём: ${coin.optString("volume_ratio", "—")}x | Подтверждён: ${if (coin.optBoolean("volume_confirmed")) "ДА" else "НЕТ"}\n")
+                            out.append("Пара Spot: ${if (coin.optBoolean("trade_ready")) "ДА" else "НЕТ"}\n")
                             if (coin.optString("signal") == "BUY") {
-                                out.append("Вход: ${coin.optString("entry_price", "—")} USDT | Stop Loss: ${coin.optString("stop_loss", "—")} USDT | Take Profit: ${coin.optString("take_profit", "—")} USDT\\n")
+                                out.append("Вход: ${coin.optString("entry_price", "—")} USDT | Stop Loss: ${coin.optString("stop_loss", "—")} USDT | Take Profit: ${coin.optString("take_profit", "—")} USDT\n")
                                 val bybitSizing = coin.optJSONObject("position_sizing")
                                 if (bybitSizing != null && bybitSizing.optBoolean("available", false)) {
-                                    out.append("Количество: ${bybitSizing.optString("quantity")} | Позиция: ${bybitSizing.optString("position_value_usdt")} USDT\\n")
-                                    out.append("Риск при Stop Loss: ${bybitSizing.optString("potential_loss_at_stop_usdt")} USDT\\n")
-                                    out.append("Потенциальная прибыль: ${bybitSizing.optString("potential_profit_at_target_usdt")} USDT\\n")
+                                    out.append("Количество: ${bybitSizing.optString("quantity")} | Позиция: ${bybitSizing.optString("position_value_usdt")} USDT\n")
+                                    out.append("Риск при Stop Loss: ${bybitSizing.optString("potential_loss_at_stop_usdt")} USDT\n")
+                                    out.append("Потенциальная прибыль: ${bybitSizing.optString("potential_profit_at_target_usdt")} USDT\n")
                                 } else {
-                                    out.append("Размер позиции не рассчитан — не использовать BUY без расчёта риска.\\n")
+                                    out.append("Размер позиции не рассчитан — не использовать BUY без расчёта риска.\n")
                                 }
                             }
-                            out.append("\\n")
+                            out.append("\n")
                         }
                     }
                 } catch (bybitError: Exception) {
