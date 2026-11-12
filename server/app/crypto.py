@@ -78,7 +78,50 @@ async def _get_json(client: httpx.AsyncClient, path: str, params: dict | None = 
         return response.json()
 
 
-async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: dict):
+def _calculate_position_sizing(
+    entry_price: float,
+    stop_loss: float,
+    take_profit: float,
+    capital_usdt: float,
+    risk_pct: float,
+    fee_rate: float,
+) -> dict[str, float | str | bool]:
+    # Include estimated entry and exit taker fees in risk and reward.
+    risk_per_coin = (entry_price - stop_loss) + (entry_price + stop_loss) * fee_rate
+    if risk_per_coin <= 0 or entry_price <= 0:
+        return {"available": False, "reason": "Некорректные уровни сделки"}
+
+    risk_budget = capital_usdt * risk_pct / 100
+    quantity_by_risk = risk_budget / risk_per_coin
+    quantity_by_capital = capital_usdt / (entry_price * (1 + fee_rate))
+    quantity = min(quantity_by_risk, quantity_by_capital)
+    position_value = quantity * entry_price
+    entry_fee = position_value * fee_rate
+    exit_value_at_stop = quantity * stop_loss
+    stop_fee = exit_value_at_stop * fee_rate
+    actual_loss = position_value - exit_value_at_stop + entry_fee + stop_fee
+    exit_value_at_target = quantity * take_profit
+    target_fee = exit_value_at_target * fee_rate
+    net_profit = exit_value_at_target - position_value - entry_fee - target_fee
+
+    return {
+        "available": True,
+        "risk_pct": round(risk_pct, 3),
+        "risk_budget_usdt": round(risk_budget, 4),
+        "quantity": round(quantity, 8),
+        "position_value_usdt": round(position_value, 4),
+        "entry_fee_estimate_usdt": round(entry_fee, 4),
+        "potential_loss_at_stop_usdt": round(actual_loss, 4),
+        "potential_profit_at_target_usdt": round(net_profit, 4),
+        "fee_rate_per_side_pct": round(fee_rate * 100, 4),
+        "capital_limited": quantity_by_capital < quantity_by_risk,
+        "leverage": "spot_only",
+    }
+
+
+async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: dict,
+                          capital_usdt: float | None = None, risk_pct: float = 1.0,
+                          fee_rate: float = 0.001):
     symbol = ticker.get("symbol", "")
     pair_verified = (
         pair_info.get("status") == "TRADING"
@@ -148,6 +191,16 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "Средний" if hourly_volatility >= 1.2 else "Умеренный"
         )
 
+        entry_price = current_price if signal == "BUY" else None
+        stop_loss = current_price - 1.5 * atr_14 if signal == "BUY" else None
+        take_profit = current_price + 3.0 * atr_14 if signal == "BUY" else None
+        position_sizing = (
+            _calculate_position_sizing(
+                entry_price, stop_loss, take_profit, capital_usdt, risk_pct, fee_rate
+            )
+            if signal == "BUY" and capital_usdt is not None else None
+        )
+
         return {
             "symbol": symbol,
             "quote_currency": pair_info.get("quoteAsset", "USDT"),
@@ -163,10 +216,11 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "volume_ratio": round(volume_ratio, 2),
             "volume_confirmed": volume_confirmed,
             "atr_14": round(atr_14, 8),
-            "entry_price": round(current_price, 8) if signal == "BUY" else None,
-            "stop_loss": round(current_price - 1.5 * atr_14, 8) if signal == "BUY" else None,
-            "take_profit": round(current_price + 3.0 * atr_14, 8) if signal == "BUY" else None,
+            "entry_price": round(entry_price, 8) if entry_price is not None else None,
+            "stop_loss": round(stop_loss, 8) if stop_loss is not None else None,
+            "take_profit": round(take_profit, 8) if take_profit is not None else None,
             "risk_reward": "1:2" if signal == "BUY" else None,
+            "position_sizing": position_sizing,
             "ma20": round(ma20, 8),
             "ma50": round(ma50, 8),
             "hourly_volatility_pct": round(hourly_volatility, 3),
@@ -346,8 +400,11 @@ async def _scan_coinpaprika(client: httpx.AsyncClient, limit: int, min_volume: f
 async def scan_crypto(
     limit: int = Query(30, ge=5, le=50),
     min_volume: float = Query(1_000_000, ge=0),
+    capital_usdt: float | None = Query(None, gt=0),
+    risk_pct: float = Query(1.0, ge=0.1, le=5.0),
+    fee_rate: float = Query(0.001, ge=0, le=0.01),
 ):
-    cache_key = f"crypto:{limit}:{min_volume}"
+    cache_key = f"crypto:{limit}:{min_volume}:{capital_usdt}:{risk_pct}:{fee_rate}"
     cached = _cache.get(cache_key)
     if cached and time.time() - cached[0] < CACHE_TTL:
         return cached[1]
@@ -390,7 +447,8 @@ async def scan_crypto(
             eligible.sort(key=lambda item: float(item.get("quoteVolume", 0)), reverse=True)
             selected = eligible[:limit]
             results = await asyncio.gather(
-                *[_analyze_symbol(client, item, spot_pairs[item.get("symbol", "")]) for item in selected]
+                *[_analyze_symbol(client, item, spot_pairs[item.get("symbol", "")],
+                                  capital_usdt, risk_pct, fee_rate) for item in selected]
             )
     except BinanceCooldownError as exc:
         logger.warning("Binance cooldown active; switching to CoinGecko fallback")
@@ -436,8 +494,10 @@ async def scan_crypto(
             "Индикаторы и подтверждение объёма рассчитываются по закрытым часовым свечам; "
             "цена указана по последней рыночной котировке. BUY требует volume_ratio >= 1.0. "
             "Для BUY Stop Loss и Take Profit рассчитаны по ATR(14) с отношением риска к прибыли 1:2. "
-            "Оценка является аналитическим индикатором, а не гарантией прибыли. "
-            "Не учитывает комиссии, проскальзывание и индивидуальные ограничения."
+            "При передаче capital_usdt рассчитывается размер спотовой позиции с риском по умолчанию 1% "
+            "от капитала; учитывается ориентировочная комиссия на вход и выход. "
+            "Комиссия по умолчанию 0.1% за сторону и может отличаться от тарифа аккаунта. "
+            "Расчёт не учитывает проскальзывание и не гарантирует исполнение по указанной цене."
         ),
     }
     _cache[cache_key] = (time.time(), payload)
