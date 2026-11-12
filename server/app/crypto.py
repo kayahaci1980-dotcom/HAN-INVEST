@@ -40,6 +40,10 @@ def _retry_after_seconds(value: str | None) -> int:
     return 300
 
 EXCLUDED_SUFFIXES = ("UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT")
+# Binance-listed tokenized equity/ETF symbols are not ordinary crypto assets.
+EXCLUDED_NON_CRYPTO_BASE_ASSETS = {
+    "GOOGLB", "SNDKB", "SOXSB", "MUB", "INTCB", "NVDAB", "SPCXB", "SOXLB",
+}
 
 
 def _mean(values: list[float]) -> float:
@@ -356,6 +360,7 @@ async def scan_crypto(
                 and not item.get("symbol", "").endswith(EXCLUDED_SUFFIXES)
                 and item.get("symbol", "") in spot_pairs
                 and item.get("symbol", "")[:-4] not in excluded_base_assets
+                and item.get("symbol", "")[:-4] not in EXCLUDED_NON_CRYPTO_BASE_ASSETS
                 and float(item.get("quoteVolume", 0) or 0) >= min_volume
             ]
             eligible.sort(key=lambda item: float(item.get("quoteVolume", 0)), reverse=True)
