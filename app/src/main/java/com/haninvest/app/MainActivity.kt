@@ -430,7 +430,18 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        BuySignalWorker.schedule(this)
+
+        // Фоновое сканирование не должно закрывать приложение,
+        // если WorkManager ещё не смог инициализироваться.
+        try {
+            BuySignalWorker.schedule(applicationContext)
+        } catch (error: Exception) {
+            android.util.Log.e(
+                "HAN_INVEST",
+                "Не удалось запланировать фоновое сканирование",
+                error
+            )
+        }
 
         window.statusBarColor = page
         window.navigationBarColor = page
