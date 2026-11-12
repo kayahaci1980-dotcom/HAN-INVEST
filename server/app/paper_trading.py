@@ -150,6 +150,67 @@ def _close_position(db: sqlite3.Connection, position: sqlite3.Row,
     )
 
 
+def _open_position(db: sqlite3.Connection, exchange: str,
+                   asset: dict[str, Any], reason: str) -> bool:
+    """Open a virtual spot position using ATR risk sizing."""
+    symbol = str(asset.get("symbol") or "")
+    try:
+        price = float(asset.get("price") or 0)
+        atr = float(asset.get("atr_14") or asset.get("atr_14_1d") or 0)
+    except (TypeError, ValueError):
+        return False
+    if not symbol or price <= 0 or atr <= 0:
+        return False
+
+    exists = db.execute(
+        "SELECT 1 FROM paper_positions WHERE exchange=? AND symbol=?",
+        (exchange, symbol),
+    ).fetchone()
+    if exists:
+        return False
+
+    account = db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()
+    cash = float(account["cash"])
+    stop = price - 1.5 * atr
+    target = price + 3.0 * atr
+    risk_per_coin = (price - stop) + (price + stop) * _FEE_RATE
+    if cash <= 0 or stop <= 0 or target <= price or risk_per_coin <= 0:
+        return False
+
+    risk_budget = cash * _RISK_PCT / 100.0
+    quantity_by_risk = risk_budget / risk_per_coin
+    quantity_by_cash = cash / (price * (1 + _FEE_RATE))
+    quantity = min(quantity_by_risk, quantity_by_cash)
+    if quantity <= 0:
+        return False
+
+    gross = quantity * price
+    fee = gross * _FEE_RATE
+    total_cost = gross + fee
+    if total_cost > cash + 1e-8:
+        return False
+
+    db.execute(
+        """INSERT INTO paper_positions
+           (exchange, symbol, quantity, cost_usdt, entry_price,
+            stop_loss, take_profit, last_price, opened_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (exchange, symbol, quantity, total_cost, price,
+         stop, target, price, _now()),
+    )
+    db.execute(
+        "UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1",
+        (total_cost, _now()),
+    )
+    db.execute(
+        """INSERT INTO paper_trades
+           (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
+           VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?, NULL, ?)""",
+        (_now(), exchange, symbol, price, quantity, gross, fee, reason),
+    )
+    return True
+
+
 def _apply_market_data(exchange: str, payload: dict[str, Any]) -> None:
     assets = payload.get("assets") or []
     if not isinstance(assets, list):
@@ -159,104 +220,74 @@ def _apply_market_data(exchange: str, payload: dict[str, Any]) -> None:
         for asset in assets
         if isinstance(asset, dict) and asset.get("symbol")
     }
-    btc_filter = payload.get("btc_market_filter") or {}
-    btc_bullish = bool(btc_filter.get("available")) and (
-        btc_filter.get("market_state") == "BULLISH"
-    )
 
     with _connect() as db:
         account = db.execute("SELECT * FROM paper_account WHERE id=1").fetchone()
         if not account or not account["enabled"]:
             return
 
-        # Update open positions and close only on confirmed Stop Loss / Take Profit.
+        # Exit rules are evaluated before new entries. Missing/stale prices never trade.
         open_positions = db.execute(
             "SELECT * FROM paper_positions WHERE exchange=?", (exchange,)
         ).fetchall()
         for position in open_positions:
             asset = by_symbol.get(position["symbol"])
             if not asset:
-                continue  # Missing/stale market data must never trigger a trade.
-            price = float(asset.get("price") or 0)
-            if price <= 0:
                 continue
+            try:
+                price = float(asset.get("price") or 0)
+                score = float(asset.get("score") or 0)
+                entry = float(position["entry_price"])
+            except (TypeError, ValueError):
+                continue
+            if price <= 0 or entry <= 0:
+                continue
+
             db.execute(
                 """UPDATE paper_positions SET last_price=?
                    WHERE exchange=? AND symbol=?""",
                 (price, exchange, position["symbol"]),
             )
-            if price <= float(position["stop_loss"]):
-                _close_position(db, position, price, "STOP_LOSS")
-            elif price >= float(position["take_profit"]):
-                _close_position(db, position, price, "TAKE_PROFIT")
+            change_pct = (price / entry - 1.0) * 100.0
 
-        account = db.execute("SELECT * FROM paper_account WHERE id=1").fetchone()
+            # +10% has highest priority: sell and immediately re-buy the same asset,
+            # even when its score is below 83. The next scan applies the normal exit rules.
+            if change_pct >= 10.0:
+                _close_position(db, position, price, "TAKE_PROFIT_10_REBUY")
+                if _open_position(db, exchange, asset, "AUTO_REBUY_AFTER_10_PERCENT"):
+                    logger.info("Paper re-bought %s on %s after +10%%", position["symbol"], exchange)
+            elif score < 83:
+                _close_position(db, position, price, "SCORE_BELOW_83")
+            elif change_pct <= -2.0:
+                _close_position(db, position, price, "DRAWDOWN_2_PERCENT")
+
+        # Automatic entries use score >= 83; no BUY signal or bullish BTC filter is required.
         current_positions = db.execute(
             "SELECT COUNT(*) AS n FROM paper_positions"
         ).fetchone()["n"]
-        cash = float(account["cash"])
-
-        # New entries require an explicit BUY from the scanner and a confirmed bullish BTC filter.
-        if not btc_bullish or current_positions >= _MAX_POSITIONS:
+        if current_positions >= _MAX_POSITIONS:
             return
 
-        for asset in assets:
+        candidates = sorted(
+            (asset for asset in assets if isinstance(asset, dict)),
+            key=lambda item: float(item.get("score") or 0),
+            reverse=True,
+        )
+        for asset in candidates:
             if current_positions >= _MAX_POSITIONS:
                 break
-            if not isinstance(asset, dict):
+            try:
+                score = float(asset.get("score") or 0)
+            except (TypeError, ValueError):
                 continue
-            symbol = str(asset.get("symbol") or "")
-            price = float(asset.get("price") or 0)
-            sizing = asset.get("position_sizing") or {}
             if (
-                not symbol or price <= 0
-                or asset.get("signal") != "BUY"
+                score < 83
                 or asset.get("trade_ready") is not True
-                or int(asset.get("score") or 0) < 80
-                or sizing.get("available") is not True
+                or not asset.get("symbol")
             ):
                 continue
-            exists = db.execute(
-                "SELECT 1 FROM paper_positions WHERE exchange=? AND symbol=?",
-                (exchange, symbol),
-            ).fetchone()
-            if exists:
-                continue
-            stop = float(asset.get("stop_loss") or 0)
-            target = float(asset.get("take_profit") or 0)
-            if stop <= 0 or target <= price or stop >= price:
-                continue
-
-            desired_qty = float(sizing.get("quantity") or 0)
-            affordable_qty = cash / (price * (1 + _FEE_RATE))
-            quantity = min(desired_qty, affordable_qty)
-            if quantity <= 0:
-                continue
-            gross = quantity * price
-            fee = gross * _FEE_RATE
-            total_cost = gross + fee
-            if total_cost > cash + 1e-8:
-                continue
-            db.execute(
-                """INSERT INTO paper_positions
-                   (exchange, symbol, quantity, cost_usdt, entry_price,
-                    stop_loss, take_profit, last_price, opened_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (exchange, symbol, quantity, total_cost, price,
-                 stop, target, price, _now()),
-            )
-            db.execute(
-                """UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1""",
-                (total_cost, _now()),
-            )
-            db.execute(
-                """INSERT INTO paper_trades
-                   (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
-                   VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?, NULL, 'AUTO_SIGNAL')""",
-                (_now(), exchange, symbol, price, quantity, gross, fee),
-            )
-            cash -= total_cost
-            current_positions += 1
+            if _open_position(db, exchange, asset, "AUTO_SCORE_83_PLUS"):
+                current_positions += 1
 
 
 async def _scan_cycle() -> None:
