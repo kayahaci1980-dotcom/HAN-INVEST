@@ -45,6 +45,8 @@ EXCLUDED_NON_CRYPTO_BASE_ASSETS = {
     "GOOGLB", "SNDKB", "SOXSB", "MUB", "INTCB", "NVDAB", "SPCXB", "SOXLB",
     "U", "EUR", "XAUT", "TQQQB",
     "QQQB", "MSTRB", "PAXG", "CRCLB", "SKHYB", "SNXXB",
+    # Newly observed stablecoins and tokenized-equity symbols from live scans.
+    "BFUSD", "RWUSD", "XUSD", "AMDB", "BMNRB", "NBISB",
 }
 
 
@@ -177,10 +179,12 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
         score = min(100, trend_score + momentum_score + short_score +
                     liquidity_score + stability_score + volume_score)
 
-        # A BUY signal requires confirmation that the latest hourly volume
-        # is at least equal to the average of the previous 24 hourly candles.
-        volume_confirmed = volume_ratio >= 1.0
-        if score >= 75 and last > ma20 and change_6h > 0 and volume_confirmed:
+        # BUY is deliberately selective: require a strong score, aligned MA trend,
+        # positive short-term momentum, and a meaningful closed-candle volume surge.
+        volume_confirmed = volume_ratio >= 1.2
+        strong_uptrend = last > ma20 > ma50
+        if (score >= 80 and strong_uptrend and change_6h >= 1.0
+                and volume_confirmed and quote_volume >= 1_000_000):
             signal = "BUY"
         elif score >= 55:
             signal = "WATCH"
@@ -441,6 +445,8 @@ async def scan_crypto(
                 and item.get("symbol", "").endswith("USDT")
                 and not item.get("symbol", "").endswith(EXCLUDED_SUFFIXES)
                 and item.get("symbol", "") in spot_pairs
+                and item.get("symbol", "")[:-4].isascii()
+                and item.get("symbol", "")[:-4].isalnum()
                 and item.get("symbol", "")[:-4] not in excluded_base_assets
                 and item.get("symbol", "")[:-4] not in EXCLUDED_NON_CRYPTO_BASE_ASSETS
                 and float(item.get("quoteVolume", 0) or 0) >= min_volume
@@ -501,7 +507,7 @@ async def scan_crypto(
             f"Проверяются до {universe_limit} наиболее ликвидных активных спотовых пар USDT "
             f"из {len(eligible)} подходящих пар; в приложении показаны лучшие {min(len(assets), limit)} по рейтингу. "
             "Индикаторы и подтверждение объёма рассчитываются по закрытым часовым свечам; "
-            "цена указана по последней рыночной котировке. BUY требует volume_ratio >= 1.0. "
+            "цена указана по последней рыночной котировке. BUY требует score >= 80, MA20 > MA50, ""momentum_6h >= 1%, volume_ratio >= 1.2 и достаточную ликвидность. "
             "Для BUY Stop Loss и Take Profit рассчитаны по ATR(14) с отношением риска к прибыли 1:2. "
             "При передаче capital_usdt рассчитывается размер спотовой позиции с риском по умолчанию 1% "
             "от капитала; учитывается ориентировочная комиссия на вход и выход. "
