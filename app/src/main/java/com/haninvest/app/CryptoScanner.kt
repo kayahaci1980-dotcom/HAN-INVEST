@@ -206,7 +206,7 @@ class CryptoScanner(private val context: Context) {
                 "MA20: ${coin.optString("ma20", "—")}   |   MA50: ${coin.optString("ma50", "—")}",
                 13f, dark
             ))
-            card.addView(label("ATR(14): ${coin.optString("atr_14", "—")}", 13f, dark))
+            card.addView(label("ATR(14) дневной (1D): ${coin.optString("atr_14_1d", coin.optString("atr_14", "—"))}", 13f, dark))
             card.addView(label(
                 "Объём к среднему: ${coin.optString("volume_ratio", "—")}x   |   Подтверждён: ${if (coin.optBoolean("volume_confirmed")) "ДА" else "НЕТ"}",
                 13f, dark
