@@ -149,7 +149,8 @@ def _calculate_position_sizing(
 
 async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: dict,
                           capital_usdt: float | None = None, risk_pct: float = 1.0,
-                          fee_rate: float = 0.001, btc_market_state: str = "UNKNOWN"):
+                          fee_rate: float = 0.001, btc_market_state: str = "UNKNOWN",
+                          btc_change_24h_pct: float = 0.0):
     symbol = ticker.get("symbol", "")
     pair_verified = (
         pair_info.get("status") == "TRADING"
@@ -234,6 +235,7 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
         asset_setup_confirmed = (
             score >= 80 and strong_uptrend and change_6h >= 1.0
             and volume_confirmed and quote_volume >= 1_000_000
+            and (change_24h - btc_change_24h_pct) > 0
         )
         early_buy = asset_setup_confirmed and btc_market_state == "SIDEWAYS"
         if asset_setup_confirmed and btc_market_state == "BULLISH":
@@ -268,6 +270,7 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "change_24h_pct": round(float(ticker.get("priceChangePercent", 0)), 2),
             "momentum_6h_pct": round(change_6h, 2),
             "momentum_24h_pct": round(change_24h, 2),
+            "relative_strength_vs_btc_24h_pct": round(change_24h - btc_change_24h_pct, 2),
             "quote_volume_24h": round(quote_volume, 2),
             "volume_ratio": round(volume_ratio, 2),
             "volume_confirmed": volume_confirmed,
@@ -514,6 +517,7 @@ async def scan_crypto(
             btc_market = {"available": False, "buy_allowed": False, "reason": "Нет данных BTC"}
             btc_ticker = next((item for item in tickers
                                if isinstance(item, dict) and item.get("symbol") == "BTCUSDT"), None)
+            btc_change_24h_pct = float(btc_ticker.get("priceChangePercent") or 0) if btc_ticker else 0.0
             if btc_ticker is not None and "BTCUSDT" in spot_pairs:
                 try:
                     btc_candles = await _get_json(
@@ -556,7 +560,8 @@ async def scan_crypto(
             results = await asyncio.gather(
                 *[_analyze_symbol(client, item, spot_pairs[item.get("symbol", "")],
                                   capital_usdt, risk_pct, fee_rate,
-                                  str(btc_market.get("market_state") or "UNKNOWN")) for item in selected]
+                                  str(btc_market.get("market_state") or "UNKNOWN"),
+                                  btc_change_24h_pct) for item in selected]
             )
     except BinanceCooldownError as exc:
         logger.warning("Binance cooldown active; switching to CoinGecko fallback")
