@@ -329,6 +329,11 @@ async def scan_crypto(
             exchange_info = await _get_json(client, "/api/v3/exchangeInfo")
             if not isinstance(exchange_info, dict) or not isinstance(exchange_info.get("symbols"), list):
                 raise HTTPException(status_code=503, detail="Binance вернула неожиданный список торговых пар.")
+
+            tickers = await _get_json(client, "/api/v3/ticker/24hr")
+            if not isinstance(tickers, list):
+                raise HTTPException(status_code=503, detail="Binance вернула неожиданный список рыночных котировок.")
+
             spot_pairs = {
                 item.get("symbol"): item
                 for item in exchange_info["symbols"]
