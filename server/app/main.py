@@ -13,6 +13,7 @@ from app.crypto import router as crypto_router
 from app.bybit import router as bybit_router
 from app.market_context import router as market_context_router
 from app.paper_trading import router as paper_router, start_paper_worker, stop_paper_worker
+from app.exchange_scanners import router as exchange_router
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
@@ -25,6 +26,7 @@ app.include_router(crypto_router)
 app.include_router(bybit_router)
 app.include_router(market_context_router)
 app.include_router(paper_router)
+app.include_router(exchange_router)
 
 app.add_middleware(
     CORSMiddleware,
