@@ -55,17 +55,22 @@ class BuySignalWorker(
                 ?: return Result.retry()
 
             val currentBuySymbols = linkedSetOf<String>()
-            if (btcAllowsBuys) {
-                for (i in 0 until assets.length()) {
-                    val coin = assets.optJSONObject(i) ?: continue
-                    val symbol = coin.optString("symbol")
-                    val isConfirmedBuy =
-                        coin.optString("signal") == "BUY" &&
-                        coin.optBoolean("trade_ready", false) &&
-                        coin.optBoolean("volume_confirmed", false)
-                    if (symbol.isNotBlank() && isConfirmedBuy) {
-                        currentBuySymbols.add(symbol)
-                    }
+            val currentEarlyBuySymbols = linkedSetOf<String>()
+            for (i in 0 until assets.length()) {
+                val coin = assets.optJSONObject(i) ?: continue
+                val symbol = coin.optString("symbol")
+                val tradeableAndConfirmed =
+                    symbol.isNotBlank() &&
+                    coin.optBoolean("trade_ready", false) &&
+                    coin.optBoolean("volume_confirmed", false)
+
+                if (btcAllowsBuys && tradeableAndConfirmed &&
+                    coin.optString("signal") == "BUY") {
+                    currentBuySymbols.add(symbol)
+                }
+                if (tradeableAndConfirmed &&
+                    coin.optString("early_signal") == "EARLY BUY") {
+                    currentEarlyBuySymbols.add(symbol)
                 }
             }
 
@@ -74,8 +79,11 @@ class BuySignalWorker(
             )
             val previous = prefs.getStringSet(KEY_ACTIVE_BUYS, emptySet())
                 ?.toSet() ?: emptySet()
+            val previousEarly = prefs.getStringSet(KEY_ACTIVE_EARLY_BUYS, emptySet())
+                ?.toSet() ?: emptySet()
 
             val newSymbols = currentBuySymbols - previous
+            val newEarlySymbols = currentEarlyBuySymbols - previousEarly
             for (symbol in newSymbols) {
                 val coin = (0 until assets.length())
                     .mapNotNull { assets.optJSONObject(it) }
@@ -89,9 +97,21 @@ class BuySignalWorker(
                     score = coin.optInt("score", 0)
                 )
             }
+            for (symbol in newEarlySymbols) {
+                val coin = (0 until assets.length())
+                    .mapNotNull { assets.optJSONObject(it) }
+                    .firstOrNull { it.optString("symbol") == symbol }
+                    ?: continue
+                sendEarlyBuyNotification(
+                    symbol = symbol,
+                    price = coin.optString("price", "—"),
+                    score = coin.optInt("score", 0)
+                )
+            }
 
             prefs.edit()
                 .putStringSet(KEY_ACTIVE_BUYS, currentBuySymbols.toSet())
+                .putStringSet(KEY_ACTIVE_EARLY_BUYS, currentEarlyBuySymbols.toSet())
                 .putLong(KEY_LAST_SCAN, System.currentTimeMillis())
                 .apply()
 
@@ -99,6 +119,61 @@ class BuySignalWorker(
         } catch (_: Exception) {
             Result.retry()
         }
+    }
+
+    private fun sendEarlyBuyNotification(
+        symbol: String,
+        price: String,
+        score: Int
+    ) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            applicationContext.checkSelfPermission(
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
+        val manager = applicationContext.getSystemService(
+            Context.NOTIFICATION_SERVICE
+        ) as NotificationManager
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                EARLY_CHANNEL_ID,
+                "Ранние сигналы HAN INVEST",
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = "Предупреждения EARLY BUY — не подтверждённая сделка"
+            }
+            manager.createNotificationChannel(channel)
+        }
+
+        val openApp = Intent(applicationContext, MainActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(
+            applicationContext,
+            symbol.hashCode() xor 0x4541524C,
+            openApp,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val details = "Цена: $price USDT · Оценка: $score/100"
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(applicationContext, EARLY_CHANNEL_ID)
+        } else {
+            Notification.Builder(applicationContext)
+        }
+        val notification = builder
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("HAN INVEST: РАННИЙ BUY — $symbol")
+            .setContentText(details)
+            .setStyle(Notification.BigTextStyle().bigText(
+                "$details\nЭто раннее предупреждение при боковом BTC, не подтверждённая сделка. Не покупайте автоматически."
+            ))
+            .setPriority(Notification.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+        manager.notify(symbol, symbol.hashCode() xor 0x4541524C, notification)
     }
 
     private fun sendBuyNotification(
@@ -164,8 +239,10 @@ class BuySignalWorker(
     companion object {
         private const val PREFS_NAME = "han_invest_buy_alerts"
         private const val KEY_ACTIVE_BUYS = "active_buy_symbols"
+        private const val KEY_ACTIVE_EARLY_BUYS = "active_early_buy_symbols"
         private const val KEY_LAST_SCAN = "last_scan_at"
         private const val CHANNEL_ID = "han_invest_buy_signals"
+        private const val EARLY_CHANNEL_ID = "han_invest_early_buy_signals"
         private const val WORK_NAME = "han_invest_confirmed_buy_scan"
 
         fun schedule(context: Context) {
