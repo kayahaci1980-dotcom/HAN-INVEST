@@ -72,8 +72,13 @@ async def _get_json(client: httpx.AsyncClient, path: str, params: dict | None = 
         return response.json()
 
 
-async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict):
+async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: dict):
     symbol = ticker.get("symbol", "")
+    pair_verified = (
+        pair_info.get("status") == "TRADING"
+        and pair_info.get("isSpotTradingAllowed") is True
+        and pair_info.get("quoteAsset") == "USDT"
+    )
     try:
         candles = await _get_json(
             client,
@@ -123,6 +128,11 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict):
 
         return {
             "symbol": symbol,
+            "quote_currency": pair_info.get("quoteAsset", "USDT"),
+            "exchange": "Binance Spot",
+            "pair_status": pair_info.get("status"),
+            "exchange_pair_verified": pair_verified,
+            "trade_ready": pair_verified,
             "price": last,
             "change_24h_pct": round(float(ticker.get("priceChangePercent", 0)), 2),
             "momentum_6h_pct": round(change_6h, 2),
@@ -316,21 +326,37 @@ async def scan_crypto(
 
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            tickers = await _get_json(client, "/api/v3/ticker/24hr")
-            if not isinstance(tickers, list):
-                raise HTTPException(status_code=503, detail="Binance вернула неожиданный формат данных.")
+            exchange_info = await _get_json(client, "/api/v3/exchangeInfo")
+            if not isinstance(exchange_info, dict) or not isinstance(exchange_info.get("symbols"), list):
+                raise HTTPException(status_code=503, detail="Binance вернула неожиданный список торговых пар.")
+            spot_pairs = {
+                item.get("symbol"): item
+                for item in exchange_info["symbols"]
+                if isinstance(item, dict)
+                and item.get("symbol")
+                and item.get("status") == "TRADING"
+                and item.get("isSpotTradingAllowed") is True
+                and item.get("quoteAsset") == "USDT"
+            }
 
+            excluded_base_assets = {
+                "USDT", "USDC", "USD1", "RLUSD", "DAI", "FDUSD", "TUSD",
+                "USDE", "USDS", "USDP", "PYUSD", "GUSD", "FRAX", "USDD",
+                "UST", "USTC", "USDX", "USDJ", "EURC", "EURS"
+            }
             eligible = [
                 item for item in tickers
                 if isinstance(item, dict)
                 and item.get("symbol", "").endswith("USDT")
                 and not item.get("symbol", "").endswith(EXCLUDED_SUFFIXES)
+                and item.get("symbol", "") in spot_pairs
+                and item.get("symbol", "")[:-4] not in excluded_base_assets
                 and float(item.get("quoteVolume", 0) or 0) >= min_volume
             ]
             eligible.sort(key=lambda item: float(item.get("quoteVolume", 0)), reverse=True)
             selected = eligible[:limit]
             results = await asyncio.gather(
-                *[_analyze_symbol(client, item) for item in selected]
+                *[_analyze_symbol(client, item, spot_pairs[item.get("symbol", "")]) for item in selected]
             )
     except BinanceCooldownError as exc:
         logger.warning("Binance cooldown active; switching to CoinGecko fallback")
