@@ -135,6 +135,7 @@ async def _coinbase_scan(limit: int, min_volume: float) -> dict[str, Any]:
         return {
             "source": "Coinbase Exchange public market data",
             "exchange": "Coinbase Exchange", "scanned": min(len(assets), limit),
+            "eligible_pairs": len(products),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "assets": assets[:limit],
         }
@@ -234,6 +235,7 @@ async def _okx_scan(limit: int, min_volume: float) -> dict[str, Any]:
         return {
             "source": "OKX public market data",
             "exchange": "OKX", "scanned": len(assets),
+            "eligible_pairs": len(instruments),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "assets": assets,
         }
