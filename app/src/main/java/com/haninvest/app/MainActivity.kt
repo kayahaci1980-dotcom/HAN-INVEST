@@ -431,18 +431,6 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Фоновое сканирование не должно закрывать приложение,
-        // если WorkManager ещё не смог инициализироваться.
-        try {
-            BuySignalWorker.schedule(applicationContext)
-        } catch (error: Exception) {
-            android.util.Log.e(
-                "HAN_INVEST",
-                "Не удалось запланировать фоновое сканирование",
-                error
-            )
-        }
-
         window.statusBarColor = page
         window.navigationBarColor = page
         window.decorView.systemUiVisibility =
@@ -715,6 +703,18 @@ class MainActivity : Activity() {
 
         scroll.addView(root)
         setContentView(scroll)
+
+        // Запускаем WorkManager только после отображения основного экрана,
+        // чтобы ошибка фонового планировщика не мешала запуску интерфейса.
+        try {
+            BuySignalWorker.schedule(applicationContext)
+        } catch (error: Exception) {
+            android.util.Log.e(
+                "HAN_INVEST",
+                "Не удалось запланировать фоновое сканирование",
+                error
+            )
+        }
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
