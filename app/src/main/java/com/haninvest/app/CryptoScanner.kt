@@ -131,6 +131,11 @@ class CryptoScanner(private val context: Context) {
         var paperCash = paperPrefs.getFloat("cash_usdt", 1000f).toDouble()
         var paperPositions = try { JSONObject(paperPrefs.getString("positions", "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
         var paperHistory = try { JSONArray(paperPrefs.getString("history", "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+        var serverPaperState: JSONObject? = null
+        var serverPaperError: String? = null
+        var serverPaperLoading = false
+        lateinit var refreshPaperServer: () -> Unit
+        lateinit var togglePaperServer: (Boolean) -> Unit
         fun savePaper() {
             paperPrefs.edit().putFloat("cash_usdt", paperCash.toFloat())
                 .putString("positions", paperPositions.toString())
@@ -196,6 +201,7 @@ class CryptoScanner(private val context: Context) {
                 setOnClickListener {
                     selectedTab = key
                     render()
+                    if (key == "PAPER") refreshPaperServer()
                 }
             }
             tabs.addView(b)
@@ -336,6 +342,81 @@ class CryptoScanner(private val context: Context) {
                 }, 17f, dark, true
             ))
             if (selectedTab == "PAPER") {
+                content.addView(label("СЕРВЕРНЫЙ АВТОМАТИЧЕСКИЙ СЧЁТ", 14f, Color.rgb(20, 145, 90), true))
+                val remote = serverPaperState
+                if (remote == null) {
+                    content.addView(label(
+                        serverPaperError ?: "Нажмите «Обновить серверный счёт», чтобы проверить круглосуточный режим.",
+                        12f, if (serverPaperError == null) muted else Color.RED
+                    ))
+                } else {
+                    val serverEnabled = remote.optBoolean("enabled", false)
+                    val persistent = remote.optBoolean("storage_persistent_configured", false)
+                    content.addView(label(
+                        if (serverEnabled) "Автоматический режим: ВКЛЮЧЁН" else "Автоматический режим: ВЫКЛЮЧЕН",
+                        14f, if (serverEnabled) Color.rgb(20, 145, 90) else muted, true
+                    ))
+                    content.addView(label(
+                        "Серверный баланс: " + formatNumber(remote.optDouble("cash_usdt"), 2) + " USDT",
+                        16f, dark, true
+                    ))
+                    content.addView(label(
+                        "Открытые позиции: " + formatNumber(remote.optDouble("holdings_value_usdt"), 2) +
+                            " USDT • Всего: " + formatNumber(remote.optDouble("equity_usdt"), 2) + " USDT",
+                        13f, dark
+                    ))
+                    content.addView(label(
+                        if (persistent) "Хранилище: постоянный диск подключён"
+                        else "Хранилище временное — запуск заблокирован до настройки постоянного диска.",
+                        12f, if (persistent) Color.rgb(20, 145, 90) else Color.rgb(190, 90, 45)
+                    ))
+                    val remotePositions = remote.optJSONArray("open_positions") ?: JSONArray()
+                    for (i in 0 until remotePositions.length()) {
+                        val p = remotePositions.optJSONObject(i) ?: continue
+                        content.addView(label(
+                            p.optString("symbol") + " • " + p.optString("exchange") +
+                                " • SL " + formatNumber(p.optDouble("stop_loss"), 6) +
+                                " • TP " + formatNumber(p.optDouble("take_profit"), 6),
+                            11f, muted
+                        ))
+                    }
+                    val lastScan = remote.optString("last_scan_at", "")
+                    if (lastScan.isNotBlank() && lastScan != "null") {
+                        content.addView(label("Последняя проверка: $lastScan", 10f, muted))
+                    }
+                    val remoteError = remote.optString("last_error", "")
+                    if (remoteError.isNotBlank() && remoteError != "null") {
+                        content.addView(label("Ошибка сканирования: $remoteError", 11f, Color.RED))
+                    }
+                }
+                if (serverPaperError != null) {
+                    content.addView(label("Связь с сервером: $serverPaperError", 11f, Color.RED))
+                }
+                val serverButtons = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                val serverRefresh = Button(context).apply {
+                    text = if (serverPaperLoading) "Загрузка..." else "Обновить сервер"
+                    buttonStyle(this, blue)
+                    isEnabled = !serverPaperLoading
+                    setOnClickListener { refreshPaperServer() }
+                    layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(5) }
+                }
+                serverButtons.addView(serverRefresh)
+                val remoteEnabled = remote?.optBoolean("enabled", false) ?: false
+                val storageReady = remote?.optBoolean("storage_persistent_configured", false) ?: false
+                val serverToggle = Button(context).apply {
+                    text = if (remoteEnabled) "Остановить авто" else "Запустить авто"
+                    buttonStyle(this, if (remoteEnabled) orange else Color.rgb(20, 145, 90))
+                    isEnabled = !serverPaperLoading && remote != null && (remoteEnabled || storageReady)
+                    setOnClickListener { togglePaperServer(!remoteEnabled) }
+                    layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f)
+                }
+                serverButtons.addView(serverToggle)
+                content.addView(serverButtons)
+                content.addView(label(
+                    "Сервер торгует только виртуально: Spot, без плеча. Реальные ордера не отправляются.",
+                    11f, muted
+                ))
+                content.addView(label("ЛОКАЛЬНЫЙ ТЕСТОВЫЙ СЧЁТ (ручной)", 13f, dark, true))
                 val livePrices = mutableMapOf<String, Double>()
                 listOf(binance, bybit).filterNotNull().forEach { result ->
                     result.assets.forEach { coin ->
@@ -521,6 +602,81 @@ class CryptoScanner(private val context: Context) {
                     render()
                 }
             }.start()
+        }
+
+        refreshPaperServer = {
+            if (!serverPaperLoading) {
+                serverPaperLoading = true
+                serverPaperError = null
+                render()
+                Thread {
+                    var state: JSONObject? = null
+                    var error: String? = null
+                    try {
+                        val connection = URL("https://han-invest-api-test.onrender.com/api/v1/paper/state")
+                            .openConnection() as HttpURLConnection
+                        try {
+                            connection.requestMethod = "GET"
+                            connection.connectTimeout = 15000
+                            connection.readTimeout = 20000
+                            connection.setRequestProperty("Accept", "application/json")
+                            val code = connection.responseCode
+                            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                            val raw = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                            if (code !in 200..299) throw Exception("HTTP $code: $raw")
+                            state = JSONObject(raw)
+                        } finally {
+                            connection.disconnect()
+                        }
+                    } catch (e: Exception) {
+                        error = e.message ?: "Ошибка соединения"
+                    }
+                    Handler(Looper.getMainLooper()).post {
+                        serverPaperState = state
+                        serverPaperError = error
+                        serverPaperLoading = false
+                        render()
+                    }
+                }.start()
+            }
+        }
+
+        togglePaperServer = { enable ->
+            if (!serverPaperLoading) {
+                serverPaperLoading = true
+                serverPaperError = null
+                render()
+                Thread {
+                    var state: JSONObject? = null
+                    var error: String? = null
+                    try {
+                        val action = if (enable) "enable" else "disable"
+                        val connection = URL("https://han-invest-api-test.onrender.com/api/v1/paper/$action")
+                            .openConnection() as HttpURLConnection
+                        try {
+                            connection.requestMethod = "POST"
+                            connection.connectTimeout = 15000
+                            connection.readTimeout = 20000
+                            connection.setRequestProperty("Accept", "application/json")
+                            val code = connection.responseCode
+                            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                            val raw = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                            if (code !in 200..299) throw Exception("HTTP $code: $raw")
+                            state = JSONObject(raw)
+                        } finally {
+                            connection.disconnect()
+                        }
+                    } catch (e: Exception) {
+                        error = e.message ?: "Ошибка соединения"
+                    }
+                    Handler(Looper.getMainLooper()).post {
+                        serverPaperState = state ?: serverPaperState
+                        serverPaperError = error
+                        serverPaperLoading = false
+                        render()
+                    }
+                }.start()
+            }
         }
 
         fun loadAll() {
