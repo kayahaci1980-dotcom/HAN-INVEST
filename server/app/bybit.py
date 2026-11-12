@@ -90,6 +90,7 @@ async def get_json(client: httpx.AsyncClient, path: str, params: dict):
 async def analyze(
     client: httpx.AsyncClient, ticker: dict, instrument: dict, btc_state: str,
     capital_usdt: float | None, risk_pct: float, fee_rate: float,
+    btc_change_24h_pct: float = 0.0,
 ):
     symbol = ticker.get("symbol", "")
     try:
@@ -157,6 +158,7 @@ async def analyze(
         setup = (
             pair_verified and score >= 80 and strong_uptrend and change6 >= 1.0
             and volume_confirmed and quote_volume >= 1_000_000
+            and (change24 - btc_change_24h_pct) > 0
             and atr > 0 and math.isfinite(atr)
         )
         signal = "BUY" if setup and btc_state == "BULLISH" else "WATCH" if score >= 55 else "HOLD"
@@ -174,6 +176,7 @@ async def analyze(
             "symbol": symbol, "name": symbol[:-4], "exchange": "Bybit Spot",
             "source": "bybit", "price": price, "change_24h_pct": round(change24, 2),
             "momentum_6h_pct": round(change6, 2), "momentum_24h_pct": round(change24_candles, 2),
+            "relative_strength_vs_btc_24h_pct": round(change24 - btc_change_24h_pct, 2),
             "quote_volume_24h": round(quote_volume, 2),
             "volume_ratio": round(volume_ratio, 2), "volume_confirmed": volume_confirmed,
             "ma20": round(ma20, 8), "ma50": round(ma50, 8), "atr_14": round(atr, 8),
@@ -219,6 +222,7 @@ async def scan_bybit(
                 if x.get("symbol") in instruments and float(x.get("turnover24h") or 0) >= min_volume
             ]
             btc = next((x for x in tickers if x.get("symbol") == "BTCUSDT"), None)
+            btc_change_24h_pct = float(btc.get("price24hPcnt") or 0) * 100 if btc else 0.0
             btc_state = "UNKNOWN"
             btc_info = {"available": False, "buy_allowed": False, "market_state": "UNKNOWN"}
             if btc:
@@ -243,7 +247,7 @@ async def scan_bybit(
                 async with semaphore:
                     return await analyze(
                         client, item, instruments[item["symbol"]], btc_state,
-                        capital_usdt, risk_pct, fee_rate,
+                        capital_usdt, risk_pct, fee_rate, btc_change_24h_pct,
                     )
 
             assets = [x for x in await asyncio.gather(*(limited(x) for x in selected)) if x]
