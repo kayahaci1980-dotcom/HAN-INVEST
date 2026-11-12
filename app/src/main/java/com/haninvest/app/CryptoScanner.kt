@@ -144,7 +144,26 @@ class CryptoScanner(private val context: Context) {
                 } else {
                     out.append("СОСТОЯНИЕ РЫНКА BTC: данные недоступны — BUY заблокирован\n")
                 }
-                out.append("При каждом обновлении сканирование выполняется заново.\n\n")
+                out.append("При каждом обновлении сканирование выполняется заново.\\n\\n")
+                // Избранные активы повторно проверяются на каждом запуске сканера.
+                val watchSymbols = listOf("0GUSDT", "WLFIUSDT", "AVAXUSDT")
+                out.append("ИЗБРАННЫЕ МОНЕТЫ — ПОВТОРНОЕ НАБЛЮДЕНИЕ\\n")
+                for (watchSymbol in watchSymbols) {
+                    val watchedCoin = (0 until assets.length())
+                        .map { assets.getJSONObject(it) }
+                        .firstOrNull { it.optString("symbol") == watchSymbol }
+                    if (watchedCoin == null) {
+                        out.append("$watchSymbol: сейчас не входит в лучшие 30\\n")
+                    } else {
+                        val watchedPrice = watchedCoin.optDouble("price", Double.NaN)
+                        val watchedVolume = watchedCoin.optDouble("volume_ratio", Double.NaN)
+                        out.append("$watchSymbol | № ${watchedCoin.optInt("market_rank")} | ${watchedCoin.optString("signal", "WATCH")}")
+                        if (!watchedPrice.isNaN()) out.append(String.format(Locale.US, " | Цена: $%.6f", watchedPrice))
+                        if (!watchedVolume.isNaN()) out.append(String.format(Locale.US, " | Объём: %.2fx", watchedVolume))
+                        out.append(" | Объём подтверждён: ${if (watchedCoin.optBoolean("volume_confirmed")) "ДА" else "НЕТ"}\\n")
+                    }
+                }
+                out.append("\\n")
                 for (i in 0 until assets.length()) {
                     val coin = assets.getJSONObject(i)
                     val symbol = coin.optString("symbol")
