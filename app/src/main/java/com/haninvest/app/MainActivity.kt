@@ -2,6 +2,9 @@
 package com.haninvest.app
 
 import android.app.Activity
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.graphics.Color
 import android.view.Gravity
@@ -427,6 +430,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        BuySignalWorker.schedule(this)
 
         window.statusBarColor = page
         window.navigationBarColor = page
@@ -700,5 +704,11 @@ class MainActivity : Activity() {
 
         scroll.addView(root)
         setContentView(scroll)
+
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2001)
+        }
     }
 }

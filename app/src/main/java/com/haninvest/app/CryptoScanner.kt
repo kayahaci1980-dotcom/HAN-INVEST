@@ -1,6 +1,8 @@
 package com.haninvest.app
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -88,12 +90,41 @@ class CryptoScanner(private val context: Context) {
         panel.addView(text("Риск по умолчанию — 1% капитала. Только спотовая торговля, без плеча.", 12f, muted))
         panel.addView(status)
         panel.addView(refresh)
+        val autoRefreshLabel = text(
+            "Автообновление каждые 15 минут включено.",
+            12f, muted
+        )
+        panel.addView(autoRefreshLabel)
+
+        val autoRefreshHandler = Handler(Looper.getMainLooper())
+        val autoRefreshTask = object : Runnable {
+            override fun run() {
+                if (!section.isAttachedToWindow) return
+                val capital = capitalInput.text.toString().trim().toDoubleOrNull()
+                val risk = riskInput.text.toString().trim().toDoubleOrNull() ?: 1.0
+                if (capital != null && capital > 0.0 && risk in 0.1..5.0) {
+                    autoRefreshLabel.text = "Автоматически обновляем рынок..."
+                    load(status, capital, risk)
+                }
+                autoRefreshHandler.postDelayed(this, 15L * 60L * 1000L)
+            }
+        }
+        section.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(view: View) {
+                autoRefreshHandler.removeCallbacks(autoRefreshTask)
+                autoRefreshHandler.postDelayed(autoRefreshTask, 15L * 60L * 1000L)
+            }
+
+            override fun onViewDetachedFromWindow(view: View) {
+                autoRefreshHandler.removeCallbacks(autoRefreshTask)
+            }
+        })
         section.addView(panel)
         section.addView(text(
             "Источник: HAN INVEST API. Резервные агрегированные данные не подтверждают торговую пару на бирже.",
             11f, muted
         ))
-        load(status)
+        load(status, 100.0, 1.0)
         return section
     }
 
