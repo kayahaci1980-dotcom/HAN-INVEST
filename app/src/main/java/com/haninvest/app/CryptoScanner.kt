@@ -179,6 +179,8 @@ class CryptoScanner(private val context: Context) {
 
         fun coinCard(coin: JSONObject, exchange: String, result: ExchangeResult, maxRisk: Double) {
             val symbol = coin.optString("symbol", "—")
+            val shortSymbol = symbol.removeSuffix("USDT")
+            val coinName = coin.optString("name").takeIf { it.isNotBlank() } ?: shortSymbol
             val price = coin.optDouble("price", Double.NaN)
             val score = coin.optInt("score", 0)
             val serverSignal = coin.optString("signal", "WATCH")
@@ -191,7 +193,7 @@ class CryptoScanner(private val context: Context) {
             }
             val signalText = if (buyAllowed) "BUY — условия подтверждены"
                 else if (early) "EARLY BUY — только наблюдение" else "WATCH — наблюдение"
-            card.addView(label("$symbol  •  $exchange", 16f, dark, true))
+            card.addView(label("$coinName ($shortSymbol)  •  $exchange", 16f, dark, true))
             card.addView(label(
                 "Оценка: $score/100   |   Сигнал: $signalText",
                 13f, if (buyAllowed) Color.rgb(20, 145, 90) else muted, true
