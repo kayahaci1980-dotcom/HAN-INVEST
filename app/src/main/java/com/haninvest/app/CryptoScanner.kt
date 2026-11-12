@@ -132,7 +132,19 @@ class CryptoScanner(private val context: Context) {
                 out.append("Источник: ${json.optString("source")}\n")
                 out.append("Проверено монет: ${json.optInt("scanned", assets.length())}\n")
                 out.append("Подходящих пар Binance: ${json.optInt("eligible_pairs", assets.length())}\n")
-                out.append("Лучших кандидатов в списке: ${assets.length()}\n\n")
+                out.append("Лучших кандидатов в списке: ${assets.length()}\n")
+                val btc = json.optJSONObject("btc_market_filter")
+                if (btc != null && btc.optBoolean("available", false)) {
+                    val marketLabel = btc.optString("market_state_label", "Не определён")
+                    val marketReason = btc.optString("reason", "")
+                    out.append("СОСТОЯНИЕ РЫНКА BTC: $marketLabel\n")
+                    out.append("BTC: ${btc.optString("price", "—")} | MA20: ${btc.optString("ma20", "—")} | MA50: ${btc.optString("ma50", "—")}\n")
+                    out.append("Покупки разрешены: ${if (btc.optBoolean("buy_allowed")) "ДА" else "НЕТ"}\n")
+                    if (marketReason.isNotBlank()) out.append("$marketReason\n")
+                } else {
+                    out.append("СОСТОЯНИЕ РЫНКА BTC: данные недоступны — BUY заблокирован\n")
+                }
+                out.append("При каждом обновлении сканирование выполняется заново.\n\n")
                 for (i in 0 until assets.length()) {
                     val coin = assets.getJSONObject(i)
                     val symbol = coin.optString("symbol")
