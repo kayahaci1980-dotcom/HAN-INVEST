@@ -6,6 +6,8 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
+import android.text.InputType
 import android.widget.LinearLayout
 import android.widget.TextView
 import org.json.JSONObject
@@ -49,13 +51,40 @@ class CryptoScanner(private val context: Context) {
             background = background(Color.WHITE)
             elevation = dp(2).toFloat()
         }
+        val capitalInput = EditText(context).apply {
+            hint = "Ваш капитал в USDT (например, 1000)"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            textSize = 14f
+            setSingleLine(true)
+        }
+        val riskInput = EditText(context).apply {
+            hint = "Риск на сделку, % (по умолчанию 1)"
+            setText("1")
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            textSize = 14f
+            setSingleLine(true)
+        }
         val status = text("Нажмите «Обновить», чтобы загрузить рейтинг.", 14f, dark)
         val refresh = Button(context).apply {
             this.text = "ОБНОВИТЬ КРИПТОСКАНЕР"
             setTextColor(Color.WHITE)
             background = background(blue)
-            setOnClickListener { load(status) }
+            setOnClickListener {
+                val capital = capitalInput.text.toString().trim().toDoubleOrNull()
+                val risk = riskInput.text.toString().trim().toDoubleOrNull() ?: 1.0
+                if (capitalInput.text.isNotBlank() && (capital == null || capital <= 0.0)) {
+                    capitalInput.error = "Введите капитал больше нуля"
+                } else if (risk !in 0.1..5.0) {
+                    riskInput.error = "Допустимый риск: от 0,1% до 5%"
+                } else {
+                    load(status, capital, risk)
+                }
+            }
         }
+        panel.addView(text("РАСЧЁТ РАЗМЕРА ПОЗИЦИИ", 13f, muted, true))
+        panel.addView(capitalInput)
+        panel.addView(riskInput)
+        panel.addView(text("Риск по умолчанию — 1% капитала. Только спотовая торговля, без плеча.", 12f, muted))
         panel.addView(status)
         panel.addView(refresh)
         section.addView(panel)
@@ -67,12 +96,20 @@ class CryptoScanner(private val context: Context) {
         return section
     }
 
-    private fun load(target: TextView) {
+    private fun load(target: TextView, capitalUsdt: Double? = null, riskPct: Double = 1.0) {
         target.text = "Загрузка рейтинга криптовалют..."
         Thread {
             try {
+                val query = buildString {
+                    append("limit=30&min_volume=1000000&risk_pct=")
+                    append(riskPct)
+                    if (capitalUsdt != null) {
+                        append("&capital_usdt=")
+                        append(capitalUsdt)
+                    }
+                }
                 val connection = URL(
-                    "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?limit=30&min_volume=1000000"
+                    "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?$query"
                 ).openConnection() as HttpURLConnection
                 val jsonText = try {
                     connection.requestMethod = "GET"
@@ -109,6 +146,20 @@ class CryptoScanner(private val context: Context) {
                         out.append(String.format(Locale.US, "Изменение 24ч: %.2f%%\n", change))
                     }
                     out.append("Оценка: $score/100  |  Сигнал: $signal\n")
+                    if (signal == "BUY") {
+                        out.append("Вход: ${coin.optString("entry_price", "—")} USDT\n")
+                        out.append("Stop Loss: ${coin.optString("stop_loss", "—")} USDT\n")
+                        out.append("Take Profit: ${coin.optString("take_profit", "—")} USDT\n")
+                        val sizing = coin.optJSONObject("position_sizing")
+                        if (sizing != null && sizing.optBoolean("available", false)) {
+                            out.append("Количество: ${sizing.optString("quantity")}\n")
+                            out.append("Размер позиции: ${sizing.optString("position_value_usdt")} USDT\n")
+                            out.append("Плановый риск: ${sizing.optString("potential_loss_at_stop_usdt")} USDT\n")
+                            out.append("Потенциальная прибыль: ${sizing.optString("potential_profit_at_target_usdt")} USDT\n")
+                        } else if (capitalUsdt == null) {
+                            out.append("Введите капитал, чтобы рассчитать размер позиции.\n")
+                        }
+                    }
                     if (coin.optBoolean("trade_ready", false)) {
                         out.append("Торговая пара подтверждена\n")
                     } else {
