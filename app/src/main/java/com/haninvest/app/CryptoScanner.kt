@@ -129,7 +129,7 @@ class CryptoScanner(private val context: Context) {
                     ?: throw Exception("Нет списка активов")
                 val out = StringBuilder()
                 out.append("Источник: ${json.optString("source")}\n")
-                out.append("Проверено монет: ${json.optInt(\"scanned\", assets.length())}\n")
+                out.append("Проверено монет: ${json.optInt("scanned", assets.length())}\n")
                 out.append("Подходящих пар Binance: ${json.optInt(\"eligible_pairs\", assets.length())}\n")
                 out.append("Лучших кандидатов в списке: ${assets.length()}\n\n")
                 for (i in 0 until assets.length()) {
@@ -152,8 +152,8 @@ class CryptoScanner(private val context: Context) {
                     if (!volumeRatio.isNaN()) {
                         out.append(String.format(Locale.US, "Объём к среднему: %.2fx\n", volumeRatio))
                     }
-                    out.append("Объём подтверждён: ${if (coin.optBoolean(\"volume_confirmed\")) \"ДА\" else \"НЕТ\"}\n")
-                    out.append("MA20: ${coin.optString(\"ma20\", \"—\")} | MA50: ${coin.optString(\"ma50\", \"—\")}\n")
+                    out.append("Объём подтверждён: ${if (coin.optBoolean("volume_confirmed")) "ДА" else "НЕТ"}\n")
+                    out.append("MA20: ${coin.optString("ma20", "—")} | MA50: ${coin.optString("ma50", "—")}\n")
                     out.append("ATR(14): ${coin.optString(\"atr_14\", \"—\")}\n")
                     if (signal == "BUY") {
                         out.append("Вход: ${coin.optString("entry_price", "—")} USDT\n")
