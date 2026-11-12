@@ -233,7 +233,7 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
         # Use the live ticker price too: a stale candle close must not keep BUY active.
         strong_uptrend = current_price > ma20 > ma50
         asset_setup_confirmed = (
-            score >= 80 and strong_uptrend and change_6h >= 1.0
+            score >= 83 and strong_uptrend and change_6h >= 1.0
             and volume_confirmed and quote_volume >= 1_000_000
             and (change_24h - btc_change_24h_pct) > 0
         )
