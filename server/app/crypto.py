@@ -14,9 +14,35 @@ logger = logging.getLogger(__name__)
 # Binance documents this host specifically for public market-data-only requests.
 BASE_URL = "https://data-api.binance.vision"
 CACHE_TTL = 60
+_NAME_CACHE_TTL = 21600
+_name_cache: tuple[float, dict[str, str]] = (0.0, {})
 _cache: dict[str, tuple[float, Any]] = {}
 _semaphore = asyncio.Semaphore(2)
 _blocked_until = 0.0
+
+
+async def _get_coin_names(client: httpx.AsyncClient) -> dict[str, str]:
+    global _name_cache
+    if time.time() - _name_cache[0] < _NAME_CACHE_TTL and _name_cache[1]:
+        return _name_cache[1]
+    try:
+        response = await client.get(
+            "https://api.coingecko.com/api/v3/coins/markets",
+            params={"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": 1, "sparkline": "false"},
+            headers={"accept": "application/json"},
+        )
+        response.raise_for_status()
+        names = {}
+        for coin in response.json():
+            symbol = str(coin.get("symbol") or "").upper()
+            name = str(coin.get("name") or "").strip()
+            if symbol and name:
+                names.setdefault(symbol, name)
+        _name_cache = (time.time(), names)
+        return names
+    except (httpx.HTTPError, ValueError, TypeError):
+        logger.warning("Coin names lookup unavailable; showing ticker symbols")
+        return _name_cache[1]
 
 
 class BinanceCooldownError(Exception):
@@ -542,6 +568,10 @@ async def scan_crypto(
         ) from exc
 
     assets = [item for item in results if item is not None]
+    coin_names = await _get_coin_names(client)
+    for asset in assets:
+        base_symbol = str(asset.get("symbol") or "").removesuffix("USDT")
+        asset["name"] = coin_names.get(base_symbol, base_symbol)
     assets.sort(key=lambda item: item["score"], reverse=True)
     for rank, asset in enumerate(assets, start=1):
         asset["market_rank"] = rank
