@@ -49,6 +49,8 @@ class BuySignalWorker(
             }
 
             val json = JSONObject(responseText)
+            // PAPER-счёт обрабатывает каждый фоновый рыночный скан.
+            PaperTrading(applicationContext).processScan(json)
             val btc = json.optJSONObject("btc_market_filter")
             val btcAllowsBuys = btc?.optBoolean("buy_allowed", false) == true
             val assets = json.optJSONArray("assets")
