@@ -128,6 +128,8 @@ class CryptoScanner(private val context: Context) {
         var bybit: ExchangeResult? = null
         var loadingCount = 0
 
+        lateinit var render: () -> Unit
+
         fun addTab(title: String, key: String, color: Int) {
             val b = Button(context).apply {
                 text = title
@@ -233,7 +235,7 @@ class CryptoScanner(private val context: Context) {
             })
         }
 
-        fun render() {
+        render = {
             tabs.removeAllViews()
             addTab("Главная · TOP 3", "HOME", blue)
             addTab("Binance", "BINANCE", blue)
