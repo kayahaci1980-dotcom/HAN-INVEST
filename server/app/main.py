@@ -10,6 +10,7 @@ from urllib.parse import quote_plus
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from app.crypto import router as crypto_router
+from app.bybit import router as bybit_router
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
@@ -19,6 +20,7 @@ app = FastAPI(
 )
 
 app.include_router(crypto_router)
+app.include_router(bybit_router)
 
 app.add_middleware(
     CORSMiddleware,
