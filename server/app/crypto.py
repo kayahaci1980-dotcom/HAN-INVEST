@@ -121,7 +121,10 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
         score = min(100, trend_score + momentum_score + short_score +
                     liquidity_score + stability_score + volume_score)
 
-        if score >= 75 and last > ma20 and change_6h > 0:
+        # A BUY signal requires confirmation that the latest hourly volume
+        # is at least equal to the average of the previous 24 hourly candles.
+        volume_confirmed = volume_ratio >= 1.0
+        if score >= 75 and last > ma20 and change_6h > 0 and volume_confirmed:
             signal = "BUY"
         elif score >= 55:
             signal = "WATCH"
@@ -145,6 +148,7 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "momentum_24h_pct": round(change_24h, 2),
             "quote_volume_24h": round(quote_volume, 2),
             "volume_ratio": round(volume_ratio, 2),
+            "volume_confirmed": volume_confirmed,
             "ma20": round(ma20, 8),
             "ma50": round(ma50, 8),
             "hourly_volatility_pct": round(hourly_volatility, 3),
@@ -411,6 +415,7 @@ async def scan_crypto(
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "assets": assets,
         "notice": (
+            "BUY требует подтверждения объёма: volume_ratio >= 1.0. "
             "Оценка является аналитическим индикатором, а не гарантией прибыли. "
             "Не учитывает комиссии, проскальзывание и индивидуальные ограничения."
         ),
