@@ -11,7 +11,9 @@ import android.widget.Button
 import android.widget.EditText
 import android.text.InputType
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -19,18 +21,31 @@ import java.util.Locale
 
 class CryptoScanner(private val context: Context) {
     private val blue = Color.rgb(55, 105, 245)
+    private val orange = Color.rgb(230, 135, 25)
     private val dark = Color.rgb(30, 42, 65)
     private val muted = Color.rgb(125, 137, 158)
+    private val page = Color.rgb(246, 248, 253)
+
+    private data class ExchangeResult(
+        val exchange: String,
+        val source: String,
+        val scanned: Int,
+        val eligible: Int,
+        val btcState: String,
+        val btcAvailable: Boolean,
+        val assets: List<JSONObject>,
+        val error: String? = null
+    )
 
     private fun dp(value: Int): Int =
         (value * context.resources.displayMetrics.density).toInt()
 
-    private fun background(color: Int) = GradientDrawable().apply {
+    private fun rounded(color: Int, radius: Int = 14) = GradientDrawable().apply {
         setColor(color)
-        cornerRadius = dp(14).toFloat()
+        cornerRadius = dp(radius).toFloat()
     }
 
-    private fun text(value: String, size: Float, color: Int, bold: Boolean = false) =
+    private fun label(value: String, size: Float, color: Int, bold: Boolean = false) =
         TextView(context).apply {
             text = value
             textSize = size
@@ -38,21 +53,29 @@ class CryptoScanner(private val context: Context) {
             if (bold) setTypeface(null, Typeface.BOLD)
         }
 
+    private fun buttonStyle(button: Button, color: Int) {
+        button.setTextColor(Color.WHITE)
+        button.background = rounded(color, 12)
+        button.isAllCaps = false
+    }
+
     fun createView(): View {
         val section = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
         }
-        section.addView(text("₿ Криптосканер HAN INVEST", 21f, dark, true))
-        section.addView(text(
-            "Рейтинг монет по рыночной активности. WATCH — наблюдать, не команда покупать.",
+        section.addView(label("₿ Криптосканер HAN INVEST", 21f, dark, true))
+        section.addView(label(
+            "Три лучших результата на главной. Binance и Bybit анализируются отдельно.",
             13f, muted
         ))
+
         val panel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(15), dp(16), dp(15))
-            background = background(Color.WHITE)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = rounded(Color.WHITE)
             elevation = dp(2).toFloat()
         }
+        panel.addView(label("РАСЧЁТ РАЗМЕРА ПОЗИЦИИ", 13f, muted, true))
         val capitalInput = EditText(context).apply {
             hint = "Ваш капитал в USDT"
             setText("100")
@@ -61,294 +84,304 @@ class CryptoScanner(private val context: Context) {
             setSingleLine(true)
         }
         val riskInput = EditText(context).apply {
-            hint = "Риск на сделку, % (по умолчанию 1)"
+            hint = "Риск на сделку, %"
             setText("1")
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
             textSize = 14f
             setSingleLine(true)
         }
-        val status = text("Нажмите «Обновить», чтобы загрузить рейтинг.", 14f, dark)
+        panel.addView(capitalInput)
+        panel.addView(riskInput)
+        panel.addView(label(
+            "По умолчанию риск 1% капитала. Только Spot, без кредитного плеча.",
+            12f, muted
+        ))
+
+        val tabs = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(12), 0, dp(8))
+        }
+        val content = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = rounded(Color.WHITE)
+        }
+        val scroll = ScrollView(context).apply {
+            isFillViewport = true
+            addView(content)
+        }
+        val status = label("Загрузка независимых данных Binance и Bybit...", 14f, dark)
         val refresh = Button(context).apply {
-            this.text = "ОБНОВИТЬ КРИПТОСКАНЕР"
-            setTextColor(Color.WHITE)
-            background = background(blue)
-            setOnClickListener {
-                val capital = capitalInput.text.toString().trim().toDoubleOrNull()
-                val risk = riskInput.text.toString().trim().toDoubleOrNull() ?: 1.0
-                if (capitalInput.text.isNotBlank() && (capital == null || capital <= 0.0)) {
-                    capitalInput.error = "Введите капитал больше нуля"
-                } else if (risk !in 0.1..5.0) {
-                    riskInput.error = "Допустимый риск: от 0,1% до 5%"
+            text = "Обновить обе биржи"
+            buttonStyle(this, blue)
+        }
+        panel.addView(status)
+        panel.addView(refresh)
+        section.addView(panel)
+        section.addView(tabs)
+        section.addView(scroll)
+
+        var selectedTab = "HOME"
+        var capital = 100.0
+        var risk = 1.0
+        var binance: ExchangeResult? = null
+        var bybit: ExchangeResult? = null
+        var loadingCount = 0
+
+        fun addTab(title: String, key: String, color: Int) {
+            val b = Button(context).apply {
+                text = title
+                textSize = 12f
+                buttonStyle(this, if (selectedTab == key) color else muted)
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+                    marginEnd = dp(5)
+                }
+                setOnClickListener {
+                    selectedTab = key
+                    render()
+                }
+            }
+            tabs.addView(b)
+        }
+
+        fun formatNumber(value: Double, digits: Int = 6): String =
+            if (value.isNaN() || value.isInfinite()) "—"
+            else String.format(Locale.US, "%,.${digits}f", value)
+
+        fun tradeReady(coin: JSONObject, result: ExchangeResult, maxRisk: Double): Boolean {
+            val price = coin.optDouble("price", Double.NaN)
+            val ma20 = coin.optDouble("ma20", Double.NaN)
+            val ma50 = coin.optDouble("ma50", Double.NaN)
+            val atr = coin.optDouble("atr_14", Double.NaN)
+            val momentum = coin.optDouble("momentum_6h_pct", Double.NaN)
+            val volumeRatio = coin.optDouble("volume_ratio", Double.NaN)
+            val quoteVolume = coin.optDouble("quote_volume_24h", 0.0)
+            val sizing = coin.optJSONObject("position_sizing")
+            val plannedLoss = sizing?.optDouble("potential_loss_at_stop_usdt", Double.NaN) ?: Double.NaN
+            val btcOk = result.btcAvailable &&
+                (result.btcState == "BULLISH" || result.btcState == "SIDEWAYS")
+            return result.error == null &&
+                coin.optBoolean("trade_ready", false) &&
+                coin.optInt("score", 0) >= 80 &&
+                !price.isNaN() && !ma20.isNaN() && !ma50.isNaN() &&
+                price > ma20 && ma20 > ma50 &&
+                !atr.isNaN() && atr > 0.0 &&
+                !momentum.isNaN() && momentum >= 1.0 &&
+                !volumeRatio.isNaN() && volumeRatio >= 1.2 &&
+                quoteVolume >= 1_000_000.0 &&
+                coin.optBoolean("volume_confirmed", false) &&
+                btcOk &&
+                sizing != null && sizing.optBoolean("available", false) &&
+                !plannedLoss.isNaN() && plannedLoss > 0.0 && plannedLoss <= maxRisk + 0.01
+        }
+
+        fun coinCard(coin: JSONObject, exchange: String, result: ExchangeResult, maxRisk: Double) {
+            val symbol = coin.optString("symbol", "—")
+            val price = coin.optDouble("price", Double.NaN)
+            val score = coin.optInt("score", 0)
+            val serverSignal = coin.optString("signal", "WATCH")
+            val buyAllowed = serverSignal == "BUY" && tradeReady(coin, result, maxRisk)
+            val early = coin.optString("early_signal") == "EARLY BUY"
+            val card = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(11), dp(12), dp(11))
+                background = rounded(page, 12)
+            }
+            val signalText = if (buyAllowed) "BUY — условия подтверждены"
+                else if (early) "EARLY BUY — только наблюдение" else "WATCH — наблюдение"
+            card.addView(label("$symbol  •  $exchange", 16f, dark, true))
+            card.addView(label(
+                "Оценка: $score/100   |   Сигнал: $signalText",
+                13f, if (buyAllowed) Color.rgb(20, 145, 90) else muted, true
+            ))
+            card.addView(label(
+                "Цена: ${if (price.isNaN()) "—" else formatNumber(price, 8)} USDT",
+                13f, dark
+            ))
+            card.addView(label(
+                "MA20: ${coin.optString("ma20", "—")}   |   MA50: ${coin.optString("ma50", "—")}",
+                13f, dark
+            ))
+            card.addView(label("ATR(14): ${coin.optString("atr_14", "—")}", 13f, dark))
+            card.addView(label(
+                "Объём к среднему: ${coin.optString("volume_ratio", "—")}x   |   Подтверждён: ${if (coin.optBoolean("volume_confirmed")) "ДА" else "НЕТ"}",
+                13f, dark
+            ))
+            if (buyAllowed) {
+                card.addView(label(
+                    "Вход: ${coin.optString("entry_price", "—")}   |   Stop Loss: ${coin.optString("stop_loss", "—")}   |   Take Profit: ${coin.optString("take_profit", "—")}",
+                    13f, dark
+                ))
+                val sizing = coin.optJSONObject("position_sizing")!!
+                card.addView(label(
+                    "Количество: ${sizing.optString("quantity", "—")}   |   Позиция: ${sizing.optString("position_value_usdt", "—")} USDT",
+                    13f, dark
+                ))
+                card.addView(label(
+                    "Риск при Stop Loss: ${sizing.optString("potential_loss_at_stop_usdt", "—")} USDT (лимит ${formatNumber(maxRisk, 2)} USDT)",
+                    13f, dark, true
+                ))
+            } else if (serverSignal == "BUY") {
+                card.addView(label(
+                    "BUY заблокирован: не все проверки подтверждены или расчёт риска превышает лимит.",
+                    12f, Color.rgb(190, 70, 55), true
+                ))
+            }
+            content.addView(card)
+            content.addView(View(context).apply {
+                layoutParams = LinearLayout.LayoutParams(1, dp(9))
+            })
+        }
+
+        fun render() {
+            tabs.removeAllViews()
+            addTab("Главная · TOP 3", "HOME", blue)
+            addTab("Binance", "BINANCE", blue)
+            addTab("Bybit", "BYBIT", orange)
+            content.removeAllViews()
+            content.addView(label(
+                when (selectedTab) {
+                    "BINANCE" -> "🟡 BINANCE SPOT — отдельные данные биржи"
+                    "BYBIT" -> "🟠 BYBIT SPOT — отдельные данные биржи"
+                    else -> "ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА"
+                }, 17f, dark, true
+            ))
+            val b = binance
+            val y = bybit
+            if (b == null || y == null) {
+                content.addView(label("Ожидаем ответы обеих бирж.\n${status.text}", 14f, muted))
+                return
+            }
+            val maxRisk = capital * risk / 100.0
+            if (selectedTab == "HOME") {
+                content.addView(label(
+                    "Сравнение Binance и Bybit. В рейтинге учитывается оценка, а не порядок ответа API.",
+                    12f, muted
+                ))
+                val combined = mutableListOf<Pair<JSONObject, ExchangeResult>>()
+                if (b.error == null) b.assets.forEach { combined.add(it to b) }
+                if (y.error == null) y.assets.forEach { combined.add(it to y) }
+                val top = combined.sortedWith(
+                    compareByDescending<Pair<JSONObject, ExchangeResult>> { it.first.optInt("score", 0) }
+                        .thenByDescending { it.first.optDouble("volume_ratio", 0.0) }
+                ).take(3)
+                if (top.isEmpty()) content.addView(label("Нет доступных результатов. Проверьте соединение.", 14f, muted))
+                top.forEach { (coin, exchange) -> coinCard(coin, exchange.exchange, exchange, maxRisk) }
+                content.addView(label(
+                    "Binance: ${b.assets.size} кандидатов • Bybit: ${y.assets.size} кандидатов",
+                    12f, muted
+                ))
+            } else {
+                val result = if (selectedTab == "BINANCE") b else y
+                content.addView(label(
+                    "Источник: ${result.source}\nПроверено пар: ${result.scanned} • Подходящих Spot-пар: ${result.eligible}\nBTC market state: ${result.btcState}",
+                    12f, muted
+                ))
+                if (result.error != null) {
+                    content.addView(label("Ошибка загрузки: ${result.error}", 14f, Color.RED))
+                } else if (result.assets.isEmpty()) {
+                    content.addView(label("Кандидаты не найдены.", 14f, muted))
                 } else {
-                    load(status, capital, risk)
+                    result.assets.sortedByDescending { it.optInt("score", 0) }
+                        .forEach { coinCard(it, result.exchange, result, maxRisk) }
                 }
             }
         }
-        panel.addView(text("РАСЧЁТ РАЗМЕРА ПОЗИЦИИ", 13f, muted, true))
-        panel.addView(capitalInput)
-        panel.addView(riskInput)
-        panel.addView(text("Риск по умолчанию — 1% капитала. Только спотовая торговля, без плеча.", 12f, muted))
-        panel.addView(status)
-        panel.addView(refresh)
-        val autoRefreshLabel = text(
-            "Автообновление каждые 15 минут включено.",
-            12f, muted
-        )
-        panel.addView(autoRefreshLabel)
 
-        val autoRefreshHandler = Handler(Looper.getMainLooper())
-        val autoRefreshTask = object : Runnable {
+        fun fetchExchange(exchange: String, address: String, done: (ExchangeResult) -> Unit) {
+            Thread {
+                val result = try {
+                    val connection = URL(address).openConnection() as HttpURLConnection
+                    val raw = try {
+                        connection.requestMethod = "GET"
+                        connection.connectTimeout = 20000
+                        connection.readTimeout = 30000
+                        connection.setRequestProperty("Accept", "application/json")
+                        connection.setRequestProperty("User-Agent", "HAN-INVEST-Android/2.5")
+                        if (connection.responseCode !in 200..299) throw Exception("HTTP ${connection.responseCode}")
+                        connection.inputStream.bufferedReader().use { it.readText() }
+                    } finally {
+                        connection.disconnect()
+                    }
+                    val json = JSONObject(raw)
+                    val array = json.optJSONArray("assets") ?: JSONArray()
+                    val list = (0 until array.length()).map { array.getJSONObject(it) }
+                    val btc = json.optJSONObject("btc_market_filter")
+                    val source = json.optString("source",
+                        if (exchange == "Binance") "Binance public market data" else "Bybit public market data")
+                    ExchangeResult(
+                        exchange, source, json.optInt("scanned", list.size),
+                        json.optInt("eligible_pairs", 0),
+                        btc?.optString("market_state", "UNKNOWN") ?: "UNKNOWN",
+                        btc?.optBoolean("available", false) ?: false,
+                        list
+                    )
+                } catch (e: Exception) {
+                    ExchangeResult(exchange, "Недоступен", 0, 0, "UNKNOWN", false, emptyList(),
+                        e.message ?: "Ошибка сети")
+                }
+                Handler(Looper.getMainLooper()).post { done(result) }
+            }.start()
+        }
+
+        fun loadAll() {
+            capital = capitalInput.text.toString().trim().toDoubleOrNull() ?: 0.0
+            risk = riskInput.text.toString().trim().toDoubleOrNull() ?: 0.0
+            if (capital <= 0.0) {
+                capitalInput.error = "Введите капитал больше нуля"
+                return
+            }
+            if (risk !in 0.1..5.0) {
+                riskInput.error = "Допустимый риск: от 0,1% до 5%"
+                return
+            }
+            binance = null
+            bybit = null
+            loadingCount = 2
+            status.text = "Загружаем Binance и Bybit независимо..."
+            render()
+            val query = "limit=30&universe_limit=100&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk"
+            fetchExchange("Binance",
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?$query") {
+                binance = it
+                loadingCount--
+                status.text = if (loadingCount == 0) "Данные обеих бирж обновлены."
+                    else "Binance получен. Ожидаем Bybit..."
+                render()
+            }
+            fetchExchange("Bybit",
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk") {
+                bybit = it
+                loadingCount--
+                status.text = if (loadingCount == 0) "Данные обеих бирж обновлены."
+                    else "Bybit получен. Ожидаем Binance..."
+                render()
+            }
+        }
+
+        refresh.setOnClickListener { loadAll() }
+        section.addView(label(
+            "Автообновление каждые 15 минут при открытом экране.",
+            11f, muted
+        ))
+        val handler = Handler(Looper.getMainLooper())
+        val task = object : Runnable {
             override fun run() {
                 if (!section.isAttachedToWindow) return
-                val capital = capitalInput.text.toString().trim().toDoubleOrNull()
-                val risk = riskInput.text.toString().trim().toDoubleOrNull() ?: 1.0
-                if (capital != null && capital > 0.0 && risk in 0.1..5.0) {
-                    autoRefreshLabel.text = "Автоматически обновляем рынок..."
-                    load(status, capital, risk)
-                }
-                autoRefreshHandler.postDelayed(this, 15L * 60L * 1000L)
+                loadAll()
+                handler.postDelayed(this, 15L * 60L * 1000L)
             }
         }
         section.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(view: View) {
-                autoRefreshHandler.removeCallbacks(autoRefreshTask)
-                autoRefreshHandler.postDelayed(autoRefreshTask, 15L * 60L * 1000L)
+                handler.removeCallbacks(task)
+                handler.postDelayed(task, 15L * 60L * 1000L)
             }
-
             override fun onViewDetachedFromWindow(view: View) {
-                autoRefreshHandler.removeCallbacks(autoRefreshTask)
+                handler.removeCallbacks(task)
             }
         })
-        section.addView(panel)
-        section.addView(text(
-            "Источник: HAN INVEST API. Резервные агрегированные данные не подтверждают торговую пару на бирже.",
-            11f, muted
-        ))
-        load(status, 100.0, 1.0)
+        loadAll()
         return section
-    }
-
-    private fun load(target: TextView, capitalUsdt: Double? = null, riskPct: Double = 1.0) {
-        target.text = "Загрузка рейтинга криптовалют..."
-        Thread {
-            try {
-                val query = buildString {
-                    append("limit=30&universe_limit=100&min_volume=1000000&risk_pct=")
-                    append(riskPct)
-                    if (capitalUsdt != null) {
-                        append("&capital_usdt=")
-                        append(capitalUsdt)
-                    }
-                }
-                val connection = URL(
-                    "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?$query"
-                ).openConnection() as HttpURLConnection
-                val jsonText = try {
-                    connection.requestMethod = "GET"
-                    connection.connectTimeout = 20000
-                    connection.readTimeout = 25000
-                    connection.setRequestProperty("Accept", "application/json")
-                    connection.setRequestProperty("User-Agent", "HAN-INVEST-Android/2.4")
-                    if (connection.responseCode !in 200..299) {
-                        throw Exception("HTTP ${connection.responseCode}")
-                    }
-                    connection.inputStream.bufferedReader().use { it.readText() }
-                } finally {
-                    connection.disconnect()
-                }
-                val json = JSONObject(jsonText)
-                val assets = json.optJSONArray("assets")
-                    ?: throw Exception("Нет списка активов")
-                val out = StringBuilder()
-                val sourceName = json.optString("source", "Неизвестный источник")
-                val isBinanceSource = sourceName.contains("Binance public market data", ignoreCase = true) &&
-                    !sourceName.contains("fallback", ignoreCase = true)
-                out.append("🟡 BINANCE SPOT  |  Источник: $sourceName\n")
-                out.append("Проверено монет: ${json.optInt("scanned", assets.length())}\n")
-                if (isBinanceSource) {
-                    out.append("Подходящих спотовых пар Binance: ${json.optInt("eligible_pairs", 0)}\n")
-                } else {
-                    out.append("Проверка торговых пар Binance: НЕ ВЫПОЛНЕНА\n")
-                    out.append("ВНИМАНИЕ: РЕЗЕРВНЫЙ ИСТОЧНИК — ТОРГОВЛЯ НЕ ПОДТВЕРЖДЕНА\n")
-                    out.append("MA20, MA50 и ATR недоступны. Сигналы BUY запрещены.\n")
-                }
-                out.append("Лучших кандидатов в списке: ${assets.length()}\n")
-                val btc = json.optJSONObject("btc_market_filter")
-                if (btc != null && btc.optBoolean("available", false)) {
-                    val marketLabel = btc.optString("market_state_label", "Не определён")
-                    val marketReason = btc.optString("reason", "")
-                    out.append("СОСТОЯНИЕ РЫНКА BTC: $marketLabel\n")
-                    out.append("BTC: ${btc.optString("price", "—")} | MA20: ${btc.optString("ma20", "—")} | MA50: ${btc.optString("ma50", "—")}\n")
-                    out.append("Покупки разрешены: ${if (btc.optBoolean("buy_allowed")) "ДА" else "НЕТ"}\n")
-                    if (marketReason.isNotBlank()) out.append("$marketReason\n")
-                } else {
-                    out.append("СОСТОЯНИЕ РЫНКА BTC: данные недоступны — BUY заблокирован\n")
-                }
-                out.append("При каждом обновлении сканирование выполняется заново.\n\n")
-                // Избранные активы повторно проверяются на каждом запуске сканера.
-                val watchSymbols = listOf("0GUSDT", "WLFIUSDT", "AVAXUSDT")
-                out.append("ИЗБРАННЫЕ МОНЕТЫ — ПОВТОРНОЕ НАБЛЮДЕНИЕ\n")
-                for (watchSymbol in watchSymbols) {
-                    val watchedCoin = (0 until assets.length())
-                        .map { assets.getJSONObject(it) }
-                        .firstOrNull { it.optString("symbol") == watchSymbol }
-                    if (watchedCoin == null) {
-                        out.append("$watchSymbol: сейчас не входит в лучшие 30\n")
-                    } else {
-                        val watchedPrice = watchedCoin.optDouble("price", Double.NaN)
-                        val watchedVolume = watchedCoin.optDouble("volume_ratio", Double.NaN)
-                        out.append("$watchSymbol | № ${watchedCoin.optInt("market_rank")} | ${watchedCoin.optString("signal", "WATCH")}")
-                        if (!watchedPrice.isNaN()) out.append(String.format(Locale.US, " | Цена: $%.6f", watchedPrice))
-                        if (!watchedVolume.isNaN()) out.append(String.format(Locale.US, " | Объём: %.2fx", watchedVolume))
-                        out.append(" | Объём подтверждён: ${if (watchedCoin.optBoolean("volume_confirmed")) "ДА" else "НЕТ"}\n")
-                    }
-                }
-                out.append("\n")
-                for (i in 0 until assets.length()) {
-                    val coin = assets.getJSONObject(i)
-                    val symbol = coin.optString("symbol")
-                    val name = coin.optString("name", symbol)
-                    val price = coin.optDouble("price", Double.NaN)
-                    val change = coin.optDouble("change_24h_pct", Double.NaN)
-                    val score = coin.optInt("score", 0)
-                    val signal = coin.optString("signal", "WATCH")
-                    out.append("№ ${coin.optInt("market_rank", i + 1)}. $name ($symbol)\n")
-                    if (!price.isNaN()) {
-                        out.append(String.format(Locale.US, "Цена: \\$%.6f USD\n", price))
-                    }
-                    if (!change.isNaN()) {
-                        out.append(String.format(Locale.US, "Изменение 24ч: %.2f%%\n", change))
-                    }
-                    val earlySignal = coin.optString("early_signal", "")
-                    out.append("Оценка: $score/100  |  Сигнал: $signal")
-                    if (earlySignal == "EARLY BUY") {
-                        out.append("  |  РАННИЙ BUY — не подтверждённая покупка")
-                    }
-                    out.append("\n")
-                    val volumeRatio = coin.optDouble("volume_ratio", Double.NaN)
-                    if (!volumeRatio.isNaN()) {
-                        out.append(String.format(Locale.US, "Объём к среднему: %.2fx\n", volumeRatio))
-                    }
-                    out.append("Объём подтверждён: ${if (coin.optBoolean("volume_confirmed")) "ДА" else "НЕТ"}\n")
-                    out.append("MA20: ${coin.optString("ma20", "—")} | MA50: ${coin.optString("ma50", "—")}\n")
-                    // Explain every failed condition behind BUY / EARLY BUY.
-                    val ma20Value = coin.optDouble("ma20", Double.NaN)
-                    val ma50Value = coin.optDouble("ma50", Double.NaN)
-                    val currentPrice = coin.optDouble("price", Double.NaN)
-                    val change6h = coin.optDouble("momentum_6h_pct", Double.NaN)
-                    val quoteVolume = coin.optDouble("quote_volume_24h", 0.0)
-                    val checksFailed = mutableListOf<String>()
-                    if (score < 80) checksFailed.add("Оценка ниже 80 (сейчас $score)")
-                    if (ma20Value.isNaN() || ma50Value.isNaN() || currentPrice.isNaN() ||
-                        !(currentPrice > ma20Value && ma20Value > ma50Value)) {
-                        checksFailed.add("Тренд: цена должна быть выше MA20, а MA20 выше MA50")
-                    }
-                    if (change6h.isNaN() || change6h < 1.0) {
-                        checksFailed.add("Рост за 6 часов меньше 1% или нет данных")
-                    }
-                    if (volumeRatio.isNaN() || volumeRatio < 1.2) {
-                        checksFailed.add("Объём ниже 1.2x")
-                    }
-                    if (quoteVolume < 1_000_000) {
-                        checksFailed.add("Оборот за 24 часа ниже 1 млн USDT")
-                    }
-                    val btcState = btc?.optString("market_state", "UNKNOWN") ?: "UNKNOWN"
-                    if (btcState != "SIDEWAYS" && btcState != "BULLISH") {
-                        checksFailed.add("Рынок BTC не боковой — ранний BUY не разрешён")
-                    }
-                    if (signal != "BUY" && earlySignal != "EARLY BUY") {
-                        out.append("ПОЧЕМУ НЕТ BUY: ")
-                        out.append(if (checksFailed.isEmpty()) "условия сигнала не подтверждены\n"
-                                   else checksFailed.joinToString("; ") + "\n")
-                    } else if (earlySignal == "EARLY BUY") {
-                        out.append("ПОЧЕМУ EARLY BUY: условия актива выполнены, BTC в боковом рынке. Это предупреждение, не подтверждённая покупка.\n")
-                    }
-                    out.append("ATR(14): ${coin.optString("atr_14", "—")}\n")
-                    if (signal == "BUY") {
-                        out.append("Вход: ${coin.optString("entry_price", "—")} USDT\n")
-                        out.append("Stop Loss: ${coin.optString("stop_loss", "—")} USDT\n")
-                        out.append("Take Profit: ${coin.optString("take_profit", "—")} USDT\n")
-                        val sizing = coin.optJSONObject("position_sizing")
-                        if (sizing != null && sizing.optBoolean("available", false)) {
-                            out.append("Количество: ${sizing.optString("quantity")}\n")
-                            out.append("Размер позиции: ${sizing.optString("position_value_usdt")} USDT\n")
-                            out.append("Плановый риск: ${sizing.optString("potential_loss_at_stop_usdt")} USDT\n")
-                            out.append("Потенциальная прибыль: ${sizing.optString("potential_profit_at_target_usdt")} USDT\n")
-                        } else if (capitalUsdt == null) {
-                            out.append("Введите капитал, чтобы рассчитать размер позиции.\n")
-                        }
-                    }
-                    if (!isBinanceSource) {
-                        out.append("РЕЗЕРВНЫЕ ДАННЫЕ: монета не проверена как спотовая пара Binance — НЕ ТОРГОВАТЬ ПО ЭТОМУ СПИСКУ\n")
-                    } else if (coin.optBoolean("trade_ready", false)) {
-                        out.append("Торговая пара подтверждена\n")
-                    } else {
-                        out.append("Пара не подтверждена — не готово к сделке\n")
-                    }
-                    out.append("\n")
-                }
-                // Fetch Bybit independently: never mix its prices or indicators with Binance rows.
-                try {
-                    val bybitConnection = URL(
-                        "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000&capital_usdt=${capitalUsdt ?: 100.0}&risk_pct=${riskPct}"
-                    ).openConnection() as HttpURLConnection
-                    val bybitText = try {
-                        bybitConnection.requestMethod = "GET"
-                        bybitConnection.connectTimeout = 20000
-                        bybitConnection.readTimeout = 30000
-                        bybitConnection.setRequestProperty("Accept", "application/json")
-                        if (bybitConnection.responseCode !in 200..299) throw Exception("Bybit API unavailable")
-                        bybitConnection.inputStream.bufferedReader().use { it.readText() }
-                    } finally {
-                        bybitConnection.disconnect()
-                    }
-                    val bybitJson = JSONObject(bybitText)
-                    val bybitAssets = bybitJson.optJSONArray("assets")
-                    out.append("\n🟠 BYBIT SPOT — ОТДЕЛЬНЫЙ ИСТОЧНИК\n")
-                    out.append("Проверено пар: ${bybitJson.optInt("eligible_pairs")} | Кандидатов: ${bybitJson.optInt("scanned")}\n")
-                    val bybitBtc = bybitJson.optJSONObject("btc_market_filter")
-                    out.append("BTC Bybit: ${bybitBtc?.optString("market_state", "UNKNOWN") ?: "UNKNOWN"}\n\n")
-                    if (bybitAssets != null) {
-                        for (i in 0 until bybitAssets.length()) {
-                            val coin = bybitAssets.getJSONObject(i)
-                            out.append("🟠 № ${coin.optInt("market_rank", i + 1)} ${coin.optString("symbol")}\n")
-                            out.append(String.format(Locale.US, "Цена: $%.8f | Оценка: %d/100\n",
-                                coin.optDouble("price"), coin.optInt("score")))
-                            out.append("Сигнал: ${coin.optString("signal", "WATCH")}")
-                            if (coin.optString("early_signal") == "EARLY BUY") {
-                                out.append(" | EARLY BUY — только наблюдение, не покупка")
-                            }
-                            out.append("\nMA20: ${coin.optString("ma20")} | MA50: ${coin.optString("ma50")}\n")
-                            out.append("ATR(14): ${coin.optString("atr_14", "—")}\n")
-                            out.append("Объём: ${coin.optString("volume_ratio", "—")}x | Подтверждён: ${if (coin.optBoolean("volume_confirmed")) "ДА" else "НЕТ"}\n")
-                            out.append("Пара Spot: ${if (coin.optBoolean("trade_ready")) "ДА" else "НЕТ"}\n")
-                            if (coin.optString("signal") == "BUY") {
-                                out.append("Вход: ${coin.optString("entry_price", "—")} USDT | Stop Loss: ${coin.optString("stop_loss", "—")} USDT | Take Profit: ${coin.optString("take_profit", "—")} USDT\n")
-                                val bybitSizing = coin.optJSONObject("position_sizing")
-                                if (bybitSizing != null && bybitSizing.optBoolean("available", false)) {
-                                    out.append("Количество: ${bybitSizing.optString("quantity")} | Позиция: ${bybitSizing.optString("position_value_usdt")} USDT\n")
-                                    out.append("Риск при Stop Loss: ${bybitSizing.optString("potential_loss_at_stop_usdt")} USDT\n")
-                                    out.append("Потенциальная прибыль: ${bybitSizing.optString("potential_profit_at_target_usdt")} USDT\n")
-                                } else {
-                                    out.append("Размер позиции не рассчитан — не использовать BUY без расчёта риска.\n")
-                                }
-                            }
-                            out.append("\n")
-                        }
-                    }
-                } catch (bybitError: Exception) {
-                    out.append("\n🟠 BYBIT: данные временно недоступны — Binance продолжает работать отдельно.\n")
-                }
-                val notice = json.optString("notice")
-                if (notice.isNotBlank()) out.append("\n$notice")
-                (context as? android.app.Activity)?.runOnUiThread {
-                    target.text = out.toString()
-                }
-            } catch (error: Exception) {
-                (context as? android.app.Activity)?.runOnUiThread {
-                    target.text = "Не удалось загрузить рейтинг. Проверьте интернет и повторите попытку."
-                }
-            }
-        }.start()
     }
 }
