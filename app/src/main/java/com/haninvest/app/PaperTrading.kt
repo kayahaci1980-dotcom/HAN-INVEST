@@ -1,0 +1,233 @@
+package com.haninvest.app
+
+import android.content.Context
+import android.graphics.Color
+import android.graphics.Typeface
+import android.view.View
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.Locale
+
+class PaperTrading(private val context: Context) {
+    private val prefs = context.getSharedPreferences("han_paper_trading", Context.MODE_PRIVATE)
+    private val blue = Color.rgb(55, 105, 245)
+    private val dark = Color.rgb(30, 42, 65)
+    private val green = Color.rgb(25, 160, 105)
+    private val red = Color.rgb(205, 65, 65)
+
+    private fun money(v: Double) = String.format(Locale.US, "$%,.2f", v)
+    private fun readArray(key: String) = try { JSONArray(prefs.getString(key, "[]")) } catch (_: Exception) { JSONArray() }
+    private fun saveArray(key: String, value: JSONArray) { prefs.edit().putString(key, value.toString()).apply() }
+
+    private fun balance(): Double = prefs.getFloat("cash", 1000f).toDouble()
+    private fun positions() = readArray("positions")
+    private fun history() = readArray("history")
+
+    private fun process(json: JSONObject): String {
+        var cash = balance()
+        val open = positions()
+        val log = history()
+        val assets = json.optJSONArray("assets") ?: throw Exception("Сканер не вернул список активов")
+        val btc = json.optJSONObject("btc_market_filter")
+        val buyAllowed = btc?.optBoolean("buy_allowed", false) == true
+        val now = System.currentTimeMillis()
+
+        // Сначала проверяем уже открытые виртуальные позиции.
+        val remaining = JSONArray()
+        for (i in 0 until open.length()) {
+            val p = open.getJSONObject(i)
+            val symbol = p.optString("symbol")
+            val coin = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
+                .firstOrNull { it.optString("symbol") == symbol }
+            val price = coin?.optDouble("price", Double.NaN) ?: Double.NaN
+            val score = coin?.optInt("score", 0) ?: 0
+            val entry = p.optDouble("entry")
+            val qty = p.optDouble("quantity")
+            val stop = p.optDouble("stop")
+            val take = entry * 1.10
+            val reason = when {
+                !price.isNaN() && price <= stop -> "STOP LOSS"
+                !price.isNaN() && price >= take -> "TAKE PROFIT +10%"
+                score < 83 -> "Сигнал ниже 83"
+                else -> ""
+            }
+            if (reason.isNotEmpty() && !price.isNaN()) {
+                val proceeds = qty * price
+                cash += proceeds
+                log.put(JSONObject().put("type", "SELL").put("symbol", symbol)
+                    .put("price", price).put("quantity", qty)
+                    .put("pnl", (price - entry) * qty).put("reason", reason).put("time", now))
+            } else {
+                if (!price.isNaN()) p.put("last_price", price)
+                remaining.put(p)
+            }
+        }
+
+        // Покупаем только подтверждённые BUY-сигналы, без повторного входа в тот же актив.
+        val held = (0 until remaining.length()).mapNotNull { remaining.optJSONObject(it)?.optString("symbol") }.toSet()
+        if (buyAllowed) {
+            for (i in 0 until assets.length()) {
+                val coin = assets.optJSONObject(i) ?: continue
+                val symbol = coin.optString("symbol")
+                val price = coin.optDouble("price", Double.NaN)
+                val score = coin.optInt("score", 0)
+                if (symbol.isBlank() || symbol in held || price <= 0 || price.isNaN()) continue
+                if (coin.optString("signal") != "BUY" || score < 83 ||
+                    !coin.optBoolean("trade_ready") || !coin.optBoolean("volume_confirmed")) continue
+                val stopValue = coin.optDouble("stop_loss", Double.NaN)
+                val stop = if (!stopValue.isNaN() && stopValue > 0 && stopValue < price) stopValue else price * 0.97
+                val riskBudget = (cash + remainingValue(remaining)) * 0.01
+                val riskPerUnit = price - stop
+                val qtyByRisk = riskBudget / riskPerUnit
+                val maxSpend = (cash + remainingValue(remaining)) * 0.20
+                val spend = minOf(cash, maxSpend, qtyByRisk * price)
+                if (spend < 5.0) continue
+                val qty = spend / price
+                cash -= spend
+                remaining.put(JSONObject().put("symbol", symbol).put("entry", price)
+                    .put("last_price", price).put("stop", stop).put("quantity", qty)
+                    .put("cost", spend).put("opened_at", now).put("score", score))
+                held.plus(symbol)
+                log.put(JSONObject().put("type", "BUY").put("symbol", symbol)
+                    .put("price", price).put("quantity", qty).put("cost", spend)
+                    .put("score", score).put("time", now))
+            }
+        }
+        prefs.edit().putFloat("cash", cash.toFloat()).putLong("last_scan", now).apply()
+        saveArray("positions", remaining)
+        saveArray("history", log)
+        return "Сканирование обработано. Найдено активов: ${assets.length()}."
+    }
+
+    private fun remainingValue(open: JSONArray): Double {
+        var total = 0.0
+        for (i in 0 until open.length()) {
+            val p = open.optJSONObject(i) ?: continue
+            total += p.optDouble("quantity") * p.optDouble("last_price", p.optDouble("entry"))
+        }
+        return total
+    }
+
+    private fun render(target: TextView) {
+        val open = positions()
+        val log = history()
+        val cash = balance()
+        val invested = remainingValue(open)
+        val equity = cash + invested
+        val pnl = logPnl(log) + openPnl(open)
+        val out = StringBuilder()
+        out.append("ДЕНЬГИ: ").append(money(cash)).append("\n")
+        out.append("В открытых позициях: ").append(money(invested)).append("\n")
+        out.append("ОБЩИЙ КАПИТАЛ: ").append(money(equity)).append("\n")
+        out.append("Общий результат: ").append(if (pnl >= 0) "+" else "").append(money(pnl)).append("\n")
+        out.append("Открытых позиций: ").append(open.length()).append("\n\n")
+        out.append("ОТКРЫТЫЕ ПОЗИЦИИ\n")
+        if (open.length() == 0) out.append("Пока нет виртуальных покупок.\n")
+        for (i in 0 until open.length()) {
+            val p = open.getJSONObject(i)
+            val price = p.optDouble("last_price", p.optDouble("entry"))
+            out.append(p.optString("symbol")).append(" | вход ").append(money(p.optDouble("entry")))
+                .append(" | сейчас ").append(money(price))
+                .append(" | P/L ").append(money((price-p.optDouble("entry"))*p.optDouble("quantity")))
+                .append("\n")
+        }
+        out.append("\nПОСЛЕДНИЕ СДЕЛКИ\n")
+        if (log.length() == 0) out.append("История пока пустая.\n")
+        for (i in (log.length()-1 downTo maxOf(0, log.length()-10))) {
+            val t = log.optJSONObject(i) ?: continue
+            out.append(t.optString("type")).append(" ").append(t.optString("symbol"))
+                .append(" @ ").append(money(t.optDouble("price")))
+            if (t.optString("type") == "SELL") out.append(" | ").append(t.optString("reason"))
+                .append(" | P/L ").append(money(t.optDouble("pnl")))
+            out.append("\n")
+        }
+        target.text = out.toString()
+    }
+
+    private fun logPnl(log: JSONArray): Double {
+        var total = 0.0
+        for (i in 0 until log.length()) total += log.optJSONObject(i)?.optDouble("pnl", 0.0) ?: 0.0
+        return total
+    }
+    private fun openPnl(open: JSONArray): Double {
+        var total = 0.0
+        for (i in 0 until open.length()) {
+            val p = open.getJSONObject(i)
+            total += (p.optDouble("last_price", p.optDouble("entry")) - p.optDouble("entry")) * p.optDouble("quantity")
+        }
+        return total
+    }
+
+    fun createView(): View {
+        val box = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(18, 18, 18, 18)
+            setBackgroundColor(Color.WHITE)
+        }
+        val title = TextView(context).apply {
+            text = "PAPER TRADING — ВИРТУАЛЬНЫЙ СЧЁТ"
+            textSize = 19f
+            setTextColor(dark)
+            setTypeface(null, Typeface.BOLD)
+        }
+        box.addView(title)
+        val details = TextView(context).apply {
+            textSize = 14f
+            setTextColor(dark)
+            setPadding(0, 12, 0, 12)
+        }
+        box.addView(details)
+        val status = TextView(context).apply { text = "Режим симуляции. Реальные деньги не используются."; textSize = 12f; setTextColor(Color.GRAY) }
+        box.addView(status)
+        val scan = Button(context).apply {
+            text = "СКАНИРОВАТЬ И ВЫПОЛНИТЬ PAPER-СДЕЛКИ"
+            setTextColor(Color.WHITE)
+            setBackgroundColor(blue)
+            setOnClickListener {
+                isEnabled = false
+                status.text = "Получаем сигналы рынка..."
+                Thread {
+                    try {
+                        val conn = URL("https://han-invest-api-test.onrender.com/api/v1/crypto/scan?limit=30&universe_limit=100&min_volume=1000000&risk_pct=1&capital_usdt=1000").openConnection() as HttpURLConnection
+                        val body = try {
+                            conn.connectTimeout = 20000
+                            conn.readTimeout = 30000
+                            if (conn.responseCode !in 200..299) throw Exception("HTTP ${conn.responseCode}")
+                            conn.inputStream.bufferedReader().use { it.readText() }
+                        } finally { conn.disconnect() }
+                        val message = process(JSONObject(body))
+                        (context as? android.app.Activity)?.runOnUiThread {
+                            status.text = message
+                            isEnabled = true
+                            render(details)
+                        }
+                    } catch (e: Exception) {
+                        (context as? android.app.Activity)?.runOnUiThread {
+                            status.text = "Ошибка сканирования: ${e.message}"
+                            isEnabled = true
+                        }
+                    }
+                }.start()
+            }
+        }
+        box.addView(scan)
+        val reset = Button(context).apply {
+            text = "СБРОСИТЬ СЧЁТ ДО $1 000"
+            setOnClickListener {
+                prefs.edit().putFloat("cash", 1000f).putString("positions", "[]")
+                    .putString("history", "[]").putLong("last_scan", 0L).apply()
+                status.text = "Виртуальный счёт сброшен до $1 000."
+                render(details)
+            }
+        }
+        box.addView(reset)
+        if (!prefs.contains("cash")) prefs.edit().putFloat("cash", 1000f).apply()
+        render(details)
+        return box
+    }
+}
