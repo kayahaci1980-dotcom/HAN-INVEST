@@ -120,7 +120,26 @@ async def analyze(
             max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
             for i in range(1, len(closes))
         ]
-        atr = mean(true_ranges[-14:])
+        # Use 14 completed DAILY candles for ATR-based trade levels.
+        daily_result = await get_json(client, "/v5/market/kline", {
+            "category": "spot", "symbol": symbol, "interval": "D", "limit": "20"
+        })
+        daily_rows = list(reversed(daily_result.get("list", [])))[:-1]
+        daily_closes = [float(row[4]) for row in daily_rows]
+        daily_highs = [float(row[2]) for row in daily_rows]
+        daily_lows = [float(row[3]) for row in daily_rows]
+        if len(daily_closes) < 15:
+            return None
+        daily_true_ranges = [
+            max(daily_highs[i] - daily_lows[i],
+                abs(daily_highs[i] - daily_closes[i - 1]),
+                abs(daily_lows[i] - daily_closes[i - 1]))
+            for i in range(1, len(daily_closes))
+        ]
+        atr_14_1h = mean(true_ranges[-14:])
+        atr = mean(daily_true_ranges[-14:])
+        if not math.isfinite(atr) or atr <= 0:
+            return None
         returns = [(closes[i] / closes[i-1] - 1) for i in range(1, len(closes)) if closes[i-1] > 0]
         hourly_volatility = math.sqrt(mean([x*x for x in returns])) * 100
 
@@ -158,6 +177,8 @@ async def analyze(
             "quote_volume_24h": round(quote_volume, 2),
             "volume_ratio": round(volume_ratio, 2), "volume_confirmed": volume_confirmed,
             "ma20": round(ma20, 8), "ma50": round(ma50, 8), "atr_14": round(atr, 8),
+            "atr_14_1d": round(atr, 8), "atr_14_1h": round(atr_14_1h, 8),
+            "atr_timeframe": "1D",
             "hourly_volatility_pct": round(hourly_volatility, 3),
             "entry_price": round(entry, 8) if entry is not None else None,
             "stop_loss": round(stop, 8) if stop is not None else None,
@@ -240,7 +261,7 @@ async def scan_bybit(
                 "assets": assets, "limit": limit,
                 "cache_key": (limit, min_volume, capital_usdt, risk_pct, fee_rate),
                 "notice": (
-                    "Только спотовые пары Bybit USDT. MA20, MA50, ATR и объём рассчитаны по закрытым часовым свечам. "
+                    "Только спотовые пары Bybit USDT. MA20, MA50 и объём рассчитаны по закрытым часовым свечам; ATR(14) для Stop Loss и Take Profit — по 14 завершённым дневным свечам (1D). "
                     "BUY требует подтверждённой пары, BULLISH BTC и всех фильтров актива. "
                     "Размер позиции рассчитывается по риску от капитала с учётом оценочной комиссии."
                 ),
