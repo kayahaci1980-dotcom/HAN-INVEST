@@ -91,12 +91,18 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "/api/v3/klines",
             {"symbol": symbol, "interval": "1h", "limit": 60},
         )
-        closes = [float(row[4]) for row in candles if len(row) > 4]
-        volumes = [float(row[5]) for row in candles if len(row) > 5]
-        if len(closes) < 50:
+        # Binance's final kline is the currently forming hour. Exclude it so
+        # indicators and volume confirmation use completed candles only.
+        closed_candles = candles[:-1]
+        closes = [float(row[4]) for row in closed_candles if len(row) > 5]
+        highs = [float(row[2]) for row in closed_candles if len(row) > 5]
+        lows = [float(row[3]) for row in closed_candles if len(row) > 5]
+        volumes = [float(row[5]) for row in closed_candles if len(row) > 5]
+        if len(closes) < 50 or len(highs) != len(closes) or len(lows) != len(closes):
             return None
 
         last = closes[-1]
+        current_price = float(ticker.get("lastPrice") or last)
         ma20 = _mean(closes[-20:])
         ma50 = _mean(closes[-50:])
         change_6h = ((last / closes[-7]) - 1) * 100 if closes[-7] else 0
@@ -111,6 +117,13 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             volumes[-1] / _mean(volumes[-25:-1])
             if len(volumes) >= 25 and _mean(volumes[-25:-1]) > 0 else 1.0
         )
+        true_ranges = [
+            max(highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i] - closes[i - 1]))
+            for i in range(1, len(closes))
+        ]
+        atr_14 = _mean(true_ranges[-14:])
 
         trend_score = 20 if last > ma20 > ma50 else 13 if last > ma20 else 5
         momentum_score = _score_change(change_24h, 0.8)
@@ -142,13 +155,18 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "pair_status": pair_info.get("status"),
             "exchange_pair_verified": pair_verified,
             "trade_ready": pair_verified,
-            "price": last,
+            "price": current_price,
             "change_24h_pct": round(float(ticker.get("priceChangePercent", 0)), 2),
             "momentum_6h_pct": round(change_6h, 2),
             "momentum_24h_pct": round(change_24h, 2),
             "quote_volume_24h": round(quote_volume, 2),
             "volume_ratio": round(volume_ratio, 2),
             "volume_confirmed": volume_confirmed,
+            "atr_14": round(atr_14, 8),
+            "entry_price": round(current_price, 8) if signal == "BUY" else None,
+            "stop_loss": round(current_price - 1.5 * atr_14, 8) if signal == "BUY" else None,
+            "take_profit": round(current_price + 3.0 * atr_14, 8) if signal == "BUY" else None,
+            "risk_reward": "1:2" if signal == "BUY" else None,
             "ma20": round(ma20, 8),
             "ma50": round(ma50, 8),
             "hourly_volatility_pct": round(hourly_volatility, 3),
@@ -415,7 +433,9 @@ async def scan_crypto(
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "assets": assets,
         "notice": (
-            "BUY требует подтверждения объёма: volume_ratio >= 1.0. "
+            "Индикаторы и подтверждение объёма рассчитываются по закрытым часовым свечам; "
+            "цена указана по последней рыночной котировке. BUY требует volume_ratio >= 1.0. "
+            "Для BUY Stop Loss и Take Profit рассчитаны по ATR(14) с отношением риска к прибыли 1:2. "
             "Оценка является аналитическим индикатором, а не гарантией прибыли. "
             "Не учитывает комиссии, проскальзывание и индивидуальные ограничения."
         ),
