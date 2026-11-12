@@ -335,7 +335,6 @@ class CryptoScanner(private val context: Context) {
                             }
                             out.append("\\n")
                         }
-                        }
                     }
                 } catch (bybitError: Exception) {
                     out.append("\n🟠 BYBIT: данные временно недоступны — Binance продолжает работать отдельно.\n")
