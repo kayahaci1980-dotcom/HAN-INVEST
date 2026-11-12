@@ -473,14 +473,28 @@ async def scan_crypto(
                         btc_ma50 = _mean(btc_closes[-50:])
                         btc_price = float(btc_ticker.get("lastPrice") or btc_closes[-1])
                         btc_ok = btc_price > btc_ma20 > btc_ma50
+                        if btc_ok:
+                            market_state = "BULLISH"
+                            market_state_label = "Восходящий тренд"
+                            market_reason = "BTC выше MA20, MA20 выше MA50"
+                        elif btc_price < btc_ma20 < btc_ma50:
+                            market_state = "BEARISH"
+                            market_state_label = "Нисходящий тренд"
+                            market_reason = "BTC ниже MA20, MA20 ниже MA50"
+                        else:
+                            market_state = "SIDEWAYS"
+                            market_state_label = "Боковой или неопределённый рынок"
+                            market_reason = "Направление BTC пока не подтверждено"
                         btc_market = {
                             "available": True,
                             "buy_allowed": btc_ok,
+                            "market_state": market_state,
+                            "market_state_label": market_state_label,
                             "price": btc_price,
                             "ma20": round(btc_ma20, 2),
                             "ma50": round(btc_ma50, 2),
-                            "trend": "BULLISH" if btc_ok else "NOT_BULLISH",
-                            "reason": "BTC выше MA20, MA20 выше MA50" if btc_ok else "BTC не подтверждает восходящий тренд",
+                            "trend": market_state,
+                            "reason": market_reason,
                         }
                 except (httpx.HTTPError, ValueError, TypeError, IndexError, KeyError):
                     logger.warning("Could not calculate BTC market filter")
@@ -539,8 +553,7 @@ async def scan_crypto(
         "notice": (
             f"Проверяются до {universe_limit} наиболее ликвидных активных спотовых пар USDT "
             f"из {len(eligible)} подходящих пар; в приложении показаны лучшие {min(len(assets), limit)} по рейтингу. "
-            "Индикаторы и подтверждение объёма рассчитываются по закрытым часовым свечам; "
-            "BUY дополнительно требует восходящий тренд BTC (текущая цена выше MA20, MA20 выше MA50), а также чтобы цена актива была выше MA20, MA20 выше MA50, momentum_6h >= 1%, volume_ratio >= 1.2 и достаточную ликвидность. Если данные BTC недоступны или тренд не подтверждён, BUY блокируется. "
+            "Состояние рынка определяется по BTC: BULLISH (восходящий), BEARISH (нисходящий) или SIDEWAYS (боковой/неопределённый). При каждом запуске сканирования рынок и выбранные монеты проверяются заново. BUY разрешён только при BULLISH и выполнении всех фильтров актива; при BEARISH, SIDEWAYS или отсутствии данных BTC BUY блокируется. "
             "Для BUY Stop Loss и Take Profit рассчитаны по ATR(14) с отношением риска к прибыли 1:2. "
             "При передаче capital_usdt рассчитывается размер спотовой позиции с риском по умолчанию 1% "
             "от капитала; учитывается ориентировочная комиссия на вход и выход. "
