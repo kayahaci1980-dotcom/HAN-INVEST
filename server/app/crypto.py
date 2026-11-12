@@ -123,7 +123,7 @@ def _calculate_position_sizing(
 
 async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: dict,
                           capital_usdt: float | None = None, risk_pct: float = 1.0,
-                          fee_rate: float = 0.001, btc_market_ok: bool = False):
+                          fee_rate: float = 0.001, btc_market_state: str = "UNKNOWN"):
     symbol = ticker.get("symbol", "")
     pair_verified = (
         pair_info.get("status") == "TRADING"
@@ -184,9 +184,12 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
         volume_confirmed = volume_ratio >= 1.2
         # Use the live ticker price too: a stale candle close must not keep BUY active.
         strong_uptrend = current_price > ma20 > ma50
-        if (score >= 80 and strong_uptrend and change_6h >= 1.0
-                and volume_confirmed and quote_volume >= 1_000_000
-                and btc_market_ok):
+        asset_setup_confirmed = (
+            score >= 80 and strong_uptrend and change_6h >= 1.0
+            and volume_confirmed and quote_volume >= 1_000_000
+        )
+        early_buy = asset_setup_confirmed and btc_market_state == "SIDEWAYS"
+        if asset_setup_confirmed and btc_market_state == "BULLISH":
             signal = "BUY"
         elif score >= 55:
             signal = "WATCH"
@@ -232,6 +235,7 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "hourly_volatility_pct": round(hourly_volatility, 3),
             "score": score,
             "signal": signal,
+            "early_signal": "EARLY BUY" if early_buy else None,
             "risk": risk,
         }
     except (httpx.HTTPError, ValueError, TypeError, IndexError, KeyError, ZeroDivisionError):
@@ -502,7 +506,7 @@ async def scan_crypto(
             results = await asyncio.gather(
                 *[_analyze_symbol(client, item, spot_pairs[item.get("symbol", "")],
                                   capital_usdt, risk_pct, fee_rate,
-                                  bool(btc_market.get("buy_allowed"))) for item in selected]
+                                  str(btc_market.get("market_state") or "UNKNOWN")) for item in selected]
             )
     except BinanceCooldownError as exc:
         logger.warning("Binance cooldown active; switching to CoinGecko fallback")
