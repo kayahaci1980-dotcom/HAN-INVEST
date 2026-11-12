@@ -163,7 +163,7 @@ class CryptoScanner(private val context: Context) {
                 val sourceName = json.optString("source", "Неизвестный источник")
                 val isBinanceSource = sourceName.contains("Binance public market data", ignoreCase = true) &&
                     !sourceName.contains("fallback", ignoreCase = true)
-                out.append("Источник: $sourceName\n")
+                out.append("🟡 BINANCE SPOT  |  Источник: $sourceName\n")
                 out.append("Проверено монет: ${json.optInt("scanned", assets.length())}\n")
                 if (isBinanceSource) {
                     out.append("Подходящих спотовых пар Binance: ${json.optInt("eligible_pairs", 0)}\n")
@@ -304,26 +304,26 @@ class CryptoScanner(private val context: Context) {
                     }
                     val bybitJson = JSONObject(bybitText)
                     val bybitAssets = bybitJson.optJSONArray("assets")
-                    out.append("\\n⚫ BYBIT SPOT — ОТДЕЛЬНЫЙ СПИСОК\\n")
-                    out.append("Проверено пар: ${bybitJson.optInt("eligible_pairs")} | Кандидатов: ${bybitJson.optInt("scanned")}\\n")
+                    out.append("\n🟠 BYBIT SPOT — ОТДЕЛЬНЫЙ ИСТОЧНИК\n")
+                    out.append("Проверено пар: ${bybitJson.optInt("eligible_pairs")} | Кандидатов: ${bybitJson.optInt("scanned")}\n")
                     val bybitBtc = bybitJson.optJSONObject("btc_market_filter")
-                    out.append("BTC Bybit: ${bybitBtc?.optString("market_state", "UNKNOWN") ?: "UNKNOWN"}\\n\\n")
+                    out.append("BTC Bybit: ${bybitBtc?.optString("market_state", "UNKNOWN") ?: "UNKNOWN"}\n\n")
                     if (bybitAssets != null) {
                         for (i in 0 until bybitAssets.length()) {
                             val coin = bybitAssets.getJSONObject(i)
-                            out.append("⚫ № ${coin.optInt("market_rank", i + 1)} ${coin.optString("symbol")}\\n")
-                            out.append(String.format(Locale.US, "Цена: $%.8f | Оценка: %d/100\\n",
+                            out.append("🟠 № ${coin.optInt("market_rank", i + 1)} ${coin.optString("symbol")}\n")
+                            out.append(String.format(Locale.US, "Цена: $%.8f | Оценка: %d/100\n",
                                 coin.optDouble("price"), coin.optInt("score")))
                             out.append("Сигнал: ${coin.optString("signal", "WATCH")}")
                             if (coin.optString("early_signal") == "EARLY BUY") {
                                 out.append(" | EARLY BUY — предупреждение")
                             }
-                            out.append("\\nMA20: ${coin.optString("ma20")} | MA50: ${coin.optString("ma50")}\\n")
-                            out.append("Объём: ${coin.optString("volume_ratio")}x | Пара Spot: ${if (coin.optBoolean("trade_ready")) "ДА" else "НЕТ"}\\n\\n")
+                            out.append("\nMA20: ${coin.optString("ma20")} | MA50: ${coin.optString("ma50")}\n")
+                            out.append("Объём: ${coin.optString("volume_ratio")}x | Пара Spot: ${if (coin.optBoolean("trade_ready")) "ДА" else "НЕТ"}\n\n")
                         }
                     }
                 } catch (bybitError: Exception) {
-                    out.append("\\n⚫ BYBIT: данные временно недоступны — Binance продолжает работать отдельно.\\n")
+                    out.append("\n🟠 BYBIT: данные временно недоступны — Binance продолжает работать отдельно.\n")
                 }
                 val notice = json.optString("notice")
                 if (notice.isNotBlank()) out.append("\n$notice")
