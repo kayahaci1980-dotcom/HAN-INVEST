@@ -172,10 +172,12 @@ def _open_position(db: sqlite3.Connection, exchange: str,
 
     account = db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()
     cash = float(account["cash"])
-    stop = price - 1.5 * atr
-    target = price + 3.0 * atr
-    risk_per_coin = (price - stop) + (price + stop) * _FEE_RATE
-    if cash <= 0 or stop <= 0 or target <= price or risk_per_coin <= 0:
+    # ATR controls position sizing; user-defined exits are fixed at -2% and +10%.
+    atr_risk_stop = price - 1.5 * atr
+    stop = price * 0.98
+    target = price * 1.10
+    risk_per_coin = (price - atr_risk_stop) + (price + atr_risk_stop) * _FEE_RATE
+    if cash <= 0 or atr_risk_stop <= 0 or stop <= 0 or target <= price or risk_per_coin <= 0:
         return False
 
     risk_budget = cash * _RISK_PCT / 100.0
