@@ -287,6 +287,44 @@ class CryptoScanner(private val context: Context) {
                     }
                     out.append("\n")
                 }
+                // Fetch Bybit independently: never mix its prices or indicators with Binance rows.
+                try {
+                    val bybitConnection = URL(
+                        "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000"
+                    ).openConnection() as HttpURLConnection
+                    val bybitText = try {
+                        bybitConnection.requestMethod = "GET"
+                        bybitConnection.connectTimeout = 20000
+                        bybitConnection.readTimeout = 30000
+                        bybitConnection.setRequestProperty("Accept", "application/json")
+                        if (bybitConnection.responseCode !in 200..299) throw Exception("Bybit API unavailable")
+                        bybitConnection.inputStream.bufferedReader().use { it.readText() }
+                    } finally {
+                        bybitConnection.disconnect()
+                    }
+                    val bybitJson = JSONObject(bybitText)
+                    val bybitAssets = bybitJson.optJSONArray("assets")
+                    out.append("\\n⚫ BYBIT SPOT — ОТДЕЛЬНЫЙ СПИСОК\\n")
+                    out.append("Проверено пар: ${bybitJson.optInt("eligible_pairs")} | Кандидатов: ${bybitJson.optInt("scanned")}\\n")
+                    val bybitBtc = bybitJson.optJSONObject("btc_market_filter")
+                    out.append("BTC Bybit: ${bybitBtc?.optString("market_state", "UNKNOWN") ?: "UNKNOWN"}\\n\\n")
+                    if (bybitAssets != null) {
+                        for (i in 0 until bybitAssets.length()) {
+                            val coin = bybitAssets.getJSONObject(i)
+                            out.append("⚫ № ${coin.optInt("market_rank", i + 1)} ${coin.optString("symbol")}\\n")
+                            out.append(String.format(Locale.US, "Цена: $%.8f | Оценка: %d/100\\n",
+                                coin.optDouble("price"), coin.optInt("score")))
+                            out.append("Сигнал: ${coin.optString("signal", "WATCH")}")
+                            if (coin.optString("early_signal") == "EARLY BUY") {
+                                out.append(" | EARLY BUY — предупреждение")
+                            }
+                            out.append("\\nMA20: ${coin.optString("ma20")} | MA50: ${coin.optString("ma50")}\\n")
+                            out.append("Объём: ${coin.optString("volume_ratio")}x | Пара Spot: ${if (coin.optBoolean("trade_ready")) "ДА" else "НЕТ"}\\n\\n")
+                        }
+                    }
+                } catch (bybitError: Exception) {
+                    out.append("\\n⚫ BYBIT: данные временно недоступны — Binance продолжает работать отдельно.\\n")
+                }
                 val notice = json.optString("notice")
                 if (notice.isNotBlank()) out.append("\n$notice")
                 (context as? android.app.Activity)?.runOnUiThread {
