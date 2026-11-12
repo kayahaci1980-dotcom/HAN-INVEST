@@ -252,8 +252,7 @@ class CryptoScanner(private val context: Context) {
             val y = bybit
             if (b == null || y == null) {
                 content.addView(label("Ожидаем ответы обеих бирж.\n${status.text}", 14f, muted))
-                return
-            }
+            } else {
             val maxRisk = capital * risk / 100.0
             if (selectedTab == "HOME") {
                 content.addView(label(
@@ -287,6 +286,7 @@ class CryptoScanner(private val context: Context) {
                     result.assets.sortedByDescending { it.optInt("score", 0) }
                         .forEach { coinCard(it, result.exchange, result, maxRisk) }
                 }
+            }
             }
         }
 
