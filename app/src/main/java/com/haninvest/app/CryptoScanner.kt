@@ -332,6 +332,7 @@ class CryptoScanner(private val context: Context) {
                 when (selectedTab) {
                     "BINANCE" -> "🟡 BINANCE SPOT — отдельные данные биржи"
                     "BYBIT" -> "🟠 BYBIT SPOT — отдельные данные биржи"
+                    "PAPER" -> "ВИРТУАЛЬНЫЙ СЧЁТ — PAPER TRADING"
                     else -> "ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА"
                 }, 17f, dark, true
             ))
@@ -382,7 +383,7 @@ class CryptoScanner(private val context: Context) {
                     render()
                 }
                 content.addView(reset)
-            }
+            } else {
             val b = binance
             val y = bybit
             if (b == null || y == null) {
@@ -458,6 +459,7 @@ class CryptoScanner(private val context: Context) {
                     result.assets.sortedByDescending { it.optInt("score", 0) }
                         .forEach { coinCard(it, result.exchange, result, maxRisk) }
                 }
+            }
             }
             }
         }
