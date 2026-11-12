@@ -10,7 +10,32 @@ from fastapi import APIRouter, HTTPException, Query
 router = APIRouter()
 BASE = "https://api.bybit.com"
 CACHE_TTL = 45
+_NAME_CACHE_TTL = 21600
+_name_cache: tuple[float, dict[str, str]] = (0.0, {})
 _cache: tuple[float, dict[str, Any]] | None = None
+
+
+async def get_coin_names(client: httpx.AsyncClient) -> dict[str, str]:
+    global _name_cache
+    if time.time() - _name_cache[0] < _NAME_CACHE_TTL and _name_cache[1]:
+        return _name_cache[1]
+    try:
+        response = await client.get(
+            "https://api.coingecko.com/api/v3/coins/markets",
+            params={"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": 1, "sparkline": "false"},
+            headers={"accept": "application/json"},
+        )
+        response.raise_for_status()
+        names = {}
+        for coin in response.json():
+            symbol = str(coin.get("symbol") or "").upper()
+            name = str(coin.get("name") or "").strip()
+            if symbol and name:
+                names.setdefault(symbol, name)
+        _name_cache = (time.time(), names)
+        return names
+    except (httpx.HTTPError, ValueError, TypeError):
+        return _name_cache[1]
 
 
 def mean(values: list[float]) -> float:
@@ -201,6 +226,10 @@ async def scan_bybit(
                     )
 
             assets = [x for x in await asyncio.gather(*(limited(x) for x in selected)) if x]
+            coin_names = await get_coin_names(client)
+            for asset in assets:
+                base_symbol = str(asset.get("symbol") or "").removesuffix("USDT")
+                asset["name"] = coin_names.get(base_symbol, base_symbol)
             assets.sort(key=lambda x: x["score"], reverse=True)
             for rank, asset in enumerate(assets, 1):
                 asset["market_rank"] = rank
