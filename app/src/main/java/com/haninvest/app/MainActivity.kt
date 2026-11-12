@@ -477,6 +477,10 @@ class MainActivity : Activity() {
             )
         )
         root.addView(banner)
+        root.addView(space(12))
+
+        // ГЛАВНЫЙ РЫНОК HAN INVEST — КРИПТОВАЛЮТЫ
+        root.addView(CryptoScanner(this).createView())
         root.addView(space(22))
 
         root.addView(
@@ -520,8 +524,6 @@ class MainActivity : Activity() {
             "Мировые цены на нефть за баррель.",
             ::loadOil
         )
-        root.addView(CryptoScanner(this).createView())
-        root.addView(space(17))
         addMarketCard(
             root, "📈 Биржевые индексы",
             "Опубликованные значения доступных индексов.",
