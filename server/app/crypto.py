@@ -182,7 +182,8 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
         # BUY is deliberately selective: require a strong score, aligned MA trend,
         # positive short-term momentum, and a meaningful closed-candle volume surge.
         volume_confirmed = volume_ratio >= 1.2
-        strong_uptrend = last > ma20 > ma50
+        # Use the live ticker price too: a stale candle close must not keep BUY active.
+        strong_uptrend = current_price > ma20 > ma50
         if (score >= 80 and strong_uptrend and change_6h >= 1.0
                 and volume_confirmed and quote_volume >= 1_000_000):
             signal = "BUY"
@@ -507,7 +508,7 @@ async def scan_crypto(
             f"Проверяются до {universe_limit} наиболее ликвидных активных спотовых пар USDT "
             f"из {len(eligible)} подходящих пар; в приложении показаны лучшие {min(len(assets), limit)} по рейтингу. "
             "Индикаторы и подтверждение объёма рассчитываются по закрытым часовым свечам; "
-            "цена указана по последней рыночной котировке. BUY требует score >= 80, MA20 > MA50, ""momentum_6h >= 1%, volume_ratio >= 1.2 и достаточную ликвидность. "
+            "BUY дополнительно требует, чтобы текущая рыночная цена была выше MA20, а MA20 выше MA50. ""momentum_6h >= 1%, volume_ratio >= 1.2 и достаточную ликвидность. "
             "Для BUY Stop Loss и Take Profit рассчитаны по ATR(14) с отношением риска к прибыли 1:2. "
             "При передаче capital_usdt рассчитывается размер спотовой позиции с риском по умолчанию 1% "
             "от капитала; учитывается ориентировочная комиссия на вход и выход. "
