@@ -34,11 +34,15 @@ class PaperTrading(private val context: Context) {
         val open = positions()
         if (open.length() == 0) return "Нет открытых PAPER-позиций для обновления."
 
-        val needBinance = (0 until open.length()).any {
-            !open.optJSONObject(it)?.optString("exchange", "Binance Spot").orEmpty().contains("Bybit", true)
-        }
-        val needBybit = (0 until open.length()).any {
-            open.optJSONObject(it)?.optString("exchange", "Binance Spot").orEmpty().contains("Bybit", true)
+        var needBinance = false
+        var needBybit = false
+        for (i in 0 until open.length()) {
+            val exchangeName = open.optJSONObject(i)?.optString("exchange", "Binance Spot") ?: "Binance Spot"
+            if (exchangeName.contains("Bybit", ignoreCase = true)) {
+                needBybit = true
+            } else {
+                needBinance = true
+            }
         }
         val prices = mutableMapOf<String, MutableMap<String, Double>>()
         val errors = mutableListOf<String>()
