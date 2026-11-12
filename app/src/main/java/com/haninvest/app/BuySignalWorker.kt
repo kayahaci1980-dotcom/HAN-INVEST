@@ -28,28 +28,47 @@ class BuySignalWorker(
 
     override fun doWork(): Result {
         return try {
-            val connection = URL(
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/scan" +
-                    "?limit=30&universe_limit=100&min_volume=1000000" +
-                    "&risk_pct=1&capital_usdt=100"
-            ).openConnection() as HttpURLConnection
-
-            val responseText = try {
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 20000
-                connection.readTimeout = 30000
-                connection.setRequestProperty("Accept", "application/json")
-                connection.setRequestProperty("User-Agent", "HAN-INVEST-Android/2.5")
-                if (connection.responseCode !in 200..299) {
-                    throw IllegalStateException("HTTP ${connection.responseCode}")
+            // Каждый фоновый цикл независимо получает котировки Binance и Bybit.
+            val urls = listOf(
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?limit=30&universe_limit=100&min_volume=1000000&risk_pct=1&capital_usdt=1000",
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000"
+            )
+            val combinedAssets = org.json.JSONArray()
+            val errors = mutableListOf<String>()
+            for (url in urls) {
+                try {
+                    val connection = URL(url).openConnection() as HttpURLConnection
+                    val responseText = try {
+                        connection.requestMethod = "GET"
+                        connection.connectTimeout = 20000
+                        connection.readTimeout = 45000
+                        connection.setRequestProperty("Accept", "application/json")
+                        connection.setRequestProperty("User-Agent", "HAN-INVEST-Android/2.6")
+                        if (connection.responseCode !in 200..299) {
+                            throw IllegalStateException("HTTP ${connection.responseCode}")
+                        }
+                        connection.inputStream.bufferedReader().use { it.readText() }
+                    } finally {
+                        connection.disconnect()
+                    }
+                    val response = JSONObject(responseText)
+                    val assets = response.optJSONArray("assets") ?: continue
+                    for (i in 0 until assets.length()) {
+                        val coin = assets.optJSONObject(i) ?: continue
+                        if (!coin.has("exchange")) {
+                            coin.put("exchange", if (url.contains("/bybit/")) "Bybit Spot" else "Binance Spot")
+                        }
+                        combinedAssets.put(coin)
+                    }
+                } catch (e: Exception) {
+                    errors.add(e.message ?: "ошибка соединения")
                 }
-                connection.inputStream.bufferedReader().use { it.readText() }
-            } finally {
-                connection.disconnect()
             }
-
-            val json = JSONObject(responseText)
-            // PAPER-счёт обрабатывает каждый фоновый рыночный скан.
+            if (combinedAssets.length() == 0) {
+                throw IllegalStateException("Обе биржи недоступны: " + errors.joinToString("; "))
+            }
+            val json = JSONObject().put("assets", combinedAssets)
+            // PAPER-счёт обрабатывает единый список Binance + Bybit.
             PaperTrading(applicationContext).processScan(json)
             val btc = json.optJSONObject("btc_market_filter")
             val btcAllowsBuys = btc?.optBoolean("buy_allowed", false) == true
@@ -61,6 +80,8 @@ class BuySignalWorker(
             for (i in 0 until assets.length()) {
                 val coin = assets.optJSONObject(i) ?: continue
                 val symbol = coin.optString("symbol")
+                val exchange = coin.optString("exchange")
+                val positionKey = "$exchange:$symbol"
                 val tradeableAndConfirmed =
                     symbol.isNotBlank() &&
                     coin.optBoolean("trade_ready", false) &&
@@ -68,11 +89,11 @@ class BuySignalWorker(
 
                 if (btcAllowsBuys && tradeableAndConfirmed &&
                     coin.optString("signal") == "BUY") {
-                    currentBuySymbols.add(symbol)
+                    currentBuySymbols.add(positionKey)
                 }
                 if (tradeableAndConfirmed &&
                     coin.optString("early_signal") == "EARLY BUY") {
-                    currentEarlyBuySymbols.add(symbol)
+                    currentEarlyBuySymbols.add(positionKey)
                 }
             }
 
@@ -86,26 +107,34 @@ class BuySignalWorker(
 
             val newSymbols = currentBuySymbols - previous
             val newEarlySymbols = currentEarlyBuySymbols - previousEarly
-            for (symbol in newSymbols) {
+            for (positionKey in newSymbols) {
+                val parts = positionKey.split(":", limit = 2)
+                if (parts.size != 2) continue
+                val exchange = parts[0]
+                val symbol = parts[1]
                 val coin = (0 until assets.length())
                     .mapNotNull { assets.optJSONObject(it) }
-                    .firstOrNull { it.optString("symbol") == symbol }
+                    .firstOrNull { it.optString("symbol") == symbol && it.optString("exchange") == exchange }
                     ?: continue
                 sendBuyNotification(
-                    symbol = symbol,
+                    symbol = "$exchange $symbol",
                     entry = coin.optString("entry_price", "—"),
                     stop = coin.optString("stop_loss", "—"),
                     target = coin.optString("take_profit", "—"),
                     score = coin.optInt("score", 0)
                 )
             }
-            for (symbol in newEarlySymbols) {
+            for (positionKey in newEarlySymbols) {
+                val parts = positionKey.split(":", limit = 2)
+                if (parts.size != 2) continue
+                val exchange = parts[0]
+                val symbol = parts[1]
                 val coin = (0 until assets.length())
                     .mapNotNull { assets.optJSONObject(it) }
-                    .firstOrNull { it.optString("symbol") == symbol }
+                    .firstOrNull { it.optString("symbol") == symbol && it.optString("exchange") == exchange }
                     ?: continue
                 sendEarlyBuyNotification(
-                    symbol = symbol,
+                    symbol = "$exchange $symbol",
                     price = coin.optString("price", "—"),
                     score = coin.optInt("score", 0)
                 )
