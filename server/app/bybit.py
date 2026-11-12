@@ -1,5 +1,6 @@
 import asyncio
 import math
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,6 +17,42 @@ def mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def calculate_position_sizing(
+    entry_price: float, stop_loss: float, take_profit: float,
+    capital_usdt: float, risk_pct: float, fee_rate: float,
+) -> dict[str, float | str | bool]:
+    risk_per_coin = (entry_price - stop_loss) + (entry_price + stop_loss) * fee_rate
+    if not all(math.isfinite(x) for x in (entry_price, stop_loss, take_profit, capital_usdt, risk_pct)):
+        return {"available": False, "reason": "Некорректные числовые данные"}
+    if risk_per_coin <= 0 or entry_price <= 0 or capital_usdt <= 0:
+        return {"available": False, "reason": "Некорректные уровни сделки"}
+    risk_budget = capital_usdt * risk_pct / 100
+    quantity_by_risk = risk_budget / risk_per_coin
+    quantity_by_capital = capital_usdt / (entry_price * (1 + fee_rate))
+    quantity = min(quantity_by_risk, quantity_by_capital)
+    position_value = quantity * entry_price
+    entry_fee = position_value * fee_rate
+    stop_value = quantity * stop_loss
+    stop_fee = stop_value * fee_rate
+    actual_loss = position_value - stop_value + entry_fee + stop_fee
+    target_value = quantity * take_profit
+    target_fee = target_value * fee_rate
+    net_profit = target_value - position_value - entry_fee - target_fee
+    return {
+        "available": True,
+        "risk_pct": round(risk_pct, 3),
+        "risk_budget_usdt": round(risk_budget, 4),
+        "quantity": round(quantity, 8),
+        "position_value_usdt": round(position_value, 4),
+        "entry_fee_estimate_usdt": round(entry_fee, 4),
+        "potential_loss_at_stop_usdt": round(actual_loss, 4),
+        "potential_profit_at_target_usdt": round(net_profit, 4),
+        "fee_rate_per_side_pct": round(fee_rate * 100, 4),
+        "capital_limited": quantity_by_capital < quantity_by_risk,
+        "leverage": "spot_only",
+    }
+
+
 async def get_json(client: httpx.AsyncClient, path: str, params: dict):
     response = await client.get(f"{BASE}{path}", params=params)
     response.raise_for_status()
@@ -25,56 +62,101 @@ async def get_json(client: httpx.AsyncClient, path: str, params: dict):
     return data.get("result", {})
 
 
-async def analyze(client: httpx.AsyncClient, ticker: dict, instrument: dict, btc_state: str):
+async def analyze(
+    client: httpx.AsyncClient, ticker: dict, instrument: dict, btc_state: str,
+    capital_usdt: float | None, risk_pct: float, fee_rate: float,
+):
     symbol = ticker.get("symbol", "")
     try:
         result = await get_json(client, "/v5/market/kline", {
             "category": "spot", "symbol": symbol, "interval": "60", "limit": "60"
         })
-        rows = list(reversed(result.get("list", [])))
-        rows = rows[:-1]
+        rows = list(reversed(result.get("list", [])))[:-1]
         if len(rows) < 50:
             return None
         closes = [float(row[4]) for row in rows]
         highs = [float(row[2]) for row in rows]
         lows = [float(row[3]) for row in rows]
         volumes = [float(row[5]) for row in rows]
+        if not all(math.isfinite(x) for x in closes + highs + lows + volumes):
+            return None
         price = float(ticker.get("lastPrice") or closes[-1])
+        if not math.isfinite(price) or price <= 0:
+            return None
+
         ma20, ma50 = mean(closes[-20:]), mean(closes[-50:])
         change6 = (closes[-1] / closes[-7] - 1) * 100 if closes[-7] else 0.0
+        change24_candles = (closes[-1] / closes[-25] - 1) * 100 if closes[-25] else 0.0
         change24 = float(ticker.get("price24hPcnt") or 0) * 100
-        vol_ratio = volumes[-1] / mean(volumes[-25:-1]) if mean(volumes[-25:-1]) else 0.0
         quote_volume = float(ticker.get("turnover24h") or 0)
-        tr = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(1, len(closes))]
-        atr = mean(tr[-14:])
-        trend = 20 if price > ma20 > ma50 else 8
-        momentum = max(0, min(20, round(10 + change24 * 0.8)))
-        short = max(0, min(20, round(10 + change6 * 1.2)))
-        liquidity = min(20, max(0, round(math.log10(max(quote_volume, 1)) * 2)))
-        volume_score = 20 if vol_ratio >= 1.2 else 8
-        score = min(100, trend + momentum + short + liquidity + volume_score)
-        setup = price > ma20 > ma50 and score >= 80 and change6 >= 1 and vol_ratio >= 1.2 and quote_volume >= 1_000_000
+        baseline_volume = mean(volumes[-25:-1])
+        volume_ratio = volumes[-1] / baseline_volume if baseline_volume > 0 else 0.0
+        true_ranges = [
+            max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+            for i in range(1, len(closes))
+        ]
+        atr = mean(true_ranges[-14:])
+        returns = [(closes[i] / closes[i-1] - 1) for i in range(1, len(closes)) if closes[i-1] > 0]
+        hourly_volatility = math.sqrt(mean([x*x for x in returns])) * 100
+
+        trend_score = 20 if closes[-1] > ma20 > ma50 else 13 if closes[-1] > ma20 else 5
+        momentum_score = max(0, min(20, round(10 + change24_candles * 0.8)))
+        short_score = max(0, min(20, round(10 + change6 * 1.2)))
+        liquidity_score = min(20, max(0, round(math.log10(max(quote_volume, 1)) * 2)))
+        stability_score = max(0, min(20, round(20 - hourly_volatility * 2)))
+        volume_score = 10 if volume_ratio >= 1.2 else 5 if volume_ratio >= 0.8 else 0
+        score = min(100, trend_score + momentum_score + short_score + liquidity_score + stability_score + volume_score)
+
+        volume_confirmed = volume_ratio >= 1.2
+        strong_uptrend = price > ma20 > ma50
+        pair_verified = instrument.get("status") == "Trading" and instrument.get("quoteCoin") == "USDT"
+        setup = (
+            pair_verified and score >= 80 and strong_uptrend and change6 >= 1.0
+            and volume_confirmed and quote_volume >= 1_000_000
+            and atr > 0 and math.isfinite(atr)
+        )
         signal = "BUY" if setup and btc_state == "BULLISH" else "WATCH" if score >= 55 else "HOLD"
         early = "EARLY BUY" if setup and btc_state == "SIDEWAYS" else None
+
+        entry = price if signal == "BUY" else None
+        stop = price - 1.5 * atr if signal == "BUY" else None
+        target = price + 3.0 * atr if signal == "BUY" else None
+        sizing = (
+            calculate_position_sizing(entry, stop, target, capital_usdt, risk_pct, fee_rate)
+            if signal == "BUY" and capital_usdt is not None else None
+        )
+
         return {
             "symbol": symbol, "name": symbol[:-4], "exchange": "Bybit Spot",
             "source": "bybit", "price": price, "change_24h_pct": round(change24, 2),
-            "momentum_6h_pct": round(change6, 2), "quote_volume_24h": round(quote_volume, 2),
-            "volume_ratio": round(vol_ratio, 2), "volume_confirmed": vol_ratio >= 1.2,
+            "momentum_6h_pct": round(change6, 2), "momentum_24h_pct": round(change24_candles, 2),
+            "quote_volume_24h": round(quote_volume, 2),
+            "volume_ratio": round(volume_ratio, 2), "volume_confirmed": volume_confirmed,
             "ma20": round(ma20, 8), "ma50": round(ma50, 8), "atr_14": round(atr, 8),
+            "hourly_volatility_pct": round(hourly_volatility, 3),
+            "entry_price": round(entry, 8) if entry is not None else None,
+            "stop_loss": round(stop, 8) if stop is not None else None,
+            "take_profit": round(target, 8) if target is not None else None,
+            "risk_reward": "1:2" if signal == "BUY" else None,
+            "position_sizing": sizing,
             "score": score, "signal": signal, "early_signal": early,
-            "trade_ready": instrument.get("status") == "Trading",
-            "pair_status": instrument.get("status"), "quote_currency": "USDT",
+            "trade_ready": pair_verified, "pair_status": instrument.get("status"),
+            "quote_currency": "USDT",
         }
     except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError, ZeroDivisionError):
         return None
 
 
 @router.get("/api/v1/crypto/bybit/scan")
-async def scan_bybit(limit: int = Query(30, ge=1, le=100), min_volume: float = Query(1_000_000, ge=0)):
+async def scan_bybit(
+    limit: int = Query(30, ge=1, le=100),
+    min_volume: float = Query(1_000_000, ge=0),
+    capital_usdt: float | None = Query(None, gt=0),
+    risk_pct: float = Query(1.0, ge=0.1, le=5.0),
+    fee_rate: float = Query(0.001, ge=0, le=0.01),
+):
     global _cache
-    import time
-    if _cache and time.time() - _cache[0] < CACHE_TTL and _cache[1].get("limit") == limit:
+    if _cache and time.time() - _cache[0] < CACHE_TTL and _cache[1].get("cache_key") == (limit, min_volume, capital_usdt, risk_pct, fee_rate):
         return _cache[1]
     try:
         async with httpx.AsyncClient(timeout=20, headers={"User-Agent": "HAN-INVEST/1.0"}) as client:
@@ -82,10 +164,14 @@ async def scan_bybit(limit: int = Query(30, ge=1, le=100), min_volume: float = Q
                 get_json(client, "/v5/market/instruments-info", {"category": "spot", "limit": "1000"}),
                 get_json(client, "/v5/market/tickers", {"category": "spot"}),
             )
-            instruments = {x.get("symbol"): x for x in instruments_data.get("list", [])
-                           if x.get("quoteCoin") == "USDT" and x.get("status") == "Trading"}
-            tickers = [x for x in tickers_data.get("list", [])
-                       if x.get("symbol") in instruments and float(x.get("turnover24h") or 0) >= min_volume]
+            instruments = {
+                x.get("symbol"): x for x in instruments_data.get("list", [])
+                if x.get("quoteCoin") == "USDT" and x.get("status") == "Trading"
+            }
+            tickers = [
+                x for x in tickers_data.get("list", [])
+                if x.get("symbol") in instruments and float(x.get("turnover24h") or 0) >= min_volume
+            ]
             btc = next((x for x in tickers if x.get("symbol") == "BTCUSDT"), None)
             btc_state = "UNKNOWN"
             btc_info = {"available": False, "buy_allowed": False, "market_state": "UNKNOWN"}
@@ -99,23 +185,37 @@ async def scan_bybit(limit: int = Query(30, ge=1, le=100), min_volume: float = Q
                     ma20, ma50 = mean(closes[-20:]), mean(closes[-50:])
                     price = float(btc.get("lastPrice") or closes[-1])
                     btc_state = "BULLISH" if price > ma20 > ma50 else "BEARISH" if price < ma20 < ma50 else "SIDEWAYS"
-                    btc_info = {"available": True, "buy_allowed": btc_state == "BULLISH",
-                                "market_state": btc_state, "price": price, "ma20": round(ma20, 2),
-                                "ma50": round(ma50, 2)}
+                    btc_info = {
+                        "available": True, "buy_allowed": btc_state == "BULLISH",
+                        "market_state": btc_state, "price": price,
+                        "ma20": round(ma20, 2), "ma50": round(ma50, 2),
+                    }
             selected = sorted(tickers, key=lambda x: float(x.get("turnover24h") or 0), reverse=True)[:limit]
             semaphore = asyncio.Semaphore(5)
+
             async def limited(item):
                 async with semaphore:
-                    return await analyze(client, item, instruments[item["symbol"]], btc_state)
+                    return await analyze(
+                        client, item, instruments[item["symbol"]], btc_state,
+                        capital_usdt, risk_pct, fee_rate,
+                    )
+
             assets = [x for x in await asyncio.gather(*(limited(x) for x in selected)) if x]
             assets.sort(key=lambda x: x["score"], reverse=True)
             for rank, asset in enumerate(assets, 1):
                 asset["market_rank"] = rank
-            payload = {"source": "Bybit public market data", "exchange": "Bybit Spot",
-                       "scanned": len(assets), "eligible_pairs": len(instruments),
-                       "btc_market_filter": btc_info, "updated_at": datetime.now(timezone.utc).isoformat(),
-                       "assets": assets, "limit": limit,
-                       "notice": "Только спотовые пары Bybit USDT. Индикаторы рассчитаны по закрытым часовым свечам. BUY требует BULLISH BTC и всех фильтров актива."}
+            payload = {
+                "source": "Bybit public market data", "exchange": "Bybit Spot",
+                "scanned": len(assets), "eligible_pairs": len(instruments),
+                "btc_market_filter": btc_info, "updated_at": datetime.now(timezone.utc).isoformat(),
+                "assets": assets, "limit": limit,
+                "cache_key": (limit, min_volume, capital_usdt, risk_pct, fee_rate),
+                "notice": (
+                    "Только спотовые пары Bybit USDT. MA20, MA50, ATR и объём рассчитаны по закрытым часовым свечам. "
+                    "BUY требует подтверждённой пары, BULLISH BTC и всех фильтров актива. "
+                    "Размер позиции рассчитывается по риску от капитала с учётом оценочной комиссии."
+                ),
+            }
             _cache = (time.time(), payload)
             return payload
     except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
