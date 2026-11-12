@@ -69,7 +69,7 @@ class CryptoScanner(private val context: Context) {
         }
         section.addView(label("₿ Криптосканер HAN INVEST", 21f, dark, true))
         section.addView(label(
-            "Три лучших результата на главной. Binance и Bybit анализируются отдельно.",
+            "Четыре биржи анализируются отдельно: Binance, Bybit, Coinbase Exchange и OKX.",
             13f, muted
         ))
 
@@ -114,7 +114,7 @@ class CryptoScanner(private val context: Context) {
             isFillViewport = true
             addView(content)
         }
-        val status = label("Загрузка независимых данных Binance и Bybit...", 14f, dark)
+        val status = label("Загрузка данных четырёх криптобирж...", 14f, dark)
         val refresh = Button(context).apply {
             text = "Обновить обе биржи"
             buttonStyle(this, blue)
@@ -187,6 +187,8 @@ class CryptoScanner(private val context: Context) {
         var risk = 1.0
         var binance: ExchangeResult? = null
         var bybit: ExchangeResult? = null
+        var coinbase: ExchangeResult? = null
+        var okx: ExchangeResult? = null
         var marketContext: JSONObject? = null
         var loadingCount = 0
 
@@ -209,49 +211,32 @@ class CryptoScanner(private val context: Context) {
 
         fun tradeReady(coin: JSONObject, result: ExchangeResult, maxRisk: Double): Boolean {
             val price = coin.optDouble("price", Double.NaN)
-            val ma20 = coin.optDouble("ma20", Double.NaN)
-            val ma50 = coin.optDouble("ma50", Double.NaN)
             val atr = coin.optDouble("atr_14", Double.NaN)
-            val momentum = coin.optDouble("momentum_6h_pct", Double.NaN)
-            val volumeRatio = coin.optDouble("volume_ratio", Double.NaN)
-            val relativeStrength = coin.optDouble("relative_strength_vs_btc_24h_pct", Double.NaN)
             val quoteVolume = coin.optDouble("quote_volume_24h", 0.0)
-            val sizing = coin.optJSONObject("position_sizing")
-            val plannedLoss = sizing?.optDouble("potential_loss_at_stop_usdt", Double.NaN) ?: Double.NaN
-            val btcOk = result.btcAvailable &&
-                (result.btcState == "BULLISH" || result.btcState == "SIDEWAYS")
             return result.error == null &&
                 coin.optBoolean("trade_ready", false) &&
-                coin.optInt("score", 0) >= 80 &&
-                !price.isNaN() && !ma20.isNaN() && !ma50.isNaN() &&
-                price > ma20 && ma20 > ma50 &&
-                !atr.isNaN() && atr > 0.0 &&
-                !momentum.isNaN() && momentum >= 1.0 &&
-                !volumeRatio.isNaN() && volumeRatio >= 1.2 &&
-                !relativeStrength.isNaN() && relativeStrength > 0.0 &&
-                quoteVolume >= 1_000_000.0 &&
-                coin.optBoolean("volume_confirmed", false) &&
-                btcOk &&
-                sizing != null && sizing.optBoolean("available", false) &&
-                !plannedLoss.isNaN() && plannedLoss > 0.0 && plannedLoss <= maxRisk + 0.01
+                coin.optInt("score", 0) >= 83 &&
+                price.isFinite() && price > 0.0 &&
+                atr.isFinite() && atr > 0.0 &&
+                quoteVolume >= 1_000_000.0
         }
 
         fun coinCard(coin: JSONObject, exchange: String, result: ExchangeResult, maxRisk: Double) {
             val symbol = coin.optString("symbol", "—")
-            val shortSymbol = symbol.removeSuffix("USDT")
+            val shortSymbol = symbol.removeSuffix("-USDT").removeSuffix("USDT")
             val coinName = coin.optString("name").takeIf { it.isNotBlank() } ?: shortSymbol
             val price = coin.optDouble("price", Double.NaN)
             val score = coin.optInt("score", 0)
             val serverSignal = coin.optString("signal", "WATCH")
-            val buyAllowed = serverSignal == "BUY" && tradeReady(coin, result, maxRisk)
+            val buyAllowed = score >= 83 && tradeReady(coin, result, maxRisk)
             val early = coin.optString("early_signal") == "EARLY BUY"
             val card = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(11), dp(12), dp(11))
                 background = rounded(page, 12)
             }
-            val signalText = if (buyAllowed) "BUY — условия подтверждены"
-                else if (early) "EARLY BUY — только наблюдение" else "WATCH — наблюдение"
+            val signalText = if (buyAllowed) "АВТОПОКУПКА: оценка 83+"
+                else if (early) "EARLY BUY — наблюдение" else "WATCH — наблюдение"
             card.addView(label("$coinName ($shortSymbol)  •  $exchange", 16f, dark, true))
             card.addView(label(
                 "Оценка: $score/100   |   Сигнал: $signalText",
@@ -331,12 +316,16 @@ class CryptoScanner(private val context: Context) {
             addTab("Главная · TOP 3", "HOME", blue)
             addTab("Binance", "BINANCE", blue)
             addTab("Bybit", "BYBIT", orange)
+            addTab("Coinbase", "COINBASE", blue)
+            addTab("OKX", "OKX", purple)
             addTab("Вирт. счёт", "PAPER", Color.rgb(20, 145, 90))
             content.removeAllViews()
             content.addView(label(
                 when (selectedTab) {
                     "BINANCE" -> "🟡 BINANCE SPOT — отдельные данные биржи"
                     "BYBIT" -> "🟠 BYBIT SPOT — отдельные данные биржи"
+                    "COINBASE" -> "🔵 COINBASE EXCHANGE — отдельные данные биржи"
+                    "OKX" -> "⚫ OKX SPOT — отдельные данные биржи"
                     "PAPER" -> "ВИРТУАЛЬНЫЙ СЧЁТ — PAPER TRADING"
                     else -> "ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА"
                 }, 17f, dark, true
@@ -418,7 +407,7 @@ class CryptoScanner(private val context: Context) {
                 ))
                 content.addView(label("ЛОКАЛЬНЫЙ ТЕСТОВЫЙ СЧЁТ (ручной)", 13f, dark, true))
                 val livePrices = mutableMapOf<String, Double>()
-                listOf(binance, bybit).filterNotNull().forEach { result ->
+                listOf(binance, bybit, coinbase, okx).filterNotNull().forEach { result ->
                     result.assets.forEach { coin ->
                         livePrices[result.exchange + ":" + coin.optString("symbol")] = coin.optDouble("price", 0.0)
                     }
@@ -434,7 +423,7 @@ class CryptoScanner(private val context: Context) {
                 content.addView(label("Всего на счёте: " + formatNumber(paperCash + holdingsValue, 2) + " USDT", 17f, dark, true))
                 content.addView(label("Стартовый депозит $1 000 • комиссия 0,1% на каждую сторону", 12f, muted))
                 content.addView(label("ОТКРЫТЫЕ ПОЗИЦИИ", 14f, dark, true))
-                if (keys.isEmpty()) content.addView(label("Пока нет покупок. Перейдите на вкладку Binance или Bybit.", 13f, muted))
+                if (keys.isEmpty()) content.addView(label("Пока нет покупок. Автоматический серверный счёт работает отдельно от ручного тестового счёта.", 13f, muted))
                 keys.forEach { key ->
                     val p = paperPositions.optJSONObject(key) ?: return@forEach
                     val price = livePrices[key] ?: 0.0
@@ -466,8 +455,10 @@ class CryptoScanner(private val context: Context) {
             } else {
             val b = binance
             val y = bybit
-            if (b == null || y == null) {
-                content.addView(label("Ожидаем ответы обеих бирж.\n${status.text}", 14f, muted))
+            val c = coinbase
+            val o = okx
+            if (b == null || y == null || c == null || o == null) {
+                content.addView(label("Ожидаем ответы четырёх бирж.\n${status.text}", 14f, muted))
             } else {
             val maxRisk = capital * risk / 100.0
             if (selectedTab == "HOME") {
@@ -515,6 +506,8 @@ class CryptoScanner(private val context: Context) {
                 val combined = mutableListOf<Pair<JSONObject, ExchangeResult>>()
                 if (b.error == null) b.assets.forEach { combined.add(it to b) }
                 if (y.error == null) y.assets.forEach { combined.add(it to y) }
+                if (c.error == null) c.assets.forEach { combined.add(it to c) }
+                if (o.error == null) o.assets.forEach { combined.add(it to o) }
                 val top = combined.sortedWith(
                     compareByDescending<Pair<JSONObject, ExchangeResult>> { it.first.optInt("score", 0) }
                         .thenByDescending { it.first.optDouble("volume_ratio", 0.0) }
@@ -522,11 +515,11 @@ class CryptoScanner(private val context: Context) {
                 if (top.isEmpty()) content.addView(label("Нет доступных результатов. Проверьте соединение.", 14f, muted))
                 top.forEach { (coin, exchange) -> coinCard(coin, exchange.exchange, exchange, maxRisk) }
                 content.addView(label(
-                    "Binance: ${b.assets.size} кандидатов • Bybit: ${y.assets.size} кандидатов",
+                    "Binance: ${b.assets.size} • Bybit: ${y.assets.size} • Coinbase: ${c.assets.size} • OKX: ${o.assets.size}",
                     12f, muted
                 ))
             } else {
-                val result = if (selectedTab == "BINANCE") b else y
+                val result = when (selectedTab) { "BINANCE" -> b; "BYBIT" -> y; "COINBASE" -> c; else -> o }
                 content.addView(label(
                     "Источник: ${result.source}\nПроверено пар: ${result.scanned} • Подходящих Spot-пар: ${result.eligible}\nBTC market state: ${result.btcState}",
                     12f, muted
@@ -692,33 +685,51 @@ class CryptoScanner(private val context: Context) {
             }
             binance = null
             bybit = null
+            coinbase = null
+            okx = null
             marketContext = null
             fetchMarketContext()
-            loadingCount = 2
-            status.text = "Загружаем Binance и Bybit независимо..."
+            loadingCount = 4
+            status.text = "Загружаем Binance, Bybit, Coinbase Exchange и OKX независимо..."
             render()
             val query = "limit=30&universe_limit=100&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk"
             fetchExchange("Binance",
                 "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?$query") {
                 binance = it
                 loadingCount--
-                status.text = if (loadingCount == 0) "Данные обеих бирж обновлены."
-                    else "Binance получен. Ожидаем Bybit..."
+                status.text = if (loadingCount == 0) "Данные всех четырёх бирж обновлены."
+                    else "Binance получен. Остальные биржи загружаются..."
                 render()
             }
             fetchExchange("Bybit",
                 "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk") {
                 bybit = it
                 loadingCount--
-                status.text = if (loadingCount == 0) "Данные обеих бирж обновлены."
-                    else "Bybit получен. Ожидаем Binance..."
+                status.text = if (loadingCount == 0) "Данные всех четырёх бирж обновлены."
+                    else "Bybit получен. Остальные биржи загружаются..."
+                render()
+            }
+            fetchExchange("Coinbase Exchange",
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=30&min_volume=1000000") {
+                coinbase = it
+                loadingCount--
+                status.text = if (loadingCount == 0) "Данные всех четырёх бирж обновлены."
+                    else "Coinbase Exchange получен. Остальные биржи загружаются..."
+                render()
+            }
+            fetchExchange("OKX",
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/okx/scan?limit=30&min_volume=1000000") {
+                okx = it
+                loadingCount--
+                status.text = if (loadingCount == 0) "Данные всех четырёх бирж обновлены."
+                    else "OKX получен. Остальные биржи загружаются..."
                 render()
             }
         }
 
         refresh.setOnClickListener { loadAll() }
         section.addView(label(
-            "Автообновление каждые 15 минут при открытом экране.",
+            "Экран обновляет список каждые 15 минут; серверная виртуальная торговля работает независимо от открытого экрана.",
             11f, muted
         ))
         val handler = Handler(Looper.getMainLooper())
