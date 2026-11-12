@@ -194,7 +194,28 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
                 abs(lows[i] - closes[i - 1]))
             for i in range(1, len(closes))
         ]
-        atr_14 = _mean(true_ranges[-14:])
+        # ATR(14) for trade levels is calculated from 14 completed DAILY candles.
+        daily_candles = await _get_json(
+            client,
+            "/api/v3/klines",
+            {"symbol": symbol, "interval": "1d", "limit": 20},
+        )
+        daily_closed = daily_candles[:-1]
+        daily_closes = [float(row[4]) for row in daily_closed if len(row) > 5]
+        daily_highs = [float(row[2]) for row in daily_closed if len(row) > 5]
+        daily_lows = [float(row[3]) for row in daily_closed if len(row) > 5]
+        if len(daily_closes) < 15 or len(daily_highs) != len(daily_closes) or len(daily_lows) != len(daily_closes):
+            return None
+        daily_true_ranges = [
+            max(daily_highs[i] - daily_lows[i],
+                abs(daily_highs[i] - daily_closes[i - 1]),
+                abs(daily_lows[i] - daily_closes[i - 1]))
+            for i in range(1, len(daily_closes))
+        ]
+        atr_14_1h = _mean(true_ranges[-14:])
+        atr_14 = _mean(daily_true_ranges[-14:])
+        if not math.isfinite(atr_14) or atr_14 <= 0:
+            return None
 
         trend_score = 20 if last > ma20 > ma50 else 13 if last > ma20 else 5
         momentum_score = _score_change(change_24h, 0.8)
@@ -251,6 +272,9 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "volume_ratio": round(volume_ratio, 2),
             "volume_confirmed": volume_confirmed,
             "atr_14": round(atr_14, 8),
+            "atr_14_1d": round(atr_14, 8),
+            "atr_14_1h": round(atr_14_1h, 8),
+            "atr_timeframe": "1D",
             "entry_price": round(entry_price, 8) if entry_price is not None else None,
             "stop_loss": round(stop_loss, 8) if stop_loss is not None else None,
             "take_profit": round(take_profit, 8) if take_profit is not None else None,
