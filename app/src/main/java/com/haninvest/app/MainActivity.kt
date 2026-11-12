@@ -482,6 +482,10 @@ class MainActivity : Activity() {
         root.addView(banner)
         root.addView(space(12))
 
+        // PAPER TRADING: виртуальный счёт с сохранением на телефоне
+        root.addView(PaperTrading(this).createView())
+        root.addView(space(22))
+
         // ГЛАВНЫЙ РЫНОК HAN INVEST — КРИПТОВАЛЮТЫ
         root.addView(CryptoScanner(this).createView())
         root.addView(space(22))
