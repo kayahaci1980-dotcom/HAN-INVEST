@@ -197,9 +197,11 @@ class PaperTrading(private val context: Context) {
 
         // Покупаем любой актив со score >= 83: без проверки BUY, объёма и BTC-фильтра.
         // На каждую новую позицию выделяется фиксированно до 100 USDT.
-        val held = (0 until remaining.length()).mapNotNull { p ->
-            p?.let { it.optString("exchange", "Binance Spot") + ":" + it.optString("symbol") }
-        }.toMutableSet()
+        val held = mutableSetOf<String>()
+        for (index in 0 until remaining.length()) {
+            val position = remaining.optJSONObject(index) ?: continue
+            held.add(position.optString("exchange", "Binance Spot") + ":" + position.optString("symbol"))
+        }
         for (i in 0 until assets.length()) {
             val coin = assets.optJSONObject(i) ?: continue
             val symbol = coin.optString("symbol")
