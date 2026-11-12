@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Query
 from app.crypto import router as crypto_router
 from app.bybit import router as bybit_router
 from app.market_context import router as market_context_router
+from app.paper_trading import router as paper_router, start_paper_worker, stop_paper_worker
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
@@ -23,6 +24,7 @@ app = FastAPI(
 app.include_router(crypto_router)
 app.include_router(bybit_router)
 app.include_router(market_context_router)
+app.include_router(paper_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -227,6 +229,16 @@ def company_matches_title(title: str, company: dict) -> bool:
             return True
 
     return False
+
+
+@app.on_event("startup")
+async def startup_paper_worker():
+    start_paper_worker()
+
+
+@app.on_event("shutdown")
+async def shutdown_paper_worker():
+    await stop_paper_worker()
 
 
 @app.get("/health")
