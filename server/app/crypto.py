@@ -399,12 +399,13 @@ async def _scan_coinpaprika(client: httpx.AsyncClient, limit: int, min_volume: f
 @router.get("/api/v1/crypto/scan")
 async def scan_crypto(
     limit: int = Query(30, ge=5, le=50),
+    universe_limit: int = Query(100, ge=30, le=200),
     min_volume: float = Query(1_000_000, ge=0),
     capital_usdt: float | None = Query(None, gt=0),
     risk_pct: float = Query(1.0, ge=0.1, le=5.0),
     fee_rate: float = Query(0.001, ge=0, le=0.01),
 ):
-    cache_key = f"crypto:{limit}:{min_volume}:{capital_usdt}:{risk_pct}:{fee_rate}"
+    cache_key = f"crypto:{limit}:{universe_limit}:{min_volume}:{capital_usdt}:{risk_pct}:{fee_rate}"
     cached = _cache.get(cache_key)
     if cached and time.time() - cached[0] < CACHE_TTL:
         return cached[1]
@@ -445,7 +446,8 @@ async def scan_crypto(
                 and float(item.get("quoteVolume", 0) or 0) >= min_volume
             ]
             eligible.sort(key=lambda item: float(item.get("quoteVolume", 0)), reverse=True)
-            selected = eligible[:limit]
+            # Analyze a wider liquid USDT spot universe, then return only the top-ranked shortlist.
+            selected = eligible[:universe_limit]
             results = await asyncio.gather(
                 *[_analyze_symbol(client, item, spot_pairs[item.get("symbol", "")],
                                   capital_usdt, risk_pct, fee_rate) for item in selected]
@@ -485,13 +487,20 @@ async def scan_crypto(
 
     assets = [item for item in results if item is not None]
     assets.sort(key=lambda item: item["score"], reverse=True)
+    for rank, asset in enumerate(assets, start=1):
+        asset["market_rank"] = rank
     payload = {
         "source": "Binance public market data",
         "scanned": len(assets),
+        "eligible_pairs": len(eligible),
+        "universe_limit": universe_limit,
+        "returned": min(len(assets), limit),
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "assets": assets,
+        "assets": assets[:limit],
         "notice": (
-            "Индикаторы и подтверждение объёма рассчитываются по закрытым часовым свечам; "
+            f"Проверяются до {universe_limit} наиболее ликвидных активных спотовых пар USDT "
+            f"из {len(eligible)} подходящих пар; в приложении показаны лучшие {min(len(assets), limit)} по рейтингу. "
+            "Индикаторы и подтверждение объёма рассчитываются по закрытым часовым свечам; 
             "цена указана по последней рыночной котировке. BUY требует volume_ratio >= 1.0. "
             "Для BUY Stop Loss и Take Profit рассчитаны по ATR(14) с отношением риска к прибыли 1:2. "
             "При передаче capital_usdt рассчитывается размер спотовой позиции с риском по умолчанию 1% "
