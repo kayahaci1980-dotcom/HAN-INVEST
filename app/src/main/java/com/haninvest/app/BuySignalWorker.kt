@@ -28,6 +28,11 @@ class BuySignalWorker(
 
     override fun doWork(): Result {
         return try {
+            val paper = PaperTrading(applicationContext)
+            // Сначала обновляем открытые позиции по прямым котировкам обеих бирж,
+            // чтобы обновление PAPER не зависело от наличия новых торговых сигналов.
+            paper.refreshOpenPositionsFromExchanges()
+
             // Каждый фоновый цикл независимо получает котировки Binance и Bybit.
             val urls = listOf(
                 "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?limit=30&universe_limit=100&min_volume=1000000&risk_pct=1&capital_usdt=1000",
@@ -69,7 +74,9 @@ class BuySignalWorker(
             }
             val json = JSONObject().put("assets", combinedAssets)
             // PAPER-счёт обрабатывает единый список Binance + Bybit.
-            PaperTrading(applicationContext).processScan(json)
+            paper.processScan(json)
+            // После анализа ещё раз применяем прямые биржевые цены: они важнее снимка сканера.
+            paper.refreshOpenPositionsFromExchanges()
             val btc = json.optJSONObject("btc_market_filter")
             val btcAllowsBuys = btc?.optBoolean("buy_allowed", false) == true
             val assets = json.optJSONArray("assets")
