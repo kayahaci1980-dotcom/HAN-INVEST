@@ -439,7 +439,7 @@ async def enable_paper_trading():
     _init_db()
     with _connect() as db:
         db.execute(
-            "UPDATE paper_account SET enabled=1, updated_at=?, last_error=NULL WHERE id=1",
+            "UPDATE paper_account SET enabled=TRUE, updated_at=?, last_error=NULL WHERE id=1",
             (_now(),),
         )
     _scan_requested.set()
@@ -451,7 +451,7 @@ async def disable_paper_trading():
     _init_db()
     with _connect() as db:
         db.execute(
-            "UPDATE paper_account SET enabled=0, updated_at=? WHERE id=1",
+            "UPDATE paper_account SET enabled=FALSE, updated_at=? WHERE id=1",
             (_now(),),
         )
     return _account_snapshot()
