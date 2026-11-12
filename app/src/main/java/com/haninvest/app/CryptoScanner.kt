@@ -52,7 +52,8 @@ class CryptoScanner(private val context: Context) {
             elevation = dp(2).toFloat()
         }
         val capitalInput = EditText(context).apply {
-            hint = "Ваш капитал в USDT (например, 1000)"
+            hint = "Ваш капитал в USDT"
+            setText("100")
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
             textSize = 14f
             setSingleLine(true)
