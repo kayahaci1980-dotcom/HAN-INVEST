@@ -346,7 +346,9 @@ class PaperTrading(private val context: Context) {
                         }
                         if (combinedAssets.length() == 0) throw Exception("Обе биржи недоступны: " + errors.joinToString("; "))
                         combined.put("assets", combinedAssets)
-                        val message = processScan(combined) + " Binance + Bybit."
+                        val scanMessage = processScan(combined) + " Binance + Bybit."
+                        val quoteMessage = refreshOpenPositionsFromExchanges()
+                        val message = scanMessage + "\n" + quoteMessage
                         
                         (context as? android.app.Activity)?.runOnUiThread {
                             status.text = message
