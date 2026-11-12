@@ -122,6 +122,57 @@ class CryptoScanner(private val context: Context) {
         section.addView(scroll)
 
         var selectedTab = "HOME"
+        val paperPrefs = context.getSharedPreferences("han_invest_paper", Context.MODE_PRIVATE)
+        var paperCash = paperPrefs.getFloat("cash_usdt", 1000f).toDouble()
+        var paperPositions = try { JSONObject(paperPrefs.getString("positions", "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
+        var paperHistory = try { JSONArray(paperPrefs.getString("history", "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+        fun savePaper() {
+            paperPrefs.edit().putFloat("cash_usdt", paperCash.toFloat())
+                .putString("positions", paperPositions.toString())
+                .putString("history", paperHistory.toString()).apply()
+        }
+        fun paperTrade(exchange: String, symbol: String, price: Double, buyAmount: Double?, sellAll: Boolean) {
+            if (!price.isFinite() || price <= 0.0) return
+            val key = exchange + ":" + symbol
+            val old = paperPositions.optJSONObject(key) ?: JSONObject()
+            val oldQty = old.optDouble("quantity", 0.0)
+            val oldCost = old.optDouble("cost_usdt", 0.0)
+            val feeRate = 0.001
+            if (buyAmount != null) {
+                val amount = buyAmount
+                val fee = amount * feeRate
+                if (amount < 1.0 || amount + fee > paperCash) {
+                    status.text = "Недостаточно виртуальных USDT или сумма меньше 1 USDT."
+                    return
+                }
+                val qty = amount / price
+                paperCash -= amount + fee
+                paperPositions.put(key, JSONObject().put("exchange", exchange).put("symbol", symbol)
+                    .put("quantity", oldQty + qty).put("cost_usdt", oldCost + amount + fee))
+                paperHistory.put(JSONObject().put("side", "BUY").put("exchange", exchange).put("symbol", symbol)
+                    .put("price", price).put("quantity", qty).put("value_usdt", amount).put("fee_usdt", fee)
+                    .put("time", System.currentTimeMillis()))
+                status.text = "Виртуальная покупка " + symbol + " на " + formatNumber(amount, 2) + " USDT."
+            } else if (sellAll) {
+                if (oldQty <= 0.0) {
+                    status.text = "Нет открытой позиции " + symbol + "."
+                    return
+                }
+                val gross = oldQty * price
+                val fee = gross * feeRate
+                val net = gross - fee
+                val pnl = net - oldCost
+                paperCash += net
+                paperPositions.remove(key)
+                paperHistory.put(JSONObject().put("side", "SELL").put("exchange", exchange).put("symbol", symbol)
+                    .put("price", price).put("quantity", oldQty).put("value_usdt", gross).put("fee_usdt", fee)
+                    .put("pnl_usdt", pnl).put("time", System.currentTimeMillis()))
+                status.text = "Продажа " + symbol + ". Результат: " + formatNumber(pnl, 2) + " USDT."
+            }
+            savePaper()
+            render()
+        }
+
         var capital = 100.0
         var risk = 1.0
         var binance: ExchangeResult? = null
@@ -235,6 +286,35 @@ class CryptoScanner(private val context: Context) {
                     12f, Color.rgb(190, 70, 55), true
                 ))
             }
+            val tradeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            val amountInput = EditText(context).apply {
+                hint = "Сумма USDT"
+                setText("100")
+                textSize = 13f
+                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
+            }
+            val buyButton = Button(context).apply {
+                text = "Купить"
+                buttonStyle(this, Color.rgb(20, 145, 90))
+            }
+            buyButton.setOnClickListener {
+                val amount = amountInput.text.toString().replace(",", ".").toDoubleOrNull()
+                if (amount == null || amount <= 0.0) status.text = "Введите сумму в USDT."
+                else paperTrade(exchange, symbol, price, amount, false)
+            }
+            tradeRow.addView(amountInput)
+            tradeRow.addView(buyButton)
+            card.addView(tradeRow)
+            val ownedQty = paperPositions.optJSONObject(exchange + ":" + symbol)?.optDouble("quantity", 0.0) ?: 0.0
+            if (ownedQty > 0.0) {
+                val sellButton = Button(context).apply {
+                    text = "Продать всю позицию"
+                    buttonStyle(this, orange)
+                }
+                sellButton.setOnClickListener { paperTrade(exchange, symbol, price, null, true) }
+                card.addView(sellButton)
+            }
             content.addView(card)
             content.addView(View(context).apply {
                 layoutParams = LinearLayout.LayoutParams(1, dp(9))
@@ -246,6 +326,7 @@ class CryptoScanner(private val context: Context) {
             addTab("Главная · TOP 3", "HOME", blue)
             addTab("Binance", "BINANCE", blue)
             addTab("Bybit", "BYBIT", orange)
+            addTab("Вирт. счёт", "PAPER", Color.rgb(20, 145, 90))
             content.removeAllViews()
             content.addView(label(
                 when (selectedTab) {
@@ -254,6 +335,54 @@ class CryptoScanner(private val context: Context) {
                     else -> "ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА"
                 }, 17f, dark, true
             ))
+            if (selectedTab == "PAPER") {
+                val livePrices = mutableMapOf<String, Double>()
+                listOf(binance, bybit).filterNotNull().forEach { result ->
+                    result.assets.forEach { coin ->
+                        livePrices[result.exchange + ":" + coin.optString("symbol")] = coin.optDouble("price", 0.0)
+                    }
+                }
+                val keys = paperPositions.keys().asSequence().toList()
+                var holdingsValue = 0.0
+                keys.forEach { key ->
+                    val p = paperPositions.optJSONObject(key) ?: return@forEach
+                    holdingsValue += p.optDouble("quantity", 0.0) * (livePrices[key] ?: 0.0)
+                }
+                content.addView(label("Доступно: " + formatNumber(paperCash, 2) + " USDT", 18f, dark, true))
+                content.addView(label("Открытые позиции: " + formatNumber(holdingsValue, 2) + " USDT", 14f, dark))
+                content.addView(label("Всего на счёте: " + formatNumber(paperCash + holdingsValue, 2) + " USDT", 17f, dark, true))
+                content.addView(label("Стартовый депозит $1 000 • комиссия 0,1% на каждую сторону", 12f, muted))
+                content.addView(label("ОТКРЫТЫЕ ПОЗИЦИИ", 14f, dark, true))
+                if (keys.isEmpty()) content.addView(label("Пока нет покупок. Перейдите на вкладку Binance или Bybit.", 13f, muted))
+                keys.forEach { key ->
+                    val p = paperPositions.optJSONObject(key) ?: return@forEach
+                    val price = livePrices[key] ?: 0.0
+                    val qty = p.optDouble("quantity", 0.0)
+                    val value = qty * price
+                    val pnl = value - p.optDouble("cost_usdt", 0.0)
+                    content.addView(label(p.optString("symbol") + " • " + p.optString("exchange"), 15f, dark, true))
+                    content.addView(label("Количество: " + formatNumber(qty, 8) + " • Стоимость: " + formatNumber(value, 2) + " USDT", 12f, muted))
+                    content.addView(label("Прибыль/убыток: " + formatNumber(pnl, 2) + " USDT", 12f, if (pnl >= 0) Color.rgb(20,145,90) else Color.RED))
+                    val sell = Button(context).apply { text = "Продать всю позицию"; buttonStyle(this, orange) }
+                    sell.setOnClickListener { paperTrade(p.optString("exchange"), p.optString("symbol"), price, null, true) }
+                    content.addView(sell)
+                }
+                content.addView(label("ИСТОРИЯ СДЕЛОК", 14f, dark, true))
+                for (i in (paperHistory.length() - 1 downTo maxOf(0, paperHistory.length() - 20))) {
+                    val h = paperHistory.optJSONObject(i) ?: continue
+                    content.addView(label(h.optString("side") + " " + h.optString("symbol") + " • " + formatNumber(h.optDouble("price"), 8) + " USDT", 12f, dark))
+                    if (h.has("pnl_usdt")) content.addView(label("Результат: " + formatNumber(h.optDouble("pnl_usdt"), 2) + " USDT", 12f, muted))
+                }
+                val reset = Button(context).apply { text = "Сбросить виртуальный счёт до $1 000"; buttonStyle(this, muted) }
+                reset.setOnClickListener {
+                    paperCash = 1000.0
+                    paperPositions = JSONObject()
+                    paperHistory = JSONArray()
+                    savePaper()
+                    render()
+                }
+                content.addView(reset)
+            }
             val b = binance
             val y = bybit
             if (b == null || y == null) {
