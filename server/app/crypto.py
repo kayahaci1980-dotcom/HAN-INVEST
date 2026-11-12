@@ -43,6 +43,7 @@ EXCLUDED_SUFFIXES = ("UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT")
 # Binance-listed tokenized equity/ETF symbols are not ordinary crypto assets.
 EXCLUDED_NON_CRYPTO_BASE_ASSETS = {
     "GOOGLB", "SNDKB", "SOXSB", "MUB", "INTCB", "NVDAB", "SPCXB", "SOXLB",
+    "U", "EUR", "XAUT", "TQQQB",
 }
 
 
