@@ -245,16 +245,6 @@ def company_matches_title(title: str, company: dict) -> bool:
     return False
 
 
-@app.on_event("startup")
-async def startup_paper_worker():
-    start_paper_worker()
-
-
-@app.on_event("shutdown")
-async def shutdown_paper_worker():
-    await stop_paper_worker()
-
-
 @app.get("/health")
 async def health():
     return {
