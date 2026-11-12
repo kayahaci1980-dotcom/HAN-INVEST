@@ -335,8 +335,6 @@ class CryptoScanner(private val context: Context) {
                             }
                             out.append("\\n")
                         }
-                            out.append("\nMA20: ${coin.optString("ma20")} | MA50: ${coin.optString("ma50")}\n")
-                            out.append("Объём: ${coin.optString("volume_ratio")}x | Пара Spot: ${if (coin.optBoolean("trade_ready")) "ДА" else "НЕТ"}\n\n")
                         }
                     }
                 } catch (bybitError: Exception) {
