@@ -563,6 +563,8 @@ async def scan_crypto(
                                   str(btc_market.get("market_state") or "UNKNOWN"),
                                   btc_change_24h_pct) for item in selected]
             )
+            # Keep the HTTP client open while fetching optional display names.
+            coin_names = await _get_coin_names(client)
     except BinanceCooldownError as exc:
         logger.warning("Binance cooldown active; switching to CoinGecko fallback")
         try:
@@ -597,7 +599,6 @@ async def scan_crypto(
         ) from exc
 
     assets = [item for item in results if item is not None]
-    coin_names = await _get_coin_names(client)
     for asset in assets:
         base_symbol = str(asset.get("symbol") or "").removesuffix("USDT")
         asset["name"] = coin_names.get(base_symbol, base_symbol)
