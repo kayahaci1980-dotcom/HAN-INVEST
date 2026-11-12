@@ -210,7 +210,12 @@ class CryptoScanner(private val context: Context) {
                     if (!change.isNaN()) {
                         out.append(String.format(Locale.US, "Изменение 24ч: %.2f%%\n", change))
                     }
-                    out.append("Оценка: $score/100  |  Сигнал: $signal\n")
+                    val earlySignal = coin.optString("early_signal", "")
+                    out.append("Оценка: $score/100  |  Сигнал: $signal")
+                    if (earlySignal == "EARLY BUY") {
+                        out.append("  |  РАННИЙ BUY — не подтверждённая покупка")
+                    }
+                    out.append("\n")
                     val volumeRatio = coin.optDouble("volume_ratio", Double.NaN)
                     if (!volumeRatio.isNaN()) {
                         out.append(String.format(Locale.US, "Объём к среднему: %.2fx\n", volumeRatio))
