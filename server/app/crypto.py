@@ -123,7 +123,7 @@ def _calculate_position_sizing(
 
 async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: dict,
                           capital_usdt: float | None = None, risk_pct: float = 1.0,
-                          fee_rate: float = 0.001):
+                          fee_rate: float = 0.001, btc_market_ok: bool = False):
     symbol = ticker.get("symbol", "")
     pair_verified = (
         pair_info.get("status") == "TRADING"
@@ -185,7 +185,8 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
         # Use the live ticker price too: a stale candle close must not keep BUY active.
         strong_uptrend = current_price > ma20 > ma50
         if (score >= 80 and strong_uptrend and change_6h >= 1.0
-                and volume_confirmed and quote_volume >= 1_000_000):
+                and volume_confirmed and quote_volume >= 1_000_000
+                and btc_market_ok):
             signal = "BUY"
         elif score >= 55:
             signal = "WATCH"
@@ -454,10 +455,40 @@ async def scan_crypto(
             ]
             eligible.sort(key=lambda item: float(item.get("quoteVolume", 0)), reverse=True)
             # Analyze a wider liquid USDT spot universe, then return only the top-ranked shortlist.
+            # Broad-market safety gate: only allow BUY when BTC is above its hourly MA20
+            # and MA20 is above MA50, using a live ticker price plus closed candles.
+            btc_market = {"available": False, "buy_allowed": False, "reason": "Нет данных BTC"}
+            btc_ticker = next((item for item in tickers
+                               if isinstance(item, dict) and item.get("symbol") == "BTCUSDT"), None)
+            if btc_ticker is not None and "BTCUSDT" in spot_pairs:
+                try:
+                    btc_candles = await _get_json(
+                        client, "/api/v3/klines",
+                        {"symbol": "BTCUSDT", "interval": "1h", "limit": 60},
+                    )
+                    btc_closed = btc_candles[:-1]
+                    btc_closes = [float(row[4]) for row in btc_closed if len(row) > 5]
+                    if len(btc_closes) >= 50:
+                        btc_ma20 = _mean(btc_closes[-20:])
+                        btc_ma50 = _mean(btc_closes[-50:])
+                        btc_price = float(btc_ticker.get("lastPrice") or btc_closes[-1])
+                        btc_ok = btc_price > btc_ma20 > btc_ma50
+                        btc_market = {
+                            "available": True,
+                            "buy_allowed": btc_ok,
+                            "price": btc_price,
+                            "ma20": round(btc_ma20, 2),
+                            "ma50": round(btc_ma50, 2),
+                            "trend": "BULLISH" if btc_ok else "NOT_BULLISH",
+                            "reason": "BTC выше MA20, MA20 выше MA50" if btc_ok else "BTC не подтверждает восходящий тренд",
+                        }
+                except (httpx.HTTPError, ValueError, TypeError, IndexError, KeyError):
+                    logger.warning("Could not calculate BTC market filter")
             selected = eligible[:universe_limit]
             results = await asyncio.gather(
                 *[_analyze_symbol(client, item, spot_pairs[item.get("symbol", "")],
-                                  capital_usdt, risk_pct, fee_rate) for item in selected]
+                                  capital_usdt, risk_pct, fee_rate,
+                                  bool(btc_market.get("buy_allowed"))) for item in selected]
             )
     except BinanceCooldownError as exc:
         logger.warning("Binance cooldown active; switching to CoinGecko fallback")
@@ -502,13 +533,14 @@ async def scan_crypto(
         "eligible_pairs": len(eligible),
         "universe_limit": universe_limit,
         "returned": min(len(assets), limit),
+        "btc_market_filter": btc_market,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "assets": assets[:limit],
         "notice": (
             f"Проверяются до {universe_limit} наиболее ликвидных активных спотовых пар USDT "
             f"из {len(eligible)} подходящих пар; в приложении показаны лучшие {min(len(assets), limit)} по рейтингу. "
             "Индикаторы и подтверждение объёма рассчитываются по закрытым часовым свечам; "
-            "BUY дополнительно требует, чтобы текущая рыночная цена была выше MA20, а MA20 выше MA50. ""momentum_6h >= 1%, volume_ratio >= 1.2 и достаточную ликвидность. "
+            "BUY дополнительно требует восходящий тренд BTC (текущая цена выше MA20, MA20 выше MA50), а также чтобы цена актива была выше MA20, MA20 выше MA50, momentum_6h >= 1%, volume_ratio >= 1.2 и достаточную ликвидность. Если данные BTC недоступны или тренд не подтверждён, BUY блокируется. "
             "Для BUY Stop Loss и Take Profit рассчитаны по ATR(14) с отношением риска к прибыли 1:2. "
             "При передаче capital_usdt рассчитывается размер спотовой позиции с риском по умолчанию 1% "
             "от капитала; учитывается ориентировочная комиссия на вход и выход. "
