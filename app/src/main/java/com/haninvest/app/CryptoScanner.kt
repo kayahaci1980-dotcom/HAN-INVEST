@@ -160,10 +160,19 @@ class CryptoScanner(private val context: Context) {
                 val assets = json.optJSONArray("assets")
                     ?: throw Exception("Нет списка активов")
                 val out = StringBuilder()
-                out.append("Источник: ${json.optString("source")}\n")
-                out.append("Проверено монет: ${json.optInt("scanned", assets.length())}\n")
-                out.append("Подходящих пар Binance: ${json.optInt("eligible_pairs", assets.length())}\n")
-                out.append("Лучших кандидатов в списке: ${assets.length()}\n")
+                val sourceName = json.optString("source", "Неизвестный источник")
+                val isBinanceSource = sourceName.contains("Binance public market data", ignoreCase = true) &&
+                    !sourceName.contains("резервный", ignoreCase = true)
+                out.append("Источник: $sourceName\\n")
+                out.append("Проверено монет: ${json.optInt("scanned", assets.length())}\\n")
+                if (isBinanceSource) {
+                    out.append("Подходящих спотовых пар Binance: ${json.optInt("eligible_pairs", 0)}\\n")
+                } else {
+                    out.append("Проверка торговых пар Binance: НЕ ВЫПОЛНЕНА\\n")
+                    out.append("ВНИМАНИЕ: РЕЗЕРВНЫЙ ИСТОЧНИК — ТОРГОВЛЯ НЕ ПОДТВЕРЖДЕНА\\n")
+                    out.append("MA20, MA50 и ATR недоступны. Сигналы BUY запрещены.\\n")
+                }
+                out.append("Лучших кандидатов в списке: ${assets.length()}\\n")
                 val btc = json.optJSONObject("btc_market_filter")
                 if (btc != null && btc.optBoolean("available", false)) {
                     val marketLabel = btc.optString("market_state_label", "Не определён")
@@ -261,10 +270,16 @@ class CryptoScanner(private val context: Context) {
                         out.append("Take Profit: ${coin.optString("take_profit", "—")} USDT\n")
                         val sizing = coin.optJSONObject("position_sizing")
                         if (sizing != null && sizing.optBoolean("available", false)) {
-                            out.append("Количество: ${sizing.optString("quantity")}\n")
-                            out.append("Размер позиции: ${sizing.optString("position_value_usdt")} USDT\n")
-                            out.append("Плановый риск: ${sizing.optString("potential_loss_at_stop_usdt")} USDT\n")
-                            out.append("Потенциальная прибыль: ${sizing.optString("potential_profit_at_target_usdt")} USDT\n")
+                            out.append("К                    if (!isBinanceSource) {
+                        out.append("РЕЗЕРВНЫЕ ДАННЫЕ: монета не проверена как спотовая пара Binance — НЕ ТОРГОВАТЬ ПО ЭТОМУ СПИСКУ\\n")
+                    } else if (coin.optBoolean("trade_ready", false)) {
+                        out.append("Торговая пара подтверждена\\n")
+                    } else {
+                        out.append("Пара не подтверждена — не готово к сделке\\n")
+                    }
+                    out.append("\\n")
+                }
+ная прибыль: ${sizing.optString("potential_profit_at_target_usdt")} USDT\n")
                         } else if (capitalUsdt == null) {
                             out.append("Введите капитал, чтобы рассчитать размер позиции.\n")
                         }
