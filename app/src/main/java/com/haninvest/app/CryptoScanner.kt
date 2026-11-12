@@ -22,6 +22,7 @@ import java.util.Locale
 class CryptoScanner(private val context: Context) {
     private val blue = Color.rgb(55, 105, 245)
     private val orange = Color.rgb(230, 135, 25)
+    private val purple = Color.rgb(125, 75, 235)
     private val dark = Color.rgb(30, 42, 65)
     private val muted = Color.rgb(125, 137, 158)
     private val page = Color.rgb(246, 248, 253)
@@ -331,6 +332,13 @@ class CryptoScanner(private val context: Context) {
                 }, 17f, dark, true
             ))
             if (selectedTab == "PAPER") {
+                content.addView(label("ПРАВИЛА АВТОМАТИЧЕСКОЙ ТОРГОВЛИ", 13f, dark, true))
+                content.addView(label(
+                    "Покупка: оценка 83+ без ожидания BUY.\\n" +
+                    "Продажа: убыток −2% или оценка ниже 83.\\n" +
+                    "При +10%: продать и сразу купить ту же криптовалюту заново, даже если оценка ниже 83.",
+                    12f, muted
+                ))
                 content.addView(label("СЕРВЕРНЫЙ АВТОМАТИЧЕСКИЙ СЧЁТ", 14f, Color.rgb(20, 145, 90), true))
                 val remote = serverPaperState
                 if (remote == null) {
