@@ -356,7 +356,7 @@ class PaperTrading(private val context: Context) {
         for (i in 0 until open.length()) {
             val p = open.getJSONObject(i)
             val price = p.optDouble("last_price", p.optDouble("entry"))
-            out.append(p.optString("exchange", "Binance Spot")).append(" ").append(p.optString("symbol")).append(" | вход ").append(money(p.optDouble("entry")))
+            out.append(p.optString("exchange", "Bybit Spot")).append(" ").append(p.optString("symbol")).append(" | вход ").append(money(p.optDouble("entry")))
                 .append(" | сейчас ").append(money(price))
                 .append(" | P/L ").append(money((price-p.optDouble("entry"))*p.optDouble("quantity")))
                 .append("\n")
@@ -365,7 +365,7 @@ class PaperTrading(private val context: Context) {
         if (log.length() == 0) out.append("История пока пустая.\n")
         for (i in (log.length()-1 downTo maxOf(0, log.length()-10))) {
             val t = log.optJSONObject(i) ?: continue
-            out.append(t.optString("type")).append(" ").append(t.optString("exchange", "Binance Spot"))
+            out.append(t.optString("type")).append(" ").append(t.optString("exchange", "Bybit Spot"))
                 .append(" ").append(t.optString("symbol")).append(" @ ").append(money(t.optDouble("price")))
             if (t.optString("type") == "SELL") out.append(" | ").append(t.optString("reason"))
                 .append(" | P/L ").append(money(t.optDouble("pnl")))
@@ -433,7 +433,15 @@ class PaperTrading(private val context: Context) {
             }
             for(i in 0 until list.length()) {
                 val pos=list.optJSONObject(i)?:continue
-                val ex=pos.optString("exchange","Binance Spot"); val sym=pos.optString("symbol")
+                val ex=pos.optString("exchange","Bybit Spot"); val sym=pos.optString("symbol")
+                if (!ex.contains("Bybit", true)) {
+                    sellActions.addView(TextView(context).apply {
+                        text = "Старая позиция $sym ($ex) сохранена. Автоматическое управление биржами кроме Bybit отключено."
+                        textSize = 12f
+                        setTextColor(Color.GRAY)
+                    })
+                    continue
+                }
                 sellActions.addView(Button(context).apply {
                     text="ПРОДАТЬ $sym — $ex";setTextColor(Color.WHITE);setBackgroundColor(red)
                     setOnClickListener {
