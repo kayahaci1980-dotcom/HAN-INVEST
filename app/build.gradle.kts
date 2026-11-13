@@ -11,8 +11,8 @@ android {
         applicationId = "com.haninvest.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 9
-        versionName = "2.8"
+        versionCode = 10
+        versionName = "2.9"
     }
 
     compileOptions {
