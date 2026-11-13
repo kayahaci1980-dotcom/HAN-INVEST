@@ -9,6 +9,7 @@ on:
       - ui-exchange-tabs-top3
       - feature/show-all-bybit-over83
       - feature/paper-profit-trailing-2usd
+      - feature/paper-short-positions
 
 jobs:
   build:
