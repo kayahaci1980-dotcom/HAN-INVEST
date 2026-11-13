@@ -63,6 +63,48 @@ class PaperTrading(private val context: Context) {
         grossPnl(position, price) - position.optDouble("entry_fee", 0.0) -
             position.optDouble("quantity") * price * paperFeeRate
 
+    private fun firstNumber(json: JSONObject, vararg keys: String): Double {
+        for (key in keys) {
+            if (!json.has(key) || json.isNull(key)) continue
+            val value = json.optDouble(key, Double.NaN)
+            if (value.isFinite()) return value
+        }
+        return Double.NaN
+    }
+
+    // Independent bearish technical score when scanner does not supply short_score.
+    private fun calculateShortScore(coin: JSONObject): Int {
+        val supplied = firstNumber(coin, "short_score", "score_short", "shortScore")
+        if (supplied.isFinite()) return supplied.toInt().coerceIn(0, 100)
+        val declared = coin.optString("direction", coin.optString("signal", coin.optString("side", "")))
+        if (declared.contains("SHORT", true)) return coin.optInt("score", 0).coerceIn(0, 100)
+
+        val price = firstNumber(coin, "price", "last_price")
+        val ema = firstNumber(coin, "ema20", "ema_20", "EMA20")
+        val rsi = firstNumber(coin, "rsi", "RSI")
+        val atr = firstNumber(coin, "atr", "ATR")
+        val change24 = firstNumber(coin, "change_24h", "price_change_24h", "price_change_percentage_24h", "change24h")
+        if (price <= 0.0 || !ema.isFinite() || !rsi.isFinite() || !atr.isFinite() || !change24.isFinite()) return 0
+
+        var score = 0
+        if (price < ema) score += 35
+        score += when {
+            rsi in 35.0..60.0 -> 25
+            rsi in 30.0..<35.0 -> 15
+            rsi in 60.0..70.0 -> 8
+            else -> 0
+        }
+        score += when {
+            change24 <= -3.0 -> 25
+            change24 <= -1.0 -> 20
+            change24 < 0.0 -> 12
+            else -> 0
+        }
+        val atrPercent = atr / price * 100.0
+        score += if (atrPercent in 0.5..8.0) 15 else if (atrPercent > 0.0) 5 else 0
+        return score.coerceIn(0, 100)
+    }
+
     private fun blockAssetAfterLoss(exchange: String, symbol: String, entry: Double, exit: Double, side: String = "LONG"): Boolean {
         if (entry <= 0.0 || exit <= 0.0) return false
         val move = if (side == "SHORT") (entry - exit) / entry else (exit - entry) / entry
@@ -286,13 +328,7 @@ class PaperTrading(private val context: Context) {
             val price = coin.optDouble("price", Double.NaN)
             val longScore = coin.optInt("score", 0)
             val declaredSide = coin.optString("direction", coin.optString("signal", coin.optString("side", ""))).uppercase(Locale.US)
-            val shortScore = when {
-                coin.has("short_score") -> coin.optInt("short_score", 0)
-                coin.has("score_short") -> coin.optInt("score_short", 0)
-                coin.has("shortScore") -> coin.optInt("shortScore", 0)
-                declaredSide.contains("SHORT") -> longScore
-                else -> 0
-            }
+            val shortScore = calculateShortScore(coin)
             val side = if (shortScore > 83 && (shortScore > longScore || declaredSide.contains("SHORT"))) "SHORT" else "LONG"
             val score = if (side == "SHORT") shortScore else longScore
             val positionKey = "$exchange:$symbol"
@@ -340,6 +376,10 @@ class PaperTrading(private val context: Context) {
             remaining.put(JSONObject().put("symbol", symbol).put("exchange", exchange).put("direction", side).put("entry", price)
                 .put("last_price", price).put("stop", stop).put("target", target).put("quantity", qty)
                 .put("cost", spend).put("entry_fee", entryFee)
+                .put("rsi", firstNumber(coin, "rsi", "RSI"))
+                .put("atr", firstNumber(coin, "atr", "ATR"))
+                .put("ema20", firstNumber(coin, "ema20", "ema_20", "EMA20"))
+                .put("change_24h", firstNumber(coin, "change_24h", "price_change_24h", "price_change_percentage_24h", "change24h"))
                 .put("peak_profit_usdt", 0.0).put("opened_at", now).put("score", score))
             held.add(positionKey)
             log.put(JSONObject().put("type", if (side == "SHORT") "SHORT" else "BUY")
@@ -431,7 +471,12 @@ class PaperTrading(private val context: Context) {
                 .append(" | сейчас ").append(money(price))
                 .append(" | P/L ").append(money(netOpenPnl(p,price)))
                 .append(" | SL ").append(money(p.optDouble("stop"))).append(" | TP ").append(money(p.optDouble("target")))
-                .append("\n")
+                .append(" | Score ").append(p.optInt("score"))
+                .append(" | RSI ").append(if (p.has("rsi") && p.optDouble("rsi").isFinite()) String.format(Locale.US, "%.1f", p.optDouble("rsi")) else "n/a")
+                .append(" | ATR ").append(if (p.has("atr") && p.optDouble("atr").isFinite()) String.format(Locale.US, "%.6f", p.optDouble("atr")) else "n/a")
+                .append(" | EMA20 ").append(if (p.has("ema20") && p.optDouble("ema20").isFinite()) money(p.optDouble("ema20")) else "n/a")
+                .append(" | 24h ").append(if (p.has("change_24h") && p.optDouble("change_24h").isFinite()) String.format(Locale.US, "%.2f%%", p.optDouble("change_24h")) else "n/a")
+                .append("\\n")
         }
         out.append("\nПОСЛЕДНИЕ СДЕЛКИ\n")
         if (log.length() == 0) out.append("История пока пустая.\n")
