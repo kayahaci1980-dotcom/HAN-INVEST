@@ -5,6 +5,7 @@ on:
     branches:
       - fix/han-invest-quality-and-paper-safety
   pull_request:
+    types: [opened, synchronize, reopened]
     branches:
       - ui-exchange-tabs-top3
   workflow_dispatch:
