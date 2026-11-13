@@ -93,7 +93,7 @@ class PaperTrading(private val context: Context) {
         }
         for (key in expired) blocks.remove(key)
 
-        // Переносим ранее сохранённые постоянные блокировки на 8 часов с момента обновления.
+        // Переносим ранее сохранённые постоянные блокировки на 2 часа с момента обновления.
         if (!prefs.getBoolean("paper_loss_blocks_migrated", false)) {
             val legacy = prefs.getStringSet("paper_loss_blocked_assets", emptySet())?.toSet() ?: emptySet()
             for (key in legacy) {
@@ -192,7 +192,7 @@ class PaperTrading(private val context: Context) {
         saveArray("positions", remaining)
         saveArray("history", log)
         val legacyNote = if (legacy > 0) " Старых позиций других бирж сохранено без изменений: $legacy." else ""
-        return "Bybit: котировки обновлены для $updated из ${open.length()} PAPER-позиций; закрыто по Stop/Take: $closed.$legacyNote"
+        return "Bybit: котировки обновлены для $updated из ${open.length()} PAPER-позиций; закрыто по защите прибыли/Stop/Take: $closed.$legacyNote"
     }
 
     fun processScan(json: JSONObject): String {
@@ -268,7 +268,7 @@ class PaperTrading(private val context: Context) {
             val positionKey = "$exchange:$symbol"
 
             // При оценке строго выше 83 баллов оценка становится главным сигналом:
-            // объём, BTC-тренд, trade_ready, сигнал стратегии и cooldown не блокируют PAPER-вход.
+            // объём, BTC-тренд и trade_ready не блокируют PAPER-вход; активная блокировка монеты учитывается отдельно.
             // Оставляем только технически обязательные условия исполнения: корректная пара/цена,
             // отсутствие уже открытой позиции по этой паре и наличие виртуального USDT.
             val reason = when {
