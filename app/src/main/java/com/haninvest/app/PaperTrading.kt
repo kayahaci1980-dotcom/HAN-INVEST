@@ -534,7 +534,7 @@ class PaperTrading(private val context: Context) {
             scanLimit = if (scan.text.toString().contains("РАСШИРЕННЫЙ")) 1000 else 100
             scan.text = "СКАНИРОВАНИЕ ${scanLimit} ПАР — PAPER-СДЕЛКИ"
             scan.isEnabled = false
-            status.text = "Сканируем 100 наиболее ликвидных пар Bybit..."
+            status.text = "Сканируем до ${scanLimit} наиболее ликвидных пар Bybit Spot..."
             Thread {
                 try {
                     val url = "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=$scanLimit&min_volume=1000000"
@@ -560,6 +560,7 @@ class PaperTrading(private val context: Context) {
                     (context as? android.app.Activity)?.runOnUiThread {
                         status.text = "Ошибка сканирования: ${e.message}"
                         scan.isEnabled = true; expandedScan.isEnabled = true
+                        scan.text = "СКАНИРОВАТЬ 100 ПАР И ВЫПОЛНИТЬ PAPER-СДЕЛКИ"
                         render(details); showSellActions()
                     }
                 }
