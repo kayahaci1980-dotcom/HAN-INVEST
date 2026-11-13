@@ -25,6 +25,8 @@ class PaperTrading(private val context: Context) {
     private fun saveArray(key: String, value: JSONArray) { prefs.edit().putString(key, value.toString()).apply() }
 
     private fun balance(): Double = prefs.getFloat("cash", 1000f).toDouble()
+    fun isTradingPaused(): Boolean = prefs.getBoolean("paper_trading_paused", false)
+    fun setTradingPaused(paused: Boolean) { prefs.edit().putBoolean("paper_trading_paused", paused).apply() }
     private fun positions() = readArray("positions")
     private fun history() = readArray("history")
 
@@ -207,6 +209,7 @@ class PaperTrading(private val context: Context) {
     }
 
     fun processScan(json: JSONObject): String {
+        if (isTradingPaused()) return "ЭКСТРЕННЫЙ СТОП: автоматические сделки остановлены."
         var cash = balance()
         val open = positions()
         val log = history()
@@ -434,6 +437,19 @@ class PaperTrading(private val context: Context) {
             }
         }
         box.addView(scan)
+        val emergency = Button(context).apply {
+            text = if (isTradingPaused()) "ВОЗОБНОВИТЬ PAPER-ТОРГОВЛЮ" else "ЭКСТРЕННЫЙ СТОП — ОСТАНОВИТЬ"
+            setTextColor(Color.WHITE)
+            setBackgroundColor(if (isTradingPaused()) green else red)
+            setOnClickListener {
+                val paused = !isTradingPaused()
+                setTradingPaused(paused)
+                text = if (paused) "ВОЗОБНОВИТЬ PAPER-ТОРГОВЛЮ" else "ЭКСТРЕННЫЙ СТОП — ОСТАНОВИТЬ"
+                setBackgroundColor(if (paused) green else red)
+                status.text = if (paused) "Автоматические покупки и продажи остановлены. Позиции сохранены." else "Автоматическая PAPER-торговля возобновлена."
+            }
+        }
+        box.addView(emergency)
         val refreshQuotes = Button(context).apply {
             text = "ОБНОВИТЬ ЦЕНЫ PAPER С BINANCE + BYBIT"
             setOnClickListener {
