@@ -255,7 +255,6 @@ class PaperTrading(private val context: Context) {
         for (i in 0 until open.length()) {
             val p = open.getJSONObject(i)
             val symbol = p.optString("symbol")
-            // Старые позиции без exchange считаем Binance, поскольку прежний PAPER-сканер был Binance-only.
             val exchange = p.optString("exchange", "Binance Spot")
             val coin = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
                 .firstOrNull {
@@ -291,15 +290,19 @@ class PaperTrading(private val context: Context) {
 
         // После убытка 2% или больше повторная покупка блокируется на 8 часов.
         val blocked = blockedLossAssets()
-        var skippedAfterLoss = 0
-
-        // Покупаем активы со score >= 83, если они не находятся в списке блокировки.
-        // На каждую новую позицию выделяется фиксированно до 100 USDT.
         val held = mutableSetOf<String>()
         for (index in 0 until remaining.length()) {
             val position = remaining.optJSONObject(index) ?: continue
             held.add(position.optString("exchange", "Binance Spot") + ":" + position.optString("symbol"))
         }
+
+        // Диагностика: для каждого актива фиксируем первую причину, по которой покупка пропущена.
+        val reasons = linkedMapOf<String, Int>()
+        fun skipped(reason: String) { reasons[reason] = (reasons[reason] ?: 0) + 1 }
+        var bought = 0
+        var skippedAfterLoss = 0
+        var qualified = 0
+
         for (i in 0 until assets.length()) {
             val coin = assets.optJSONObject(i) ?: continue
             val symbol = coin.optString("symbol")
@@ -307,19 +310,32 @@ class PaperTrading(private val context: Context) {
             val price = coin.optDouble("price", Double.NaN)
             val score = coin.optInt("score", 0)
             val positionKey = "$exchange:$symbol"
-            // score >= 83 недостаточно, если актив ранее закрылся с убытком >= 2%.
-            if (assetBlockKey(exchange, symbol) in blocked) {
-                skippedAfterLoss++
+
+            val reason = when {
+                symbol.isBlank() || exchange.isBlank() || price <= 0.0 || price.isNaN() ->
+                    "Нет корректной пары или цены"
+                assetBlockKey(exchange, symbol) in blocked ->
+                    "Блокировка после убытка (8 часов)"
+                positionKey in held -> "Позиция уже открыта"
+                score < 83 -> "Оценка ниже 83"
+                !coin.optBoolean("trade_ready", false) -> "Торговая пара не подтверждена"
+                !coin.optBoolean("volume_confirmed", false) -> "Недостаточный объём"
+                !coin.optBoolean("btc_buy_allowed", false) -> "BTC не разрешает вход (тренд не BULLISH)"
+                coin.optString("signal") != "BUY" -> "Сигнал стратегии: " + coin.optString("signal", "нет")
+                else -> ""
+            }
+            if (reason.isNotEmpty()) {
+                skipped(reason)
+                if (reason.startsWith("Блокировка")) skippedAfterLoss++
                 continue
             }
-            if (symbol.isBlank() || exchange.isBlank() || positionKey in held ||
-                price <= 0 || price.isNaN() || score < 83 ||
-                !coin.optBoolean("trade_ready", false) ||
-                !coin.optBoolean("volume_confirmed", false) ||
-                !coin.optBoolean("btc_buy_allowed", false) ||
-                coin.optString("signal") != "BUY") continue
+
+            qualified++
             val spend = minOf(100.0, cash)
-            if (spend < 5.0) continue
+            if (spend < 5.0) {
+                skipped("Недостаточно свободного USDT (нужно минимум $5)")
+                continue
+            }
             val stopValue = coin.optDouble("stop_loss", Double.NaN)
             val stop = if (!stopValue.isNaN() && stopValue > 0 && stopValue < price) stopValue else price * 0.97
             val qty = spend / (price * (1.0 + paperFeeRate))
@@ -335,12 +351,20 @@ class PaperTrading(private val context: Context) {
                 .put("exchange", exchange).put("price", price).put("quantity", qty).put("cost", spend)
                 .put("fee", qty * price * paperFeeRate)
                 .put("score", score).put("time", now))
+            bought++
         }
         saveBalance(cash)
         prefs.edit().putLong("last_scan", now).apply()
         saveArray("positions", remaining)
         saveArray("history", log)
-        return "Сканирование обработано. Найдено активов: ${assets.length()}. Заблокировано после убытка 2%: ${blocked.size}; пропущено сейчас: ${skippedAfterLoss}."
+
+        val reasonSummary = if (reasons.isEmpty()) {
+            "Все проверенные активы прошли фильтры."
+        } else {
+            reasons.entries.sortedByDescending { it.value }.take(5)
+                .joinToString("; ") { "${it.key}: ${it.value}" }
+        }
+        return "Сканирование: активов ${assets.length()}; куплено ${bought}; прошло все фильтры до проверки баланса ${qualified}.\nПочему пропущены: $reasonSummary."
     }
 
     private fun fetchManualSellPrice(exchange: String, symbol: String): Double {
