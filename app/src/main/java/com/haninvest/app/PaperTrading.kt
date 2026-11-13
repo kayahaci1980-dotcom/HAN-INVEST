@@ -263,6 +263,12 @@ class PaperTrading(private val context: Context) {
         val remaining = JSONArray()
         for (i in 0 until open.length()) {
             val p = open.getJSONObject(i)
+            if (forcedDirection != null &&
+                !direction(p).equals(forcedDirection, true)) {
+                // Отдельный SHORT-скан не изменяет и не закрывает LONG-позиции.
+                remaining.put(p)
+                continue
+            }
             val symbol = p.optString("symbol")
             val exchange = p.optString("exchange", "Bybit Spot")
             val coin = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
@@ -383,10 +389,10 @@ class PaperTrading(private val context: Context) {
             remaining.put(JSONObject().put("symbol", symbol).put("exchange", exchange).put("direction", side).put("entry", price)
                 .put("last_price", price).put("stop", stop).put("target", target).put("quantity", qty)
                 .put("cost", spend).put("entry_fee", entryFee)
-                .put("rsi", firstNumber(coin, "rsi", "RSI").let { if (it.isFinite()) it else -1.0 })
-                .put("atr", firstNumber(coin, "atr", "ATR").let { if (it.isFinite()) it else -1.0 })
+                .put("rsi", firstNumber(coin, "rsi", "rsi_14", "RSI").let { if (it.isFinite()) it else -1.0 })
+                .put("atr", firstNumber(coin, "atr", "atr_pct", "ATR").let { if (it.isFinite()) it else -1.0 })
                 .put("ema20", firstNumber(coin, "ema20", "ema_20", "EMA20").let { if (it.isFinite()) it else -1.0 })
-                .put("change_24h", firstNumber(coin, "change_24h", "price_change_24h", "price_change_percentage_24h", "change24h").let { if (it.isFinite()) it else -999.0 })
+                .put("change_24h", firstNumber(coin, "change_24h", "change_24h_pct", "price_change_24h", "price_change_percentage_24h", "change24h").let { if (it.isFinite()) it else -999.0 })
                 .put("peak_profit_usdt", 0.0).put("opened_at", now).put("score", score))
             held.add(positionKey)
             log.put(JSONObject().put("type", if (side == "SHORT") "SHORT" else "BUY")
