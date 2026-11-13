@@ -33,19 +33,53 @@ class PaperTrading(private val context: Context) {
         return venue + ":" + symbol.trim().uppercase(Locale.US)
     }
 
+    private val lossBlockDurationMs = 8L * 60L * 60L * 1000L
+
+    // Храним время окончания блокировки для каждой пары биржа:монета.
+    private fun readLossBlocks(): JSONObject = try {
+        JSONObject(prefs.getString("paper_loss_blocked_until", "{}") ?: "{}")
+    } catch (_: Exception) {
+        JSONObject()
+    }
+
     private fun blockAssetAfterLoss(exchange: String, symbol: String, entry: Double, exit: Double): Boolean {
         if (entry <= 0.0 || exit <= 0.0) return false
         val lossPercent = ((exit - entry) / entry) * 100.0
         if (lossPercent > -2.0) return false
-        val blocked = prefs.getStringSet("paper_loss_blocked_assets", emptySet())
-            ?.toMutableSet() ?: mutableSetOf()
-        val added = blocked.add(assetBlockKey(exchange, symbol))
-        if (added) prefs.edit().putStringSet("paper_loss_blocked_assets", blocked).apply()
-        return added
+        val blocks = readLossBlocks()
+        val key = assetBlockKey(exchange, symbol)
+        val until = System.currentTimeMillis() + lossBlockDurationMs
+        blocks.put(key, until)
+        prefs.edit().putString("paper_loss_blocked_until", blocks.toString()).apply()
+        return true
     }
 
-    private fun blockedLossAssets(): Set<String> =
-        prefs.getStringSet("paper_loss_blocked_assets", emptySet())?.toSet() ?: emptySet()
+    private fun blockedLossAssets(): Set<String> {
+        val now = System.currentTimeMillis()
+        val blocks = readLossBlocks()
+        val active = mutableSetOf<String>()
+        val expired = mutableListOf<String>()
+        val iterator = blocks.keys()
+        while (iterator.hasNext()) {
+            val key = iterator.next()
+            if (blocks.optLong(key, 0L) > now) active.add(key) else expired.add(key)
+        }
+        for (key in expired) blocks.remove(key)
+
+        // Переносим ранее сохранённые постоянные блокировки на 8 часов с момента обновления.
+        if (!prefs.getBoolean("paper_loss_blocks_migrated", false)) {
+            val legacy = prefs.getStringSet("paper_loss_blocked_assets", emptySet())?.toSet() ?: emptySet()
+            for (key in legacy) {
+                if (!active.contains(key)) {
+                    blocks.put(key, now + lossBlockDurationMs)
+                    active.add(key)
+                }
+            }
+            prefs.edit().putBoolean("paper_loss_blocks_migrated", true).remove("paper_loss_blocked_assets").apply()
+        }
+        prefs.edit().putString("paper_loss_blocked_until", blocks.toString()).apply()
+        return active
+    }
 
     // Получает реальные публичные Spot-котировки обеих бирж и обновляет только уже открытые PAPER-позиции.
     // При недоступности одной биржи её старые цены сохраняются; данные не подменяются нулями.
@@ -216,8 +250,7 @@ class PaperTrading(private val context: Context) {
             }
         }
 
-        // После закрытия позиции с убытком 2% или больше актив навсегда блокируется
-        // от повторной PAPER-покупки, независимо от последующего score.
+        // После убытка 2% или больше повторная покупка блокируется на 8 часов.
         val blocked = blockedLossAssets()
         var skippedAfterLoss = 0
 
