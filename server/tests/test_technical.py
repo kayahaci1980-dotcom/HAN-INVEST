@@ -1,9 +1,24 @@
 import unittest
 
 from app.technical import calculate_indicators, score_indicators
+from app.other_exchanges import indicators as exchange_indicators
+from app.main import app as api_app
 
 
 class SharedTechnicalIndicatorsTests(unittest.TestCase):
+    def test_all_api_modules_import(self):
+        self.assertIsNotNone(api_app)
+        self.assertTrue(any(route.path == "/api/v1/crypto/okx/scan" for route in api_app.routes))
+
+    def test_coinbase_and_okx_drop_forming_candle(self):
+        closes = [float(i) for i in range(1, 61)]
+        coinbase = [[i, closes[i-1]-1, closes[i-1]+1, closes[i-1], closes[i-1], 100.0] for i in range(1, 61)]
+        okx = [[i, closes[i-1], closes[i-1]+1, closes[i-1]-1, closes[i-1], 100.0] for i in range(1, 61)]
+        coinbase_result = exchange_indicators(list(reversed(coinbase)), "Coinbase")
+        okx_result = exchange_indicators(list(reversed(okx)), "OKX")
+        self.assertAlmostEqual(coinbase_result["price"], 59.0)
+        self.assertAlmostEqual(okx_result["price"], 59.0)
+
     def test_wilder_rsi_and_atr_on_monotonic_series(self):
         closes = [float(i) for i in range(1, 61)]
         highs = [value + 1.0 for value in closes]
