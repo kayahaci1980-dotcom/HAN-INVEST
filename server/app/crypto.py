@@ -453,21 +453,24 @@ async def scan_crypto(
                         client, "/api/v3/klines",
                         {"symbol": "BTCUSDT", "interval": "1h", "limit": 60},
                     )
-                    btc_closed = btc_candles[:-1]
-                    btc_closes = [float(row[4]) for row in btc_closed if len(row) > 5]
-                    if len(btc_closes) >= 50:
-                        btc_ma20 = _mean(btc_closes[-20:])
-                        btc_ma50 = _mean(btc_closes[-50:])
+                    btc_closed = [row for row in btc_candles[:-1] if len(row) > 5]
+                    btc_closes = [float(row[4]) for row in btc_closed]
+                    btc_highs = [float(row[2]) for row in btc_closed]
+                    btc_lows = [float(row[3]) for row in btc_closed]
+                    btc_volumes = [float(row[5]) for row in btc_closed]
+                    btc_data = calculate_indicators(btc_highs, btc_lows, btc_closes, btc_volumes)
+                    if btc_data:
                         btc_price = float(btc_ticker.get("lastPrice") or btc_closes[-1])
-                        btc_ok = btc_price > btc_ma20 > btc_ma50
+                        btc_ema20, btc_ema50 = btc_data["ema20"], btc_data["ema50"]
+                        btc_ok = btc_price > btc_ema20 > btc_ema50
                         if btc_ok:
                             market_state = "BULLISH"
                             market_state_label = "Восходящий тренд"
-                            market_reason = "BTC выше MA20, MA20 выше MA50"
-                        elif btc_price < btc_ma20 < btc_ma50:
+                            market_reason = "BTC выше EMA20, EMA20 выше EMA50"
+                        elif btc_price < btc_ema20 < btc_ema50:
                             market_state = "BEARISH"
                             market_state_label = "Нисходящий тренд"
-                            market_reason = "BTC ниже MA20, MA20 ниже MA50"
+                            market_reason = "BTC ниже EMA20, EMA20 ниже EMA50"
                         else:
                             market_state = "SIDEWAYS"
                             market_state_label = "Боковой или неопределённый рынок"
@@ -478,8 +481,8 @@ async def scan_crypto(
                             "market_state": market_state,
                             "market_state_label": market_state_label,
                             "price": btc_price,
-                            "ma20": round(btc_ma20, 2),
-                            "ma50": round(btc_ma50, 2),
+                            "ema20": round(btc_ema20, 2),
+                            "ema50": round(btc_ema50, 2),
                             "trend": market_state,
                             "reason": market_reason,
                         }
