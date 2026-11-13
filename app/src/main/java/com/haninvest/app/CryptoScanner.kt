@@ -323,17 +323,17 @@ class CryptoScanner(private val context: Context) {
                         else -> "слабая"
                     }
                     out.append("Техническая оценка: ").append(m.score).append("/100 (")
-                        .append(state).append(")\\n")
-                    out.append(String.format(Locale.US, "RSI(14): %.1f\\n", m.rsi))
-                    out.append(String.format(Locale.US, "ATR(14): %.2f%%\\n", m.atrPct))
-                    out.append(String.format(Locale.US, "EMA20: $%,.8f — %s\\n", m.ema, m.trend))
+                        .append(state).append(")\n")
+                    out.append(String.format(Locale.US, "RSI(14): %.1f\n", m.rsi))
+                    out.append(String.format(Locale.US, "ATR(14): %.2f%%\n", m.atrPct))
+                    out.append(String.format(Locale.US, "EMA20: $%,.8f — %s\n", m.ema, m.trend))
                 } else {
-                    out.append("Техническая оценка: недостаточно свечных данных\\n")
-                    out.append("RSI / ATR / EMA20: нет достаточных данных\\n")
+                    out.append("Техническая оценка: недостаточно свечных данных\n")
+                    out.append("RSI / ATR / EMA20: нет достаточных данных\n")
                 }
             } catch (e: Exception) {
                 out.append("Технические показатели временно недоступны: ")
-                    .append(e.message ?: "ошибка получения свечей").append("\\n")
+                    .append(e.message ?: "ошибка получения свечей").append("\n")
             }
         }
         out.append("\nОбновлено: ").append(
