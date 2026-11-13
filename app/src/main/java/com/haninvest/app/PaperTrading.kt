@@ -353,7 +353,8 @@ class PaperTrading(private val context: Context) {
             }
 
             qualified++
-            val spend = minOf(100.0, cash)
+            val spend = if (side == "SHORT") minOf(100.0, cash / (1.0 + paperFeeRate))
+                        else minOf(100.0, cash)
             if (spend < 5.0) {
                 skipped("Недостаточно свободного USDT (нужно минимум \$5)")
                 continue
