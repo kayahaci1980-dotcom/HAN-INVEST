@@ -84,7 +84,7 @@ class PaperTrading(private val context: Context) {
         val rsi = firstNumber(coin, "rsi", "RSI")
         val atr = firstNumber(coin, "atr", "ATR")
         val change24 = firstNumber(coin, "change_24h", "price_change_24h", "price_change_percentage_24h", "change24h")
-        if (price <= 0.0 || !ema.isFinite() || !rsi.isFinite() || !atr.isFinite() || !change24.isFinite()) return 0
+        if (!price.isFinite() || price <= 0.0 || !ema.isFinite() || !rsi.isFinite() || !atr.isFinite() || !change24.isFinite()) return 0
 
         var score = 0
         if (price < ema) score += 35
@@ -270,7 +270,7 @@ class PaperTrading(private val context: Context) {
                 }
             val price = coin?.optDouble("price", Double.NaN) ?: Double.NaN
             val score = coin?.let {
-                if (direction(p) == "SHORT") it.optInt("short_score", it.optInt("score_short", it.optInt("shortScore", 0)))
+                if (direction(p) == "SHORT") calculateShortScore(it)
                 else it.optInt("score", 0)
             } ?: 0
             val entry = p.optDouble("entry")
@@ -376,10 +376,10 @@ class PaperTrading(private val context: Context) {
             remaining.put(JSONObject().put("symbol", symbol).put("exchange", exchange).put("direction", side).put("entry", price)
                 .put("last_price", price).put("stop", stop).put("target", target).put("quantity", qty)
                 .put("cost", spend).put("entry_fee", entryFee)
-                .put("rsi", firstNumber(coin, "rsi", "RSI"))
-                .put("atr", firstNumber(coin, "atr", "ATR"))
-                .put("ema20", firstNumber(coin, "ema20", "ema_20", "EMA20"))
-                .put("change_24h", firstNumber(coin, "change_24h", "price_change_24h", "price_change_percentage_24h", "change24h"))
+                .put("rsi", firstNumber(coin, "rsi", "RSI").let { if (it.isFinite()) it else -1.0 })
+                .put("atr", firstNumber(coin, "atr", "ATR").let { if (it.isFinite()) it else -1.0 })
+                .put("ema20", firstNumber(coin, "ema20", "ema_20", "EMA20").let { if (it.isFinite()) it else -1.0 })
+                .put("change_24h", firstNumber(coin, "change_24h", "price_change_24h", "price_change_percentage_24h", "change24h").let { if (it.isFinite()) it else -999.0 })
                 .put("peak_profit_usdt", 0.0).put("opened_at", now).put("score", score))
             held.add(positionKey)
             log.put(JSONObject().put("type", if (side == "SHORT") "SHORT" else "BUY")
@@ -472,11 +472,11 @@ class PaperTrading(private val context: Context) {
                 .append(" | P/L ").append(money(netOpenPnl(p,price)))
                 .append(" | SL ").append(money(p.optDouble("stop"))).append(" | TP ").append(money(p.optDouble("target")))
                 .append(" | Score ").append(p.optInt("score"))
-                .append(" | RSI ").append(if (p.has("rsi") && p.optDouble("rsi").isFinite()) String.format(Locale.US, "%.1f", p.optDouble("rsi")) else "n/a")
-                .append(" | ATR ").append(if (p.has("atr") && p.optDouble("atr").isFinite()) String.format(Locale.US, "%.6f", p.optDouble("atr")) else "n/a")
-                .append(" | EMA20 ").append(if (p.has("ema20") && p.optDouble("ema20").isFinite()) money(p.optDouble("ema20")) else "n/a")
-                .append(" | 24h ").append(if (p.has("change_24h") && p.optDouble("change_24h").isFinite()) String.format(Locale.US, "%.2f%%", p.optDouble("change_24h")) else "n/a")
-                .append("\\n")
+                .append(" | RSI ").append(if (p.optDouble("rsi", -1.0) >= 0.0) String.format(Locale.US, "%.1f", p.optDouble("rsi")) else "n/a")
+                .append(" | ATR ").append(if (p.optDouble("atr", -1.0) >= 0.0) String.format(Locale.US, "%.6f", p.optDouble("atr")) else "n/a")
+                .append(" | EMA20 ").append(if (p.optDouble("ema20", -1.0) >= 0.0) money(p.optDouble("ema20")) else "n/a")
+                .append(" | 24h ").append(if (p.optDouble("change_24h", -999.0) > -999.0) String.format(Locale.US, "%.2f%%", p.optDouble("change_24h")) else "n/a")
+                .append("\n")
         }
         out.append("\nПОСЛЕДНИЕ СДЕЛКИ\n")
         if (log.length() == 0) out.append("История пока пустая.\n")
