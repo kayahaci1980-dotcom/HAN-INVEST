@@ -54,7 +54,8 @@ class CryptoScanner(private val context: Context) {
             out.append(String.format(Locale.US, "ATR(14): %.2f%%\n", coin.optDouble("atr_pct")))
             out.append(String.format(Locale.US, "EMA20: $%,.8f\n", coin.optDouble("ema20")))
             out.append(String.format(Locale.US, "Изменение 24ч: %+.2f%%\n", coin.optDouble("change_24h_pct")))
-            out.append("Сигнал: ").append(coin.optString("signal", "WATCH")).append("\n")
+            out.append("Сигнал стратегии: ").append(coin.optString("signal", "WATCH")).append("\n")
+            out.append("PAPER по оценке: условие >83 пройдено; вход зависит от свободного баланса и отсутствия открытой позиции.\n")
             val blockers = coin.optJSONArray("buy_blockers")
             val reasons = mutableListOf<String>()
             if (blockers != null) {
