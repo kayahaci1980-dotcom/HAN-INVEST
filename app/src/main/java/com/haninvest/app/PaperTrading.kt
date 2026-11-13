@@ -31,7 +31,12 @@ class PaperTrading(private val context: Context) {
     private fun history() = readArray("history")
 
     private fun assetBlockKey(exchange: String, symbol: String): String {
-        val venue = if (exchange.contains("Bybit", ignoreCase = true)) "Bybit" else "Binance"
+        val venue = when {
+            exchange.contains("Bybit", true) -> "Bybit"
+            exchange.contains("Coinbase", true) -> "Coinbase"
+            exchange.contains("OKX", true) -> "OKX"
+            else -> "Binance"
+        }
         return venue + ":" + symbol.trim().uppercase(Locale.US)
     }
 
@@ -179,6 +184,7 @@ class PaperTrading(private val context: Context) {
             val quantity = position.optDouble("quantity")
             val stop = position.optDouble("stop")
             val reason = when {
+                isTradingPaused() -> ""
                 stop > 0.0 && price <= stop -> "STOP LOSS"
                 price >= entry * 1.10 -> "TAKE PROFIT +10%"
                 else -> ""
