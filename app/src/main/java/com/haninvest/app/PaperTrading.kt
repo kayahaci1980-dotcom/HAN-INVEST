@@ -50,26 +50,33 @@ class PaperTrading(private val context: Context) {
         JSONObject()
     }
 
-    private fun blockAssetAfterLoss(exchange: String, symbol: String, entry: Double, exit: Double): Boolean {
+    private fun direction(position: JSONObject): String =
+        if (position.optString("direction", "LONG").equals("SHORT", true)) "SHORT" else "LONG"
+
+    private fun grossPnl(position: JSONObject, price: Double): Double {
+        val delta = if (direction(position) == "SHORT") position.optDouble("entry") - price
+                   else price - position.optDouble("entry")
+        return delta * position.optDouble("quantity")
+    }
+
+    private fun netOpenPnl(position: JSONObject, price: Double): Double =
+        grossPnl(position, price) - position.optDouble("entry_fee", 0.0) -
+            position.optDouble("quantity") * price * paperFeeRate
+
+    private fun blockAssetAfterLoss(exchange: String, symbol: String, entry: Double, exit: Double, side: String = "LONG"): Boolean {
         if (entry <= 0.0 || exit <= 0.0) return false
-        val entryWithFee = entry * (1.0 + paperFeeRate)
-        val exitAfterFee = exit * (1.0 - paperFeeRate)
-        val lossPercent = ((exitAfterFee - entryWithFee) / entryWithFee) * 100.0
-        if (lossPercent > -2.0) return false
+        val move = if (side == "SHORT") (entry - exit) / entry else (exit - entry) / entry
+        if ((move - 2.0 * paperFeeRate) * 100.0 > -2.0) return false
         val blocks = readLossBlocks()
-        val key = assetBlockKey(exchange, symbol)
-        val until = System.currentTimeMillis() + lossBlockDurationMs
-        blocks.put(key, until)
+        blocks.put(assetBlockKey(exchange, symbol), System.currentTimeMillis() + lossBlockDurationMs)
         prefs.edit().putString("paper_loss_blocked_until", blocks.toString()).apply()
         return true
     }
 
-    // После достижения +$2 чистой прибыли защищаем 50% от максимальной прибыли.
+    // Общая защита прибыли для LONG и SHORT.
     private fun shouldCloseAfterProfitGiveback(position: JSONObject, price: Double): Boolean {
-        val quantity = position.optDouble("quantity")
-        val cost = position.optDouble("cost", quantity * position.optDouble("entry"))
-        if (quantity <= 0.0 || price <= 0.0 || !price.isFinite()) return false
-        val currentProfit = quantity * price * (1.0 - paperFeeRate) - cost
+        if (position.optDouble("quantity") <= 0.0 || price <= 0.0 || !price.isFinite()) return false
+        val currentProfit = netOpenPnl(position, price)
         val peakProfit = maxOf(position.optDouble("peak_profit_usdt", 0.0), currentProfit)
         position.put("peak_profit_usdt", peakProfit)
         return peakProfit >= 2.0 && currentProfit <= peakProfit * 0.5
@@ -166,25 +173,30 @@ class PaperTrading(private val context: Context) {
             val entry = position.optDouble("entry")
             val quantity = position.optDouble("quantity")
             val stop = position.optDouble("stop")
-            val target = position.optDouble("target", entry * 1.10)
+            val target = position.optDouble("target")
+            val side = direction(position)
             val profitGiveback = shouldCloseAfterProfitGiveback(position, price)
+            val hitStop = stop > 0.0 && if (side == "SHORT") price >= stop else price <= stop
+            val hitTarget = target > 0.0 && if (side == "SHORT") price <= target else price >= target
             val reason = when {
                 isTradingPaused() -> ""
                 profitGiveback -> "ЗАЩИТА ПРИБЫЛИ: ОТДАТЬ 50% ОТ МАКСИМУМА"
-                stop > 0.0 && price <= stop -> "STOP LOSS"
-                target > 0.0 && price >= target -> "TAKE PROFIT"
+                hitStop -> "STOP LOSS"
+                hitTarget -> "TAKE PROFIT"
                 else -> ""
             }
             if (reason.isNotEmpty()) {
                 if (profitGiveback) blockAssetForCooldown(exchange, symbol)
-                else blockAssetAfterLoss(exchange, symbol, entry, price)
-                val proceeds = quantity * price * (1.0 - paperFeeRate)
-                cash += proceeds
+                else blockAssetAfterLoss(exchange, symbol, entry, price, side)
+                val fee = quantity * price * paperFeeRate
                 val cost = position.optDouble("cost", quantity * entry)
-                log.put(JSONObject().put("type", "SELL").put("symbol", symbol)
-                    .put("exchange", exchange).put("price", price).put("quantity", quantity)
-                    .put("fee", quantity * price * paperFeeRate)
-                    .put("pnl", proceeds - cost).put("reason", reason).put("time", now))
+                val pnl = netOpenPnl(position, price)
+                if (side == "SHORT") cash += cost + grossPnl(position, price) - fee
+                else cash += quantity * price * (1.0 - paperFeeRate)
+                log.put(JSONObject().put("type", if (side == "SHORT") "COVER" else "SELL")
+                    .put("direction", side).put("symbol", symbol).put("exchange", exchange)
+                    .put("price", price).put("quantity", quantity).put("fee", fee)
+                    .put("pnl", pnl).put("reason", reason).put("time", now))
                 closed++
             } else remaining.put(position)
         }
@@ -219,25 +231,30 @@ class PaperTrading(private val context: Context) {
             val entry = p.optDouble("entry")
             val qty = p.optDouble("quantity")
             val stop = p.optDouble("stop")
-            val take = p.optDouble("target", entry * 1.10)
+            val take = p.optDouble("target")
+            val side = direction(p)
             val profitGiveback = !price.isNaN() && shouldCloseAfterProfitGiveback(p, price)
+            val hitStop = !price.isNaN() && stop > 0.0 && if (side == "SHORT") price >= stop else price <= stop
+            val hitTarget = !price.isNaN() && take > 0.0 && if (side == "SHORT") price <= take else price >= take
             val reason = when {
                 profitGiveback -> "ЗАЩИТА ПРИБЫЛИ: ОТДАТЬ 50% ОТ МАКСИМУМА"
-                !price.isNaN() && price <= stop -> "STOP LOSS"
-                !price.isNaN() && price >= take -> "TAKE PROFIT"
+                hitStop -> "STOP LOSS"
+                hitTarget -> "TAKE PROFIT"
                 coin != null && score < 83 -> "Сигнал ниже 83"
                 else -> ""
             }
             if (reason.isNotEmpty() && !price.isNaN()) {
                 if (profitGiveback) blockAssetForCooldown(exchange, symbol)
-                else blockAssetAfterLoss(exchange, symbol, entry, price)
-                val proceeds = qty * price * (1.0 - paperFeeRate)
-                cash += proceeds
+                else blockAssetAfterLoss(exchange, symbol, entry, price, side)
+                val fee = qty * price * paperFeeRate
                 val cost = p.optDouble("cost", qty * entry)
-                log.put(JSONObject().put("type", "SELL").put("symbol", symbol)
-                    .put("exchange", exchange).put("price", price).put("quantity", qty)
-                    .put("fee", qty * price * paperFeeRate)
-                    .put("pnl", proceeds - cost).put("reason", reason).put("time", now))
+                val pnl = netOpenPnl(p, price)
+                if (side == "SHORT") cash += cost + grossPnl(p, price) - fee
+                else cash += qty * price * (1.0 - paperFeeRate)
+                log.put(JSONObject().put("type", if (side == "SHORT") "COVER" else "SELL")
+                    .put("direction", side).put("symbol", symbol).put("exchange", exchange)
+                    .put("price", price).put("quantity", qty).put("fee", fee)
+                    .put("pnl", pnl).put("reason", reason).put("time", now))
             } else {
                 if (!price.isNaN()) p.put("last_price", price)
                 remaining.put(p)
@@ -264,7 +281,17 @@ class PaperTrading(private val context: Context) {
             val symbol = coin.optString("symbol")
             val exchange = coin.optString("exchange", "Bybit Spot")
             val price = coin.optDouble("price", Double.NaN)
-            val score = coin.optInt("score", 0)
+            val longScore = coin.optInt("score", 0)
+            val declaredSide = coin.optString("direction", coin.optString("signal", coin.optString("side", ""))).uppercase(Locale.US)
+            val shortScore = when {
+                coin.has("short_score") -> coin.optInt("short_score", 0)
+                coin.has("score_short") -> coin.optInt("score_short", 0)
+                coin.has("shortScore") -> coin.optInt("shortScore", 0)
+                declaredSide.contains("SHORT") -> longScore
+                else -> 0
+            }
+            val side = if (shortScore > 83 && (shortScore > longScore || declaredSide.contains("SHORT"))) "SHORT" else "LONG"
+            val score = if (side == "SHORT") shortScore else longScore
             val positionKey = "$exchange:$symbol"
 
             // При оценке строго выше 83 баллов оценка становится главным сигналом:
@@ -278,7 +305,7 @@ class PaperTrading(private val context: Context) {
                 positionKey in held -> "Позиция уже открыта"
                 assetBlockKey(exchange, symbol) in blocked -> "Монета заблокирована на 2 часа после закрытия"
                 held.size >= 3 -> "Достигнут лимит: максимум 3 открытые позиции"
-                score <= 83 -> "Оценка должна быть выше 83"
+                score <= 83 -> if (side == "SHORT") "SHORT-оценка должна быть выше 83" else "Оценка должна быть выше 83"
                 else -> ""
             }
             if (reason.isNotEmpty()) {
@@ -292,21 +319,30 @@ class PaperTrading(private val context: Context) {
                 skipped("Недостаточно свободного USDT (нужно минимум \$5)")
                 continue
             }
-            val stopValue = coin.optDouble("stop_loss", Double.NaN)
-            val stop = if (!stopValue.isNaN() && stopValue > 0 && stopValue < price) stopValue else price * 0.97
-            val qty = spend / (price * (1.0 + paperFeeRate))
-            val targetValue = coin.optDouble("take_profit", Double.NaN)
-            val target = if (!targetValue.isNaN() && targetValue > price) targetValue else price * 1.06
-            cash -= spend
-            remaining.put(JSONObject().put("symbol", symbol).put("exchange", exchange).put("entry", price)
+            val stopValue = coin.optDouble(if (side == "SHORT") "short_stop_loss" else "stop_loss", Double.NaN)
+            val targetValue = coin.optDouble(if (side == "SHORT") "short_take_profit" else "take_profit", Double.NaN)
+            val stop = if (side == "SHORT") {
+                if (!stopValue.isNaN() && stopValue > price) stopValue else price * 1.03
+            } else {
+                if (!stopValue.isNaN() && stopValue > 0 && stopValue < price) stopValue else price * 0.97
+            }
+            val target = if (side == "SHORT") {
+                if (!targetValue.isNaN() && targetValue > 0 && targetValue < price) targetValue else price * 0.94
+            } else {
+                if (!targetValue.isNaN() && targetValue > price) targetValue else price * 1.06
+            }
+            val qty = if (side == "SHORT") spend / price else spend / (price * (1.0 + paperFeeRate))
+            val entryFee = qty * price * paperFeeRate
+            cash -= if (side == "SHORT") spend + entryFee else spend
+            remaining.put(JSONObject().put("symbol", symbol).put("exchange", exchange).put("direction", side).put("entry", price)
                 .put("last_price", price).put("stop", stop).put("target", target).put("quantity", qty)
-                .put("cost", spend).put("entry_fee", qty * price * paperFeeRate)
+                .put("cost", spend).put("entry_fee", entryFee)
                 .put("peak_profit_usdt", 0.0).put("opened_at", now).put("score", score))
             held.add(positionKey)
-            log.put(JSONObject().put("type", "BUY").put("symbol", symbol)
+            log.put(JSONObject().put("type", if (side == "SHORT") "SHORT" else "BUY")
+                .put("direction", side).put("symbol", symbol)
                 .put("exchange", exchange).put("price", price).put("quantity", qty).put("cost", spend)
-                .put("fee", qty * price * paperFeeRate)
-                .put("score", score).put("time", now))
+                .put("fee", entryFee).put("score", score).put("time", now))
             bought++
         }
         saveBalance(cash)
@@ -345,13 +381,15 @@ class PaperTrading(private val context: Context) {
         val open=positions()
         val pos=(0 until open.length()).mapNotNull{open.optJSONObject(it)}.firstOrNull{it.optString("exchange")==exchange && it.optString("symbol")==symbol} ?: return "Позиция уже закрыта."
         val price=fetchManualSellPrice(exchange,symbol); val entry=pos.optDouble("entry"); val qty=pos.optDouble("quantity")
-        val proceeds=qty*price*(1.0-paperFeeRate); val cost=pos.optDouble("cost",qty*entry); val pnl=proceeds-cost
+        val side=direction(pos); val fee=qty*price*paperFeeRate; val cost=pos.optDouble("cost",qty*entry)
+        val pnl=netOpenPnl(pos,price)
+        val returnedCash=if(side=="SHORT") cost+grossPnl(pos,price)-fee else qty*price*(1.0-paperFeeRate)
         val remaining=JSONArray()
         for(i in 0 until open.length()){val item=open.optJSONObject(i)?:continue;if(!(item.optString("exchange")==exchange&&item.optString("symbol")==symbol))remaining.put(item)}
         val log=history()
-        log.put(JSONObject().put("type","SELL").put("symbol",symbol).put("exchange",exchange).put("price",price).put("quantity",qty).put("fee",qty*price*paperFeeRate).put("pnl",pnl).put("reason","MANUAL SELL").put("time",System.currentTimeMillis()))
-        blockAssetAfterLoss(exchange,symbol,entry,price)
-        saveBalance(balance()+proceeds)
+        log.put(JSONObject().put("type",if(side=="SHORT")"COVER" else "SELL").put("direction",side).put("symbol",symbol).put("exchange",exchange).put("price",price).put("quantity",qty).put("fee",fee).put("pnl",pnl).put("reason","MANUAL CLOSE").put("time",System.currentTimeMillis()))
+        blockAssetAfterLoss(exchange,symbol,entry,price,side)
+        saveBalance(balance()+returnedCash)
         saveArray("positions",remaining);saveArray("history",log)
         return "Продано $symbol по "+money(price)+". P/L: "+money(pnl)+"."
     }
@@ -360,7 +398,9 @@ class PaperTrading(private val context: Context) {
         var total = 0.0
         for (i in 0 until open.length()) {
             val p = open.optJSONObject(i) ?: continue
-            total += p.optDouble("quantity") * p.optDouble("last_price", p.optDouble("entry")) * (1.0 - paperFeeRate)
+            val price=p.optDouble("last_price",p.optDouble("entry"))
+            total += if(direction(p)=="SHORT") p.optDouble("cost")+grossPnl(p,price)-p.optDouble("quantity")*price*paperFeeRate
+                     else p.optDouble("quantity")*price*(1.0-paperFeeRate)
         }
         return total
     }
@@ -383,9 +423,10 @@ class PaperTrading(private val context: Context) {
         for (i in 0 until open.length()) {
             val p = open.getJSONObject(i)
             val price = p.optDouble("last_price", p.optDouble("entry"))
-            out.append(p.optString("exchange", "Bybit Spot")).append(" ").append(p.optString("symbol")).append(" | вход ").append(money(p.optDouble("entry")))
+            out.append(direction(p)).append(" ").append(p.optString("exchange", "Bybit Spot")).append(" ").append(p.optString("symbol")).append(" | вход ").append(money(p.optDouble("entry")))
                 .append(" | сейчас ").append(money(price))
-                .append(" | P/L ").append(money((price-p.optDouble("entry"))*p.optDouble("quantity")))
+                .append(" | P/L ").append(money(netOpenPnl(p,price)))
+                .append(" | SL ").append(money(p.optDouble("stop"))).append(" | TP ").append(money(p.optDouble("target")))
                 .append("\n")
         }
         out.append("\nПОСЛЕДНИЕ СДЕЛКИ\n")
@@ -410,7 +451,7 @@ class PaperTrading(private val context: Context) {
         var total = 0.0
         for (i in 0 until open.length()) {
             val p = open.getJSONObject(i)
-            total += p.optDouble("quantity") * p.optDouble("last_price", p.optDouble("entry")) * (1.0 - paperFeeRate) - p.optDouble("cost", p.optDouble("quantity") * p.optDouble("entry"))
+            total += netOpenPnl(p,p.optDouble("last_price",p.optDouble("entry")))
         }
         return total
     }
@@ -470,7 +511,7 @@ class PaperTrading(private val context: Context) {
                     continue
                 }
                 sellActions.addView(Button(context).apply {
-                    text="ПРОДАТЬ $sym — $ex";setTextColor(Color.WHITE);setBackgroundColor(red)
+                    text=if(direction(pos)=="SHORT") "ЗАКРЫТЬ SHORT $sym — $ex" else "ПРОДАТЬ $sym — $ex";setTextColor(Color.WHITE);setBackgroundColor(red)
                     setOnClickListener {
                         isEnabled=false;status.text="Получаем текущую цену для продажи..."
                         Thread {
