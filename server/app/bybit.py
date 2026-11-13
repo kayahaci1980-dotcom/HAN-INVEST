@@ -52,12 +52,25 @@ async def analyze(client: httpx.AsyncClient, ticker: dict, instrument: dict, btc
         change24 = float(ticker.get("price24hPcnt") or 0) * 100
         volume_confirmed = data["volume_ratio"] >= 1.2
         pair_verified = instrument.get("status") == "Trading"
-        setup = (
-            scored["score"] >= 83 and price > data["ema20"] > data["ema50"]
-            and change6 >= 1.0 and volume_confirmed and quote_volume >= 1_000_000
-            and pair_verified
-        )
-        signal = "BUY" if setup and btc_state == "BULLISH" else "WATCH" if scored["score"] >= 55 else "HOLD"
+        technical_blockers: list[str] = []
+        if scored["score"] <= 83:
+            technical_blockers.append("Оценка должна быть выше 83")
+        if not (price > data["ema20"] > data["ema50"]):
+            technical_blockers.append("Нет подтверждения тренда: цена должна быть выше EMA20, а EMA20 выше EMA50")
+        if change6 < 1.0:
+            technical_blockers.append("Рост за 6 часов меньше 1%")
+        if not volume_confirmed:
+            technical_blockers.append("Объём ниже требуемого уровня 1.2×")
+        if quote_volume < 1_000_000:
+            technical_blockers.append("Оборот за 24 часа меньше 1 млн USDT")
+        if not pair_verified:
+            technical_blockers.append("Торговая пара сейчас не активна")
+
+        setup = not technical_blockers
+        buy_blockers = list(technical_blockers)
+        if btc_state != "BULLISH":
+            buy_blockers.append(f"BTC не в бычьем тренде (состояние: {btc_state})")
+        signal = "BUY" if setup and btc_state == "BULLISH" else "WATCH" if scored["score"] > 83 else "HOLD"
         early = "EARLY BUY" if setup and btc_state == "SIDEWAYS" else None
         return {
             "symbol": symbol, "name": symbol[:-4], "exchange": "Bybit Spot",
@@ -70,6 +83,8 @@ async def analyze(client: httpx.AsyncClient, ticker: dict, instrument: dict, btc
             "rsi_14": scored["rsi_14"], "atr_14": scored["atr_14"],
             "atr_pct": scored["atr_pct"], "score": scored["score"],
             "signal": signal, "early_signal": early,
+            "buy_blockers": buy_blockers,
+            "technical_setup_passed": setup,
             "stop_loss": round(price - 1.5 * data["atr"], 10),
             "take_profit": round(price + 3.0 * data["atr"], 10),
             "trade_ready": pair_verified, "exchange_pair_verified": pair_verified,
