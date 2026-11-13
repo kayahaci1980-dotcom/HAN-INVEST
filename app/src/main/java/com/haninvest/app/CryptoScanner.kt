@@ -248,6 +248,18 @@ class CryptoScanner(private val context: Context) {
         return raw.sortedBy { it[0] }
     }
 
+    private fun buyBlockReason(row: JSONObject): String {
+        val score = row.optInt("score", 0)
+        return when {
+            score < 83 -> "Оценка ниже порога 83"
+            !row.optBoolean("trade_ready", false) -> "Пара не подтверждена"
+            !row.optBoolean("volume_confirmed", false) -> "Недостаточный объём"
+            !row.optBoolean("btc_buy_allowed", false) -> "BTC не в восходящем тренде"
+            row.optString("signal") != "BUY" -> "Сигнал стратегии: " + row.optString("signal", "нет")
+            else -> "Фильтры пройдены; проверяются баланс, открытая позиция и блокировка после убытка"
+        }
+    }
+
     private fun firstNumber(row: JSONObject, vararg keys: String): Double {
         for (key in keys) {
             if (row.has(key)) {
@@ -295,6 +307,7 @@ class CryptoScanner(private val context: Context) {
                 out.append(String.format(Locale.US, "EMA20: $%,.8f — %s\n", ema20, trend))
             }
             out.append("Сигнал: ").append(row.optString("signal", "—")).append("\n")
+            out.append("Почему не покупает: ").append(buyBlockReason(row)).append("\n")
         }
         out.append("\nОбновлено: ").append(
             SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
