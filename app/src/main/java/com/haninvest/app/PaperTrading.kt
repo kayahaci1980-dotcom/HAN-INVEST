@@ -37,15 +37,8 @@ class PaperTrading(private val context: Context) {
     private fun positions() = readArray("positions")
     private fun history() = readArray("history")
 
-    private fun assetBlockKey(exchange: String, symbol: String): String {
-        val venue = when {
-            exchange.contains("Bybit", true) -> "Bybit"
-            exchange.contains("Coinbase", true) -> "Coinbase"
-            exchange.contains("OKX", true) -> "OKX"
-            else -> "Binance"
-        }
-        return venue + ":" + symbol.trim().uppercase(Locale.US)
-    }
+    private fun assetBlockKey(exchange: String, symbol: String): String =
+        "Bybit:" + symbol.trim().uppercase(Locale.US)
 
     private val lossBlockDurationMs = 8L * 60L * 60L * 1000L
 
@@ -97,96 +90,34 @@ class PaperTrading(private val context: Context) {
         return active
     }
 
-    // Загружает публичные Spot-котировки всех четырёх бирж и обновляет только PAPER-позиции.
-    // Это только чтение рыночных данных: реальные ордера не отправляются.
+    // Обновляем PAPER-позиции только по публичным котировкам Bybit Spot.
+    // Реальные ордера не отправляются.
     fun refreshOpenPositionsFromExchanges(): String {
         val open = positions()
         if (open.length() == 0) return "Нет открытых PAPER-позиций для обновления."
 
-        val required = mutableSetOf<String>()
-        for (i in 0 until open.length()) {
-            val exchange = open.optJSONObject(i)?.optString("exchange", "Binance Spot") ?: "Binance Spot"
-            required.add(when {
-                exchange.contains("Bybit", true) -> "Bybit"
-                exchange.contains("Coinbase", true) -> "Coinbase"
-                exchange.contains("OKX", true) -> "OKX"
-                else -> "Binance"
-            })
-        }
-        val prices = mutableMapOf<String, MutableMap<String, Double>>()
-        val errors = mutableListOf<String>()
-
-        fun fetchText(address: String): String {
-            val connection = URL(address).openConnection() as HttpURLConnection
-            return try {
+        val responseText = run {
+            val connection = URL("https://api.bybit.com/v5/market/tickers?category=spot")
+                .openConnection() as HttpURLConnection
+            try {
                 connection.requestMethod = "GET"
                 connection.connectTimeout = 12000
                 connection.readTimeout = 20000
                 connection.setRequestProperty("Accept", "application/json")
-                connection.setRequestProperty("User-Agent", "HAN-INVEST-Android/2.8")
-                if (connection.responseCode !in 200..299) throw IllegalStateException("HTTP ${connection.responseCode}")
+                connection.setRequestProperty("User-Agent", "HAN-INVEST-Android/3.0")
+                if (connection.responseCode !in 200..299) throw IllegalStateException("Bybit HTTP ${connection.responseCode}")
                 connection.inputStream.bufferedReader().use { it.readText() }
-            } finally {
-                connection.disconnect()
-            }
+            } finally { connection.disconnect() }
         }
-
-        if ("Binance" in required) try {
-            val list = JSONArray(fetchText("https://api.binance.com/api/v3/ticker/price"))
-            val map = mutableMapOf<String, Double>()
-            for (i in 0 until list.length()) {
-                val item = list.optJSONObject(i) ?: continue
-                val symbol = item.optString("symbol")
-                val price = item.optString("price").toDoubleOrNull() ?: continue
-                if (symbol.isNotBlank() && price > 0.0) map[symbol] = price
-            }
-            prices["Binance"] = map
-        } catch (e: Exception) { errors.add("Binance: ${e.message ?: "нет данных"}") }
-
-        if ("Bybit" in required) try {
-            val response = JSONObject(fetchText("https://api.bybit.com/v5/market/tickers?category=spot"))
-            if (response.optInt("retCode", -1) != 0) throw IllegalStateException(response.optString("retMsg", "ошибка API"))
-            val list = response.optJSONObject("result")?.optJSONArray("list") ?: JSONArray()
-            val map = mutableMapOf<String, Double>()
-            for (i in 0 until list.length()) {
-                val item = list.optJSONObject(i) ?: continue
-                val symbol = item.optString("symbol")
-                val price = item.optString("lastPrice").toDoubleOrNull() ?: continue
-                if (symbol.isNotBlank() && price > 0.0) map[symbol] = price
-            }
-            prices["Bybit"] = map
-        } catch (e: Exception) { errors.add("Bybit: ${e.message ?: "нет данных"}") }
-
-        if ("OKX" in required) try {
-            val response = JSONObject(fetchText("https://www.okx.com/api/v5/market/tickers?instType=SPOT"))
-            val list = response.optJSONArray("data") ?: JSONArray()
-            val map = mutableMapOf<String, Double>()
-            for (i in 0 until list.length()) {
-                val item = list.optJSONObject(i) ?: continue
-                val symbol = item.optString("instId").replace("-", "")
-                val price = item.optString("last").toDoubleOrNull() ?: continue
-                if (symbol.isNotBlank() && price > 0.0) map[symbol] = price
-            }
-            prices["OKX"] = map
-        } catch (e: Exception) { errors.add("OKX: ${e.message ?: "нет данных"}") }
-
-        if ("Coinbase" in required) {
-            val map = mutableMapOf<String, Double>()
-            val symbols = (0 until open.length()).mapNotNull { open.optJSONObject(it) }
-                .filter { it.optString("exchange").contains("Coinbase", true) }
-                .map { it.optString("symbol") }.distinct()
-            for (symbol in symbols) try {
-                val base = symbol.removeSuffix("USDT").removeSuffix("USD")
-                val quote = if (symbol.endsWith("USDT")) "USDT" else "USD"
-                val product = "$base-$quote"
-                val response = JSONObject(fetchText("https://api.exchange.coinbase.com/products/$product/ticker"))
-                val price = response.optString("price").toDoubleOrNull()
-                    ?: throw IllegalStateException("нет цены $product")
-                if (price > 0.0) map[symbol] = price
-            } catch (e: Exception) {
-                errors.add("Coinbase $symbol: ${e.message ?: "нет данных"}")
-            }
-            prices["Coinbase"] = map
+        val response = JSONObject(responseText)
+        if (response.optInt("retCode", -1) != 0) throw IllegalStateException(response.optString("retMsg", "Bybit API error"))
+        val list = response.optJSONObject("result")?.optJSONArray("list") ?: JSONArray()
+        val prices = mutableMapOf<String, Double>()
+        for (i in 0 until list.length()) {
+            val item = list.optJSONObject(i) ?: continue
+            val symbol = item.optString("symbol")
+            val price = item.optString("lastPrice").toDoubleOrNull() ?: continue
+            if (symbol.isNotBlank() && price > 0.0 && price.isFinite()) prices[symbol] = price
         }
 
         var cash = balance()
@@ -195,18 +126,19 @@ class PaperTrading(private val context: Context) {
         val now = System.currentTimeMillis()
         var updated = 0
         var closed = 0
+        var legacy = 0
         for (i in 0 until open.length()) {
             val position = open.optJSONObject(i) ?: continue
-            val exchange = position.optString("exchange", "Binance Spot")
-            val symbol = position.optString("symbol")
-            val key = when {
-                exchange.contains("Bybit", true) -> "Bybit"
-                exchange.contains("Coinbase", true) -> "Coinbase"
-                exchange.contains("OKX", true) -> "OKX"
-                else -> "Binance"
+            val exchange = position.optString("exchange", "Bybit Spot")
+            if (!exchange.contains("Bybit", true)) {
+                // Сохраняем старые позиции без удаления и без подмены цены другой биржей.
+                remaining.put(position)
+                legacy++
+                continue
             }
-            val price = prices[key]?.get(symbol)
-            if (price == null || price <= 0.0 || price.isNaN()) {
+            val symbol = position.optString("symbol")
+            val price = prices[symbol]
+            if (price == null) {
                 remaining.put(position)
                 continue
             }
@@ -238,8 +170,8 @@ class PaperTrading(private val context: Context) {
         saveBalance(cash)
         saveArray("positions", remaining)
         saveArray("history", log)
-        val errorText = if (errors.isEmpty()) "" else " Ошибки: " + errors.joinToString("; ")
-        return "Котировки обновлены: $updated из ${open.length()} PAPER-позиций; закрыто по Stop/Take: $closed.$errorText"
+        val legacyNote = if (legacy > 0) " Старых позиций других бирж сохранено без изменений: $legacy." else ""
+        return "Bybit: котировки обновлены для $updated из ${open.length()} PAPER-позиций; закрыто по Stop/Take: $closed.$legacyNote"
     }
 
     fun processScan(json: JSONObject): String {
@@ -255,11 +187,11 @@ class PaperTrading(private val context: Context) {
         for (i in 0 until open.length()) {
             val p = open.getJSONObject(i)
             val symbol = p.optString("symbol")
-            val exchange = p.optString("exchange", "Binance Spot")
+            val exchange = p.optString("exchange", "Bybit Spot")
             val coin = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
                 .firstOrNull {
                     it.optString("symbol") == symbol &&
-                    it.optString("exchange", "Binance Spot") == exchange
+                    it.optString("exchange", "Bybit Spot") == exchange
                 }
             val price = coin?.optDouble("price", Double.NaN) ?: Double.NaN
             val score = coin?.optInt("score", 0) ?: 0
@@ -293,7 +225,7 @@ class PaperTrading(private val context: Context) {
         val held = mutableSetOf<String>()
         for (index in 0 until remaining.length()) {
             val position = remaining.optJSONObject(index) ?: continue
-            held.add(position.optString("exchange", "Binance Spot") + ":" + position.optString("symbol"))
+            held.add(position.optString("exchange", "Bybit Spot") + ":" + position.optString("symbol"))
         }
 
         // Диагностика: для каждого актива фиксируем первую причину, по которой покупка пропущена.
@@ -305,7 +237,7 @@ class PaperTrading(private val context: Context) {
         for (i in 0 until assets.length()) {
             val coin = assets.optJSONObject(i) ?: continue
             val symbol = coin.optString("symbol")
-            val exchange = coin.optString("exchange")
+            val exchange = coin.optString("exchange", "Bybit Spot")
             val price = coin.optDouble("price", Double.NaN)
             val score = coin.optInt("score", 0)
             val positionKey = "$exchange:$symbol"
@@ -315,7 +247,8 @@ class PaperTrading(private val context: Context) {
             // Оставляем только технически обязательные условия исполнения: корректная пара/цена,
             // отсутствие уже открытой позиции по этой паре и наличие виртуального USDT.
             val reason = when {
-                symbol.isBlank() || exchange.isBlank() || price <= 0.0 || !price.isFinite() ->
+                !exchange.contains("Bybit", true) -> "Доступна только биржа Bybit"
+                symbol.isBlank() || price <= 0.0 || !price.isFinite() ->
                     "Нет корректной пары или цены"
                 positionKey in held -> "Позиция уже открыта"
                 score <= 83 -> "Оценка должна быть выше 83"
@@ -364,16 +297,22 @@ class PaperTrading(private val context: Context) {
     }
 
     private fun fetchManualSellPrice(exchange: String, symbol: String): Double {
-        fun read(url: String): String {
-            val conn = URL(url).openConnection() as HttpURLConnection
-            return try { conn.connectTimeout=10000; conn.readTimeout=15000; if(conn.responseCode !in 200..299) throw Exception("HTTP "+conn.responseCode); conn.inputStream.bufferedReader().use{it.readText()} } finally { conn.disconnect() }
+        if (!exchange.contains("Bybit", true)) {
+            throw IllegalStateException("В этой версии поддерживается только Bybit Spot")
         }
-        return when {
-            exchange.contains("Bybit",true) -> JSONObject(read("https://api.bybit.com/v5/market/tickers?category=spot&symbol=$symbol")).optJSONObject("result")?.optJSONArray("list")?.optJSONObject(0)?.optString("lastPrice")?.toDoubleOrNull() ?: throw Exception("Нет цены Bybit")
-            exchange.contains("OKX",true) -> { val pair=if(symbol.endsWith("USDT")) symbol.dropLast(4)+"-USDT" else symbol; JSONObject(read("https://www.okx.com/api/v5/market/ticker?instId=$pair")).optJSONArray("data")?.optJSONObject(0)?.optString("last")?.toDoubleOrNull() ?: throw Exception("Нет цены OKX") }
-            exchange.contains("Coinbase",true) -> { val base=symbol.removeSuffix("USDT").removeSuffix("USD"); val quote=if(symbol.endsWith("USDT")) "USDT" else "USD"; JSONObject(read("https://api.exchange.coinbase.com/products/$base-$quote/ticker")).optString("price").toDoubleOrNull() ?: throw Exception("Нет цены Coinbase") }
-            else -> JSONObject(read("https://api.binance.com/api/v3/ticker/price?symbol=$symbol")).optString("price").toDoubleOrNull() ?: throw Exception("Нет цены Binance")
-        }
+        val url = "https://api.bybit.com/v5/market/tickers?category=spot&symbol=$symbol"
+        val connection = URL(url).openConnection() as HttpURLConnection
+        val body = try {
+            connection.connectTimeout = 10000
+            connection.readTimeout = 15000
+            if (connection.responseCode !in 200..299) throw Exception("Bybit HTTP ${connection.responseCode}")
+            connection.inputStream.bufferedReader().use { it.readText() }
+        } finally { connection.disconnect() }
+        val response = JSONObject(body)
+        if (response.optInt("retCode", -1) != 0) throw Exception(response.optString("retMsg", "Ошибка Bybit"))
+        return response.optJSONObject("result")?.optJSONArray("list")?.optJSONObject(0)
+            ?.optString("lastPrice")?.toDoubleOrNull()
+            ?: throw Exception("Нет цены Bybit для $symbol")
     }
     fun sellPosition(exchange: String, symbol: String): String {
         val open=positions()
@@ -417,7 +356,7 @@ class PaperTrading(private val context: Context) {
         for (i in 0 until open.length()) {
             val p = open.getJSONObject(i)
             val price = p.optDouble("last_price", p.optDouble("entry"))
-            out.append(p.optString("exchange", "Binance Spot")).append(" ").append(p.optString("symbol")).append(" | вход ").append(money(p.optDouble("entry")))
+            out.append(p.optString("exchange", "Bybit Spot")).append(" ").append(p.optString("symbol")).append(" | вход ").append(money(p.optDouble("entry")))
                 .append(" | сейчас ").append(money(price))
                 .append(" | P/L ").append(money((price-p.optDouble("entry"))*p.optDouble("quantity")))
                 .append("\n")
@@ -426,7 +365,7 @@ class PaperTrading(private val context: Context) {
         if (log.length() == 0) out.append("История пока пустая.\n")
         for (i in (log.length()-1 downTo maxOf(0, log.length()-10))) {
             val t = log.optJSONObject(i) ?: continue
-            out.append(t.optString("type")).append(" ").append(t.optString("exchange", "Binance Spot"))
+            out.append(t.optString("type")).append(" ").append(t.optString("exchange", "Bybit Spot"))
                 .append(" ").append(t.optString("symbol")).append(" @ ").append(money(t.optDouble("price")))
             if (t.optString("type") == "SELL") out.append(" | ").append(t.optString("reason"))
                 .append(" | P/L ").append(money(t.optDouble("pnl")))
@@ -475,7 +414,7 @@ class PaperTrading(private val context: Context) {
         fun showSellActions() {
             sellActions.removeAllViews()
             val heading = TextView(context).apply {
-                text = "РУЧНАЯ ПРОДАЖА — ДОСТУПНА ДАЖЕ ПРИ ЭКСТРЕННОМ СТОПЕ"
+                text = "РУЧНАЯ ПРОДАЖА BYBIT — ДОСТУПНА ДАЖЕ ПРИ ЭКСТРЕННОМ СТОПЕ"
                 textSize = 14f
                 setTypeface(null, Typeface.BOLD)
                 setTextColor(dark)
@@ -485,7 +424,7 @@ class PaperTrading(private val context: Context) {
             val list = positions()
             if (list.length() == 0) {
                 sellActions.addView(TextView(context).apply {
-                    text = "Открытых позиций нет. Кнопки продажи появятся после виртуальной покупки."
+                    text = "Открытых Bybit-позиций нет. Кнопки продажи появятся после виртуальной покупки."
                     textSize = 12f
                     setTextColor(Color.GRAY)
                     setPadding(0, 0, 0, 10)
@@ -494,7 +433,15 @@ class PaperTrading(private val context: Context) {
             }
             for(i in 0 until list.length()) {
                 val pos=list.optJSONObject(i)?:continue
-                val ex=pos.optString("exchange","Binance Spot"); val sym=pos.optString("symbol")
+                val ex=pos.optString("exchange","Bybit Spot"); val sym=pos.optString("symbol")
+                if (!ex.contains("Bybit", true)) {
+                    sellActions.addView(TextView(context).apply {
+                        text = "Старая позиция $sym ($ex) сохранена. Автоматическое управление биржами кроме Bybit отключено."
+                        textSize = 12f
+                        setTextColor(Color.GRAY)
+                    })
+                    continue
+                }
                 sellActions.addView(Button(context).apply {
                     text="ПРОДАТЬ $sym — $ex";setTextColor(Color.WHITE);setBackgroundColor(red)
                     setOnClickListener {
@@ -517,10 +464,7 @@ class PaperTrading(private val context: Context) {
                 Thread {
                     try {
                         val urls = listOf(
-                            "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?limit=30&universe_limit=100&min_volume=1000000&risk_pct=1&capital_usdt=1000",
-                            "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000",
-                            "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=30&min_volume=1000000",
-                            "https://han-invest-api-test.onrender.com/api/v1/crypto/okx/scan?limit=30&min_volume=1000000"
+                            "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000"
                         )
                         val combined = JSONObject()
                         val combinedAssets = JSONArray()
@@ -538,12 +482,7 @@ class PaperTrading(private val context: Context) {
                                 val list = response.optJSONArray("assets") ?: continue
                                 val btcAllowed = response.optJSONObject("btc_market_filter")
                                     ?.optBoolean("buy_allowed", false) == true
-                                val defaultExchange = when {
-                                    url.contains("/bybit/") -> "Bybit Spot"
-                                    url.contains("/coinbase/") -> "Coinbase Exchange"
-                                    url.contains("/okx/") -> "OKX Spot"
-                                    else -> "Binance Spot"
-                                }
+                                val defaultExchange = "Bybit Spot"
                                 for (i in 0 until list.length()) {
                                     val coin = list.optJSONObject(i) ?: continue
                                     if (!coin.has("exchange")) coin.put("exchange", defaultExchange)
@@ -554,9 +493,9 @@ class PaperTrading(private val context: Context) {
                                 errors.add(e.message ?: "ошибка соединения")
                             }
                         }
-                        if (combinedAssets.length() == 0) throw Exception("Все четыре биржи недоступны: " + errors.joinToString("; "))
+                        if (combinedAssets.length() == 0) throw Exception("Bybit Spot временно недоступна: " + errors.joinToString("; "))
                         combined.put("assets", combinedAssets)
-                        val scanMessage = processScan(combined) + " Binance + Bybit + Coinbase + OKX."
+                        val scanMessage = processScan(combined) + " Только Bybit Spot."
                         val quoteMessage = refreshOpenPositionsFromExchanges()
                         val message = scanMessage + "\n" + quoteMessage
                         

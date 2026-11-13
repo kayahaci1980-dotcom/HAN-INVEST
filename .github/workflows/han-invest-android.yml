@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - ui-exchange-tabs-top3
+      - feature/bybit-only-paper
   workflow_dispatch:
 
 permissions:
