@@ -46,7 +46,7 @@ def rsi(values: list[float], period: int = 14) -> float:
 def indicators(rows: list[list[Any]], venue: str) -> dict[str, float] | None:
     # Both providers return newest-first candles. Drop the forming candle,
     # then pass only completed candles in chronological order.
-    ordered = list(reversed(rows))[1:] if rows else []
+    ordered = list(reversed(rows))[:-1] if rows else []
     try:
         if venue == "Coinbase":
             highs = [float(x[2]) for x in ordered]
