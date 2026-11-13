@@ -95,7 +95,7 @@ async def analyze(client: httpx.AsyncClient, ticker: dict, instrument: dict, btc
         return None
 
 @router.get("/api/v1/crypto/bybit/scan")
-async def scan_bybit(limit: int = Query(100, ge=1, le=1000), min_volume: float = Query(1_000_000, ge=0)):
+async def scan_bybit(limit: int = Query(100, ge=1, le=300), min_volume: float = Query(1_000_000, ge=0)):
     global _cache
     import time
     if _cache and time.time() - _cache[0] < CACHE_TTL and _cache[1].get("limit") == limit:
