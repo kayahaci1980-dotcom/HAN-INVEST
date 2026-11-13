@@ -333,7 +333,7 @@ class PaperTrading(private val context: Context) {
             qualified++
             val spend = minOf(100.0, cash)
             if (spend < 5.0) {
-                skipped("Недостаточно свободного USDT (нужно минимум $5)")
+                skipped("Недостаточно свободного USDT (нужно минимум \$5)")
                 continue
             }
             val stopValue = coin.optDouble("stop_loss", Double.NaN)
