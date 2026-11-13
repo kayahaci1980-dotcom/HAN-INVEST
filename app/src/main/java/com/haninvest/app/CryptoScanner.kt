@@ -23,35 +23,51 @@ class CryptoScanner(private val context: Context) {
     private fun dp(v: Int) = (v * context.resources.displayMetrics.density).toInt()
 
     private fun fetchBybit(): String {
-        val connection = URL("https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000")
+        val connection = URL("https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=100&min_volume=1000000")
             .openConnection() as HttpURLConnection
         val body = try {
             connection.connectTimeout = 20000
-            connection.readTimeout = 45000
+            connection.readTimeout = 90000
             connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("User-Agent", "HAN-INVEST-Android/2.7")
+            connection.setRequestProperty("User-Agent", "HAN-INVEST-Android/2.8")
             if (connection.responseCode !in 200..299) throw IllegalStateException("HTTP ${connection.responseCode}")
             connection.inputStream.bufferedReader().use { it.readText() }
         } finally { connection.disconnect() }
 
         val json = JSONObject(body)
         val assets = json.optJSONArray("assets") ?: throw IllegalStateException("Bybit не вернула список монет")
-        if (assets.length() == 0) return "Bybit Spot: подходящих торговых пар пока нет."
-        val out = StringBuilder("BYBIT SPOT — ТОП-3 ПО ТЕХНИЧЕСКОЙ ОЦЕНКЕ\n")
-        for (i in 0 until minOf(3, assets.length())) {
-            val coin = assets.optJSONObject(i) ?: continue
-            out.append("\n").append(i + 1).append(". ").append(coin.optString("symbol")).append("\n")
-            out.append(String.format(Locale.US, "Цена: $%,.8f\n", coin.optDouble("price")))
+        val qualified = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
+            .filter { it.optInt("score", 0) > 83 }
+            .sortedByDescending { it.optInt("score", 0) }
+
+        if (qualified.isEmpty()) {
+            return "BYBIT SPOT\n\nСейчас среди проверенных 100 наиболее ликвидных USDT-пар нет монет с оценкой выше 83.\n\nПроверено пар: ${assets.length()}\nМинимальный оборот: 1 млн USDT за 24 часа. Нажмите «ОБНОВИТЬ BYBIT» позже."
+        }
+
+        val out = StringBuilder("BYBIT SPOT — ВСЕ МОНЕТЫ С ОЦЕНКОЙ ВЫШЕ 83\n")
+        out.append("Найдено: ").append(qualified.size).append(" из ").append(assets.length()).append(" проверенных пар\n")
+        for ((index, coin) in qualified.withIndex()) {
+            out.append("\n").append(index + 1).append(". ").append(coin.optString("symbol")).append("\n")
             out.append("Оценка: ").append(coin.optInt("score")).append("/100\n")
+            out.append(String.format(Locale.US, "Цена: $%,.8f\n", coin.optDouble("price")))
             out.append(String.format(Locale.US, "RSI(14): %.1f\n", coin.optDouble("rsi_14")))
             out.append(String.format(Locale.US, "ATR(14): %.2f%%\n", coin.optDouble("atr_pct")))
             out.append(String.format(Locale.US, "EMA20: $%,.8f\n", coin.optDouble("ema20")))
             out.append(String.format(Locale.US, "Изменение 24ч: %+.2f%%\n", coin.optDouble("change_24h_pct")))
-            out.append("Сигнал: ").append(coin.optString("signal", "—")).append("\n")
-            out.append("PAPER-покупка: ").append(if (coin.optInt("score") > 83) "приоритет по оценке >83" else "ожидание оценки выше 83").append("\n")
+            out.append("Сигнал: ").append(coin.optString("signal", "WATCH")).append("\n")
+            val blockers = coin.optJSONArray("buy_blockers")
+            if (coin.optString("signal") == "BUY") {
+                out.append("Покупка: все фильтры пройдены\n")
+            } else if (blockers != null && blockers.length() > 0) {
+                out.append("Почему пока нет BUY:\n")
+                for (j in 0 until blockers.length()) out.append(" • ").append(blockers.optString(j)).append("\n")
+            } else {
+                out.append("Почему пока нет BUY: нет подтверждённого сигнала\n")
+            }
         }
         out.append("\nОбновлено: ").append(SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()))
-        out.append("\nИсточник котировок: Bybit Spot. Все сделки виртуальные; реальные ордера не отправляются.")
+        out.append("\nСканируются 100 наиболее ликвидных USDT-пар Bybit Spot с оборотом от 1 млн USDT. Это не весь листинг биржи.")
+        out.append("\nВсе сделки PAPER виртуальные; реальные ордера не отправляются.")
         return out.toString()
     }
 
@@ -64,7 +80,7 @@ class CryptoScanner(private val context: Context) {
             setTypeface(null, Typeface.BOLD)
         })
         root.addView(TextView(context).apply {
-            text = "Только Bybit: топ-3 монеты, единые показатели RSI, ATR, EMA20 и оценка из 100 баллов."
+            text = "Все найденные монеты с оценкой 84–100. Причины отсутствия BUY показываются отдельно."
             textSize = 13f
             setTextColor(muted)
         })
@@ -86,7 +102,7 @@ class CryptoScanner(private val context: Context) {
         root.addView(refresh)
         fun load() {
             refresh.isEnabled = false
-            status.text = "Получаем данные Bybit Spot..."
+            status.text = "Сканируем до 100 ликвидных пар Bybit Spot..."
             Thread {
                 val result = try { fetchBybit() } catch (e: Exception) {
                     "Bybit Spot временно недоступна: ${e.message ?: "ошибка соединения"}"
