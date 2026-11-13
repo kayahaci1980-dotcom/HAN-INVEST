@@ -480,7 +480,9 @@ class PaperTrading(private val context: Context) {
                     try {
                         val urls = listOf(
                             "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?limit=30&universe_limit=100&min_volume=1000000&risk_pct=1&capital_usdt=1000",
-                            "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000"
+                            "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000",
+                            "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=30&min_volume=1000000",
+                            "https://han-invest-api-test.onrender.com/api/v1/crypto/okx/scan?limit=30&min_volume=1000000"
                         )
                         val combined = JSONObject()
                         val combinedAssets = JSONArray()
@@ -496,20 +498,27 @@ class PaperTrading(private val context: Context) {
                                 } finally { conn.disconnect() }
                                 val response = JSONObject(body)
                                 val list = response.optJSONArray("assets") ?: continue
+                                val btcAllowed = response.optJSONObject("btc_market_filter")
+                                    ?.optBoolean("buy_allowed", false) == true
+                                val defaultExchange = when {
+                                    url.contains("/bybit/") -> "Bybit Spot"
+                                    url.contains("/coinbase/") -> "Coinbase Exchange"
+                                    url.contains("/okx/") -> "OKX Spot"
+                                    else -> "Binance Spot"
+                                }
                                 for (i in 0 until list.length()) {
                                     val coin = list.optJSONObject(i) ?: continue
-                                    if (!coin.has("exchange")) {
-                                        coin.put("exchange", if (url.contains("/bybit/")) "Bybit Spot" else "Binance Spot")
-                                    }
+                                    if (!coin.has("exchange")) coin.put("exchange", defaultExchange)
+                                    coin.put("btc_buy_allowed", btcAllowed)
                                     combinedAssets.put(coin)
                                 }
                             } catch (e: Exception) {
                                 errors.add(e.message ?: "ошибка соединения")
                             }
                         }
-                        if (combinedAssets.length() == 0) throw Exception("Обе биржи недоступны: " + errors.joinToString("; "))
+                        if (combinedAssets.length() == 0) throw Exception("Все четыре биржи недоступны: " + errors.joinToString("; "))
                         combined.put("assets", combinedAssets)
-                        val scanMessage = processScan(combined) + " Binance + Bybit."
+                        val scanMessage = processScan(combined) + " Binance + Bybit + Coinbase + OKX."
                         val quoteMessage = refreshOpenPositionsFromExchanges()
                         val message = scanMessage + "\n" + quoteMessage
                         
