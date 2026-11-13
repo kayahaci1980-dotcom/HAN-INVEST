@@ -10,6 +10,7 @@ on:
       - feature/show-all-bybit-over83
       - feature/paper-profit-trailing-2usd
       - feature/paper-short-positions
+      - feature/paper-short-scan-button
 
 jobs:
   build:
