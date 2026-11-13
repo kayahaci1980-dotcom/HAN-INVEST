@@ -227,7 +227,10 @@ class PaperTrading(private val context: Context) {
                     it.optString("exchange", "Bybit Spot") == exchange
                 }
             val price = coin?.optDouble("price", Double.NaN) ?: Double.NaN
-            val score = coin?.optInt("score", 0) ?: 0
+            val score = coin?.let {
+                if (direction(p) == "SHORT") it.optInt("short_score", it.optInt("score_short", it.optInt("shortScore", 0)))
+                else it.optInt("score", 0)
+            } ?: 0
             val entry = p.optDouble("entry")
             val qty = p.optDouble("quantity")
             val stop = p.optDouble("stop")
@@ -389,6 +392,7 @@ class PaperTrading(private val context: Context) {
         val log=history()
         log.put(JSONObject().put("type",if(side=="SHORT")"COVER" else "SELL").put("direction",side).put("symbol",symbol).put("exchange",exchange).put("price",price).put("quantity",qty).put("fee",fee).put("pnl",pnl).put("reason","MANUAL CLOSE").put("time",System.currentTimeMillis()))
         blockAssetAfterLoss(exchange,symbol,entry,price,side)
+        if (pos.optDouble("peak_profit_usdt",0.0)>=2.0 && pnl <= pos.optDouble("peak_profit_usdt")*0.5) blockAssetForCooldown(exchange,symbol)
         saveBalance(balance()+returnedCash)
         saveArray("positions",remaining);saveArray("history",log)
         return "Продано $symbol по "+money(price)+". P/L: "+money(pnl)+"."
@@ -435,7 +439,7 @@ class PaperTrading(private val context: Context) {
             val t = log.optJSONObject(i) ?: continue
             out.append(t.optString("type")).append(" ").append(t.optString("exchange", "Bybit Spot"))
                 .append(" ").append(t.optString("symbol")).append(" @ ").append(money(t.optDouble("price")))
-            if (t.optString("type") == "SELL") out.append(" | ").append(t.optString("reason"))
+            if (t.optString("type") == "SELL" || t.optString("type") == "COVER") out.append(" | ").append(t.optString("reason"))
                 .append(" | P/L ").append(money(t.optDouble("pnl")))
             out.append("\n")
         }
