@@ -56,13 +56,25 @@ class CryptoScanner(private val context: Context) {
             out.append(String.format(Locale.US, "Изменение 24ч: %+.2f%%\n", coin.optDouble("change_24h_pct")))
             out.append("Сигнал: ").append(coin.optString("signal", "WATCH")).append("\n")
             val blockers = coin.optJSONArray("buy_blockers")
-            if (coin.optString("signal") == "BUY") {
-                out.append("Покупка: все фильтры пройдены\n")
-            } else if (blockers != null && blockers.length() > 0) {
-                out.append("Почему пока нет BUY:\n")
-                for (j in 0 until blockers.length()) out.append(" • ").append(blockers.optString(j)).append("\n")
+            val reasons = mutableListOf<String>()
+            if (blockers != null) {
+                for (j in 0 until blockers.length()) reasons.add(blockers.optString(j))
             } else {
-                out.append("Почему пока нет BUY: нет подтверждённого сигнала\n")
+                if (!(coin.optDouble("price") > coin.optDouble("ema20") && coin.optDouble("ema20") > coin.optDouble("ema50")))
+                    reasons.add("Нет подтверждения тренда EMA20/EMA50")
+                if (coin.optDouble("momentum_6h_pct") < 1.0) reasons.add("Рост за 6 часов меньше 1%")
+                if (!coin.optBoolean("volume_confirmed", false)) reasons.add("Объём ниже 1.2×")
+                if (coin.optDouble("quote_volume_24h") < 1000000.0) reasons.add("Оборот за 24 часа меньше 1 млн USDT")
+                if (!coin.optBoolean("trade_ready", false)) reasons.add("Пара не активна для торговли")
+                if (!coin.optBoolean("btc_buy_allowed", false)) reasons.add("BTC не в бычьем тренде")
+            }
+            if (coin.optString("signal") == "BUY" && reasons.isEmpty()) {
+                out.append("Покупка: все фильтры пройдены\\n")
+            } else if (reasons.isNotEmpty()) {
+                out.append("Почему пока нет BUY:\\n")
+                for (reason in reasons) out.append(" • ").append(reason).append("\\n")
+            } else {
+                out.append("Почему пока нет BUY: нет подтверждённого сигнала\\n")
             }
         }
         out.append("\nОбновлено: ").append(SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()))
