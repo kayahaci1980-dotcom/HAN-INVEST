@@ -81,10 +81,12 @@ class PaperTrading(private val context: Context) {
 
         val price = firstNumber(coin, "price", "last_price")
         val ema = firstNumber(coin, "ema20", "ema_20", "EMA20")
-        val rsi = firstNumber(coin, "rsi", "RSI")
+        val rsi = firstNumber(coin, "rsi", "rsi_14", "RSI")
         val atr = firstNumber(coin, "atr", "ATR")
-        val change24 = firstNumber(coin, "change_24h", "price_change_24h", "price_change_percentage_24h", "change24h")
-        if (!price.isFinite() || price <= 0.0 || !ema.isFinite() || !rsi.isFinite() || !atr.isFinite() || !change24.isFinite()) return 0
+        val atrPctProvided = firstNumber(coin, "atr_pct", "atr_percent")
+        val change24 = firstNumber(coin, "change_24h", "change_24h_pct", "price_change_24h", "price_change_percentage_24h", "change24h")
+        if (!price.isFinite() || price <= 0.0 || !ema.isFinite() || !rsi.isFinite() ||
+            (!atr.isFinite() && !atrPctProvided.isFinite()) || !change24.isFinite()) return 0
 
         var score = 0
         if (price < ema) score += 35
@@ -100,7 +102,7 @@ class PaperTrading(private val context: Context) {
             change24 < 0.0 -> 12
             else -> 0
         }
-        val atrPercent = atr / price * 100.0
+        val atrPercent = if (atrPctProvided.isFinite()) atrPctProvided else atr / price * 100.0
         score += if (atrPercent in 0.5..8.0) 15 else if (atrPercent > 0.0) 5 else 0
         return score.coerceIn(0, 100)
     }
@@ -249,7 +251,7 @@ class PaperTrading(private val context: Context) {
         return "Bybit: котировки обновлены для $updated из ${open.length()} PAPER-позиций; закрыто по защите прибыли/Stop/Take: $closed.$legacyNote"
     }
 
-    fun processScan(json: JSONObject): String {
+    fun processScan(json: JSONObject, forcedDirection: String? = null): String {
         if (isTradingPaused()) return "ЭКСТРЕННЫЙ СТОП: автоматические сделки остановлены."
         var cash = balance()
         val open = positions()
@@ -329,7 +331,11 @@ class PaperTrading(private val context: Context) {
             val longScore = coin.optInt("score", 0)
             val declaredSide = coin.optString("direction", coin.optString("signal", coin.optString("side", ""))).uppercase(Locale.US)
             val shortScore = calculateShortScore(coin)
-            val side = if (shortScore > 83 && (shortScore > longScore || declaredSide.contains("SHORT"))) "SHORT" else "LONG"
+            val side = when (forcedDirection?.uppercase(Locale.US)) {
+                "SHORT" -> "SHORT"
+                "LONG" -> "LONG"
+                else -> if (shortScore > 83 && (shortScore > longScore || declaredSide.contains("SHORT"))) "SHORT" else "LONG"
+            }
             val score = if (side == "SHORT") shortScore else longScore
             val positionKey = "$exchange:$symbol"
 
@@ -688,6 +694,49 @@ class PaperTrading(private val context: Context) {
             scan.performClick()
         }
         box.addView(expandedScan)
+
+        // Отдельный SHORT-сканер: открывает только виртуальные SHORT, LONG-логика не запускается.
+        val shortScan = Button(context).apply {
+            text = "СКАНИРОВАТЬ SHORT — ДО 300 ПАР"
+            setTextColor(Color.WHITE)
+            setBackgroundColor(red)
+            setOnClickListener {
+                isEnabled = false
+                status.text = "Ищем медвежьи сигналы SHORT среди 300 пар Bybit Spot..."
+                Thread {
+                    try {
+                        val url = "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=300&min_volume=1000000"
+                        val conn = URL(url).openConnection() as HttpURLConnection
+                        val body = try {
+                            conn.connectTimeout = 20000
+                            conn.readTimeout = 180000
+                            if (conn.responseCode !in 200..299) throw Exception("HTTP ${conn.responseCode}")
+                            conn.inputStream.bufferedReader().use { it.readText() }
+                        } finally { conn.disconnect() }
+                        val response = JSONObject(body)
+                        val assets = response.optJSONArray("assets") ?: throw Exception("Нет списка активов")
+                        val combined = JSONObject().put("assets", assets)
+                        val scanMessage = processScan(combined, "SHORT")
+                        val quoteMessage = refreshOpenPositionsFromExchanges()
+                        (context as? android.app.Activity)?.runOnUiThread {
+                            status.text = "SHORT-СКАНИРОВАНИЕ ЗАВЕРШЕНО\\n" + scanMessage + "\\n" + quoteMessage
+                            isEnabled = true
+                            render(details)
+                            showSellActions()
+                        }
+                    } catch (e: Exception) {
+                        (context as? android.app.Activity)?.runOnUiThread {
+                            status.text = "Ошибка SHORT-сканирования: ${e.message}"
+                            isEnabled = true
+                            render(details)
+                            showSellActions()
+                        }
+                    }
+                }.start()
+            }
+        }
+        box.addView(shortScan)
+
         val emergency = Button(context).apply {
             text = if (isTradingPaused()) "ВОЗОБНОВИТЬ PAPER-ТОРГОВЛЮ" else "ЭКСТРЕННЫЙ СТОП — ОСТАНОВИТЬ"
             setTextColor(Color.WHITE)
