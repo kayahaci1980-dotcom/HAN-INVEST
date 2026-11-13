@@ -298,6 +298,32 @@ class PaperTrading(private val context: Context) {
         return "Сканирование обработано. Найдено активов: ${assets.length()}. Заблокировано после убытка 2%: ${blocked.size}; пропущено сейчас: ${skippedAfterLoss}."
     }
 
+    private fun fetchManualSellPrice(exchange: String, symbol: String): Double {
+        fun read(url: String): String {
+            val conn = URL(url).openConnection() as HttpURLConnection
+            return try { conn.connectTimeout=10000; conn.readTimeout=15000; if(conn.responseCode !in 200..299) throw Exception("HTTP "+conn.responseCode); conn.inputStream.bufferedReader().use{it.readText()} } finally { conn.disconnect() }
+        }
+        return when {
+            exchange.contains("Bybit",true) -> JSONObject(read("https://api.bybit.com/v5/market/tickers?category=spot&symbol=$symbol")).optJSONObject("result")?.optJSONArray("list")?.optJSONObject(0)?.optString("lastPrice")?.toDoubleOrNull() ?: throw Exception("Нет цены Bybit")
+            exchange.contains("OKX",true) -> { val pair=if(symbol.endsWith("USDT")) symbol.dropLast(4)+"-USDT" else symbol; JSONObject(read("https://www.okx.com/api/v5/market/ticker?instId=$pair")).optJSONArray("data")?.optJSONObject(0)?.optString("last")?.toDoubleOrNull() ?: throw Exception("Нет цены OKX") }
+            exchange.contains("Coinbase",true) -> { val base=symbol.removeSuffix("USDT").removeSuffix("USD"); val quote=if(symbol.endsWith("USDT")) "USDT" else "USD"; JSONObject(read("https://api.exchange.coinbase.com/products/$base-$quote/ticker")).optString("price").toDoubleOrNull() ?: throw Exception("Нет цены Coinbase") }
+            else -> JSONObject(read("https://api.binance.com/api/v3/ticker/price?symbol=$symbol")).optString("price").toDoubleOrNull() ?: throw Exception("Нет цены Binance")
+        }
+    }
+    fun sellPosition(exchange: String, symbol: String): String {
+        val open=positions()
+        val pos=(0 until open.length()).mapNotNull{open.optJSONObject(it)}.firstOrNull{it.optString("exchange")==exchange && it.optString("symbol")==symbol} ?: return "Позиция уже закрыта."
+        val price=fetchManualSellPrice(exchange,symbol); val entry=pos.optDouble("entry"); val qty=pos.optDouble("quantity"); val pnl=(price-entry)*qty
+        val remaining=JSONArray()
+        for(i in 0 until open.length()){val item=open.optJSONObject(i)?:continue;if(!(item.optString("exchange")==exchange&&item.optString("symbol")==symbol))remaining.put(item)}
+        val log=history()
+        log.put(JSONObject().put("type","SELL").put("symbol",symbol).put("exchange",exchange).put("price",price).put("quantity",qty).put("pnl",pnl).put("reason","MANUAL SELL").put("time",System.currentTimeMillis()))
+        blockAssetAfterLoss(exchange,symbol,entry,price)
+        prefs.edit().putFloat("cash",(balance()+qty*price).toFloat()).apply()
+        saveArray("positions",remaining);saveArray("history",log)
+        return "Продано $symbol по "+money(price)+". P/L: "+money(pnl)+"."
+    }
+
     private fun remainingValue(open: JSONArray): Double {
         var total = 0.0
         for (i in 0 until open.length()) {
@@ -378,6 +404,26 @@ class PaperTrading(private val context: Context) {
         box.addView(details)
         val status = TextView(context).apply { text = "Режим симуляции. Реальные деньги не используются."; textSize = 12f; setTextColor(Color.GRAY) }
         box.addView(status)
+        val sellActions = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(sellActions)
+        fun showSellActions() {
+            sellActions.removeAllViews()
+            val list=positions()
+            for(i in 0 until list.length()) {
+                val pos=list.optJSONObject(i)?:continue
+                val ex=pos.optString("exchange","Binance Spot"); val sym=pos.optString("symbol")
+                sellActions.addView(Button(context).apply {
+                    text="ПРОДАТЬ $sym — $ex";setTextColor(Color.WHITE);setBackgroundColor(red)
+                    setOnClickListener {
+                        isEnabled=false;status.text="Получаем текущую цену для продажи..."
+                        Thread {
+                            val result=try{sellPosition(ex,sym)}catch(e:Exception){"Продажа не выполнена: "+e.message+". Позиция сохранена."}
+                            (context as? android.app.Activity)?.runOnUiThread{status.text=result;render(details);showSellActions()}
+                        }.start()
+                    }
+                })
+            }
+        }
         val scan = Button(context).apply {
             text = "СКАНИРОВАТЬ И ВЫПОЛНИТЬ PAPER-СДЕЛКИ"
             setTextColor(Color.WHITE)
@@ -482,6 +528,7 @@ class PaperTrading(private val context: Context) {
         box.addView(reset)
         if (!prefs.contains("cash")) prefs.edit().putFloat("cash", 1000f).apply()
         render(details)
+        showSellActions()
         return box
     }
 }
