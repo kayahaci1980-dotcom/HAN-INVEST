@@ -20,6 +20,7 @@ class PaperTrading(private val context: Context) {
     private val green = Color.rgb(25, 160, 105)
     private val red = Color.rgb(205, 65, 65)
     private val paperFeeRate = 0.001 // 0.1% estimated taker fee per side.
+    @Volatile private var scanLimit = 100
 
     private fun money(v: Double) = String.format(Locale.US, "$%,.2f", v)
     private fun readArray(key: String) = try { JSONArray(prefs.getString(key, "[]")) } catch (_: Exception) { JSONArray() }
@@ -251,6 +252,7 @@ class PaperTrading(private val context: Context) {
                 symbol.isBlank() || price <= 0.0 || !price.isFinite() ->
                     "Нет корректной пары или цены"
                 positionKey in held -> "Позиция уже открыта"
+                held.size >= 3 -> "Достигнут лимит: максимум 3 открытые позиции"
                 score <= 83 -> "Оценка должна быть выше 83"
                 else -> ""
             }
@@ -455,7 +457,7 @@ class PaperTrading(private val context: Context) {
             }
         }
         val scan = Button(context).apply {
-            text = "СКАНИРОВАТЬ И ВЫПОЛНИТЬ PAPER-СДЕЛКИ"
+            text = "СКАНИРОВАТЬ 100 ПАР И ВЫПОЛНИТЬ PAPER-СДЕЛКИ"
             setTextColor(Color.WHITE)
             setBackgroundColor(blue)
             setOnClickListener {
@@ -464,7 +466,7 @@ class PaperTrading(private val context: Context) {
                 Thread {
                     try {
                         val urls = listOf(
-                            "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000"
+                            "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=$scanLimit&min_volume=1000000"
                         )
                         val combined = JSONObject()
                         val combinedAssets = JSONArray()
@@ -495,6 +497,7 @@ class PaperTrading(private val context: Context) {
                         }
                         if (combinedAssets.length() == 0) throw Exception("Bybit Spot временно недоступна: " + errors.joinToString("; "))
                         combined.put("assets", combinedAssets)
+                        Thread.sleep(2000)
                         val scanMessage = processScan(combined) + " Только Bybit Spot."
                         val quoteMessage = refreshOpenPositionsFromExchanges()
                         val message = scanMessage + "\n" + quoteMessage
@@ -517,6 +520,56 @@ class PaperTrading(private val context: Context) {
             }
         }
         box.addView(scan)
+        val expandedScan = Button(context).apply {
+            text = "РАСШИРЕННЫЙ ПОИСК — ДО 1000 ПАР"
+            setTextColor(Color.WHITE)
+            setBackgroundColor(green)
+            setOnClickListener {
+                scanLimit = 1000
+                scan.text = "РАСШИРЕННЫЙ ПОИСК: 1000 ПАР — PAPER-СДЕЛКИ"
+                scan.performClick()
+            }
+        }
+        scan.setOnClickListener {
+            scanLimit = 100
+            scan.text = "СКАНИРОВАНИЕ 100 ПАР — PAPER-СДЕЛКИ"
+            scan.isEnabled = false
+            status.text = "Сканируем 100 наиболее ликвидных пар Bybit..."
+            Thread {
+                try {
+                    val url = "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=$scanLimit&min_volume=1000000"
+                    val conn = URL(url).openConnection() as HttpURLConnection
+                    val body = try {
+                        conn.connectTimeout = 20000; conn.readTimeout = 180000
+                        if (conn.responseCode !in 200..299) throw Exception("HTTP ${conn.responseCode}")
+                        conn.inputStream.bufferedReader().use { it.readText() }
+                    } finally { conn.disconnect() }
+                    val response = JSONObject(body)
+                    val assets = response.optJSONArray("assets") ?: throw Exception("Нет списка активов")
+                    val combined = JSONObject().put("assets", assets)
+                    Thread.sleep(2000)
+                    val scanMessage = processScan(combined) + " Только Bybit Spot."
+                    val quoteMessage = refreshOpenPositionsFromExchanges()
+                    (context as? android.app.Activity)?.runOnUiThread {
+                        status.text = scanMessage + "\\n" + quoteMessage
+                        scan.isEnabled = true; expandedScan.isEnabled = true
+                        render(details); showSellActions()
+                    }
+                } catch (e: Exception) {
+                    (context as? android.app.Activity)?.runOnUiThread {
+                        status.text = "Ошибка сканирования: ${e.message}"
+                        scan.isEnabled = true; expandedScan.isEnabled = true
+                        render(details); showSellActions()
+                    }
+                }
+            }.start()
+        }
+        expandedScan.setOnClickListener {
+            scanLimit = 1000
+            scan.text = "РАСШИРЕННЫЙ ПОИСК: ДО 1000 ПАР — PAPER-СДЕЛКИ"
+            scan.performClick()
+        }
+        box.addView(expandedScan)
         val emergency = Button(context).apply {
             text = if (isTradingPaused()) "ВОЗОБНОВИТЬ PAPER-ТОРГОВЛЮ" else "ЭКСТРЕННЫЙ СТОП — ОСТАНОВИТЬ"
             setTextColor(Color.WHITE)
