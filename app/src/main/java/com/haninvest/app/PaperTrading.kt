@@ -88,21 +88,21 @@ class PaperTrading(private val context: Context) {
         return active
     }
 
-    // Получает реальные публичные Spot-котировки обеих бирж и обновляет только уже открытые PAPER-позиции.
-    // При недоступности одной биржи её старые цены сохраняются; данные не подменяются нулями.
+    // Загружает публичные Spot-котировки всех четырёх бирж и обновляет только PAPER-позиции.
+    // Это только чтение рыночных данных: реальные ордера не отправляются.
     fun refreshOpenPositionsFromExchanges(): String {
         val open = positions()
         if (open.length() == 0) return "Нет открытых PAPER-позиций для обновления."
 
-        var needBinance = false
-        var needBybit = false
+        val required = mutableSetOf<String>()
         for (i in 0 until open.length()) {
-            val exchangeName = open.optJSONObject(i)?.optString("exchange", "Binance Spot") ?: "Binance Spot"
-            if (exchangeName.contains("Bybit", ignoreCase = true)) {
-                needBybit = true
-            } else {
-                needBinance = true
-            }
+            val exchange = open.optJSONObject(i)?.optString("exchange", "Binance Spot") ?: "Binance Spot"
+            required.add(when {
+                exchange.contains("Bybit", true) -> "Bybit"
+                exchange.contains("Coinbase", true) -> "Coinbase"
+                exchange.contains("OKX", true) -> "OKX"
+                else -> "Binance"
+            })
         }
         val prices = mutableMapOf<String, MutableMap<String, Double>>()
         val errors = mutableListOf<String>()
@@ -114,50 +114,70 @@ class PaperTrading(private val context: Context) {
                 connection.connectTimeout = 12000
                 connection.readTimeout = 20000
                 connection.setRequestProperty("Accept", "application/json")
-                connection.setRequestProperty("User-Agent", "HAN-INVEST-Android/2.7")
-                if (connection.responseCode !in 200..299) {
-                    throw IllegalStateException("HTTP ${connection.responseCode}")
-                }
+                connection.setRequestProperty("User-Agent", "HAN-INVEST-Android/2.8")
+                if (connection.responseCode !in 200..299) throw IllegalStateException("HTTP ${connection.responseCode}")
                 connection.inputStream.bufferedReader().use { it.readText() }
             } finally {
                 connection.disconnect()
             }
         }
 
-        if (needBinance) {
-            try {
-                val list = JSONArray(fetchText("https://api.binance.com/api/v3/ticker/price"))
-                val map = mutableMapOf<String, Double>()
-                for (i in 0 until list.length()) {
-                    val item = list.optJSONObject(i) ?: continue
-                    val symbol = item.optString("symbol")
-                    val price = item.optString("price").toDoubleOrNull() ?: continue
-                    if (symbol.isNotBlank() && price > 0.0) map[symbol] = price
-                }
-                prices["Binance"] = map
-            } catch (e: Exception) {
-                errors.add("Binance: ${e.message ?: "нет данных"}")
+        if ("Binance" in required) try {
+            val list = JSONArray(fetchText("https://api.binance.com/api/v3/ticker/price"))
+            val map = mutableMapOf<String, Double>()
+            for (i in 0 until list.length()) {
+                val item = list.optJSONObject(i) ?: continue
+                val symbol = item.optString("symbol")
+                val price = item.optString("price").toDoubleOrNull() ?: continue
+                if (symbol.isNotBlank() && price > 0.0) map[symbol] = price
             }
-        }
+            prices["Binance"] = map
+        } catch (e: Exception) { errors.add("Binance: ${e.message ?: "нет данных"}") }
 
-        if (needBybit) {
-            try {
-                val response = JSONObject(fetchText("https://api.bybit.com/v5/market/tickers?category=spot"))
-                if (response.optInt("retCode", -1) != 0) {
-                    throw IllegalStateException(response.optString("retMsg", "ошибка API"))
-                }
-                val list = response.optJSONObject("result")?.optJSONArray("list") ?: JSONArray()
-                val map = mutableMapOf<String, Double>()
-                for (i in 0 until list.length()) {
-                    val item = list.optJSONObject(i) ?: continue
-                    val symbol = item.optString("symbol")
-                    val price = item.optString("lastPrice").toDoubleOrNull() ?: continue
-                    if (symbol.isNotBlank() && price > 0.0) map[symbol] = price
-                }
-                prices["Bybit"] = map
-            } catch (e: Exception) {
-                errors.add("Bybit: ${e.message ?: "нет данных"}")
+        if ("Bybit" in required) try {
+            val response = JSONObject(fetchText("https://api.bybit.com/v5/market/tickers?category=spot"))
+            if (response.optInt("retCode", -1) != 0) throw IllegalStateException(response.optString("retMsg", "ошибка API"))
+            val list = response.optJSONObject("result")?.optJSONArray("list") ?: JSONArray()
+            val map = mutableMapOf<String, Double>()
+            for (i in 0 until list.length()) {
+                val item = list.optJSONObject(i) ?: continue
+                val symbol = item.optString("symbol")
+                val price = item.optString("lastPrice").toDoubleOrNull() ?: continue
+                if (symbol.isNotBlank() && price > 0.0) map[symbol] = price
             }
+            prices["Bybit"] = map
+        } catch (e: Exception) { errors.add("Bybit: ${e.message ?: "нет данных"}") }
+
+        if ("OKX" in required) try {
+            val response = JSONObject(fetchText("https://www.okx.com/api/v5/market/tickers?instType=SPOT"))
+            val list = response.optJSONArray("data") ?: JSONArray()
+            val map = mutableMapOf<String, Double>()
+            for (i in 0 until list.length()) {
+                val item = list.optJSONObject(i) ?: continue
+                val symbol = item.optString("instId").replace("-", "")
+                val price = item.optString("last").toDoubleOrNull() ?: continue
+                if (symbol.isNotBlank() && price > 0.0) map[symbol] = price
+            }
+            prices["OKX"] = map
+        } catch (e: Exception) { errors.add("OKX: ${e.message ?: "нет данных"}") }
+
+        if ("Coinbase" in required) {
+            val map = mutableMapOf<String, Double>()
+            val symbols = (0 until open.length()).mapNotNull { open.optJSONObject(it) }
+                .filter { it.optString("exchange").contains("Coinbase", true) }
+                .map { it.optString("symbol") }.distinct()
+            for (symbol in symbols) try {
+                val base = symbol.removeSuffix("USDT").removeSuffix("USD")
+                val quote = if (symbol.endsWith("USDT")) "USDT" else "USD"
+                val product = "$base-$quote"
+                val response = JSONObject(fetchText("https://api.exchange.coinbase.com/products/$product/ticker"))
+                val price = response.optString("price").toDoubleOrNull()
+                    ?: throw IllegalStateException("нет цены $product")
+                if (price > 0.0) map[symbol] = price
+            } catch (e: Exception) {
+                errors.add("Coinbase $symbol: ${e.message ?: "нет данных"}")
+            }
+            prices["Coinbase"] = map
         }
 
         var cash = balance()
@@ -170,48 +190,44 @@ class PaperTrading(private val context: Context) {
             val position = open.optJSONObject(i) ?: continue
             val exchange = position.optString("exchange", "Binance Spot")
             val symbol = position.optString("symbol")
-            val exchangeKey = if (exchange.contains("Bybit", true)) "Bybit" else "Binance"
-            val price = prices[exchangeKey]?.get(symbol)
+            val key = when {
+                exchange.contains("Bybit", true) -> "Bybit"
+                exchange.contains("Coinbase", true) -> "Coinbase"
+                exchange.contains("OKX", true) -> "OKX"
+                else -> "Binance"
+            }
+            val price = prices[key]?.get(symbol)
             if (price == null || price <= 0.0 || price.isNaN()) {
                 remaining.put(position)
                 continue
             }
-
             updated++
             position.put("last_price", price)
             position.put("last_updated", now)
             val entry = position.optDouble("entry")
             val quantity = position.optDouble("quantity")
             val stop = position.optDouble("stop")
+            val target = position.optDouble("target", entry * 1.10)
             val reason = when {
                 isTradingPaused() -> ""
                 stop > 0.0 && price <= stop -> "STOP LOSS"
-                price >= entry * 1.10 -> "TAKE PROFIT +10%"
+                target > 0.0 && price >= target -> "TAKE PROFIT"
                 else -> ""
             }
             if (reason.isNotEmpty()) {
                 blockAssetAfterLoss(exchange, symbol, entry, price)
                 cash += quantity * price
-                log.put(JSONObject()
-                    .put("type", "SELL")
-                    .put("symbol", symbol)
-                    .put("exchange", exchange)
-                    .put("price", price)
-                    .put("quantity", quantity)
-                    .put("pnl", (price - entry) * quantity)
-                    .put("reason", reason)
-                    .put("time", now))
+                log.put(JSONObject().put("type", "SELL").put("symbol", symbol)
+                    .put("exchange", exchange).put("price", price).put("quantity", quantity)
+                    .put("pnl", (price - entry) * quantity).put("reason", reason).put("time", now))
                 closed++
-            } else {
-                remaining.put(position)
-            }
+            } else remaining.put(position)
         }
-
         prefs.edit().putFloat("cash", cash.toFloat()).apply()
         saveArray("positions", remaining)
         saveArray("history", log)
         val errorText = if (errors.isEmpty()) "" else " Ошибки: " + errors.joinToString("; ")
-        return "Котировки бирж обновлены: $updated из ${open.length()} позиций; закрыто по Stop/Take: $closed.$errorText"
+        return "Котировки обновлены: $updated из ${open.length()} PAPER-позиций; закрыто по Stop/Take: $closed.$errorText"
     }
 
     fun processScan(json: JSONObject): String {
@@ -283,15 +299,21 @@ class PaperTrading(private val context: Context) {
                 continue
             }
             if (symbol.isBlank() || exchange.isBlank() || positionKey in held ||
-                price <= 0 || price.isNaN() || score < 83) continue
+                price <= 0 || price.isNaN() || score < 83 ||
+                !coin.optBoolean("trade_ready", false) ||
+                !coin.optBoolean("volume_confirmed", false) ||
+                !coin.optBoolean("btc_buy_allowed", false) ||
+                coin.optString("signal") != "BUY") continue
             val spend = minOf(100.0, cash)
             if (spend < 5.0) continue
             val stopValue = coin.optDouble("stop_loss", Double.NaN)
             val stop = if (!stopValue.isNaN() && stopValue > 0 && stopValue < price) stopValue else price * 0.97
             val qty = spend / price
+            val targetValue = coin.optDouble("take_profit", Double.NaN)
+            val target = if (!targetValue.isNaN() && targetValue > price) targetValue else price * 1.06
             cash -= spend
             remaining.put(JSONObject().put("symbol", symbol).put("exchange", exchange).put("entry", price)
-                .put("last_price", price).put("stop", stop).put("quantity", qty)
+                .put("last_price", price).put("stop", stop).put("target", target).put("quantity", qty)
                 .put("cost", spend).put("opened_at", now).put("score", score))
             held.add(positionKey)
             log.put(JSONObject().put("type", "BUY").put("symbol", symbol)
