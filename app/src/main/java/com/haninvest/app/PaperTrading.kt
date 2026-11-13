@@ -318,9 +318,12 @@ class PaperTrading(private val context: Context) {
         // После убытка 2% или больше также действует блокировка на 2 часа.
         val blocked = blockedLossAssets()
         val held = mutableSetOf<String>()
+        var openLongCount = 0
+        var openShortCount = 0
         for (index in 0 until remaining.length()) {
             val position = remaining.optJSONObject(index) ?: continue
             held.add(position.optString("exchange", "Bybit Spot") + ":" + position.optString("symbol"))
+            if (direction(position) == "SHORT") openShortCount++ else openLongCount++
         }
 
         // Диагностика: для каждого актива фиксируем первую причину, по которой покупка пропущена.
@@ -355,7 +358,9 @@ class PaperTrading(private val context: Context) {
                     "Нет корректной пары или цены"
                 positionKey in held -> "Позиция уже открыта"
                 assetBlockKey(exchange, symbol) in blocked -> "Монета заблокирована на 2 часа после закрытия"
-                held.size >= 3 -> "Достигнут лимит: максимум 3 открытые позиции"
+                (if (side == "SHORT") openShortCount >= 10 else openLongCount >= 10) ->
+                    if (side == "SHORT") "Достигнут лимит: максимум 10 открытых SHORT-позиций"
+                    else "Достигнут лимит: максимум 10 открытых LONG-позиций"
                 score <= 83 -> if (side == "SHORT") "SHORT-оценка должна быть выше 83" else "Оценка должна быть выше 83"
                 else -> ""
             }
@@ -395,6 +400,7 @@ class PaperTrading(private val context: Context) {
                 .put("change_24h", firstNumber(coin, "change_24h", "change_24h_pct", "price_change_24h", "price_change_percentage_24h", "change24h").let { if (it.isFinite()) it else -999.0 })
                 .put("peak_profit_usdt", 0.0).put("opened_at", now).put("score", score))
             held.add(positionKey)
+            if (side == "SHORT") openShortCount++ else openLongCount++
             log.put(JSONObject().put("type", if (side == "SHORT") "SHORT" else "BUY")
                 .put("direction", side).put("symbol", symbol)
                 .put("exchange", exchange).put("price", price).put("quantity", qty).put("cost", spend)
