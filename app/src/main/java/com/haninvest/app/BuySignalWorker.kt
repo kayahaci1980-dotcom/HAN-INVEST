@@ -36,7 +36,7 @@ class BuySignalWorker(
 
             // Каждый фоновый цикл сканирует только Bybit Spot.
             val urls = listOf(
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000"
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=100&min_volume=1000000"
             )
             val combinedAssets = org.json.JSONArray()
             val errors = mutableListOf<String>()
@@ -48,7 +48,7 @@ class BuySignalWorker(
                         connection.connectTimeout = 20000
                         connection.readTimeout = 45000
                         connection.setRequestProperty("Accept", "application/json")
-                        connection.setRequestProperty("User-Agent", "HAN-INVEST-Android/2.6")
+                        connection.setRequestProperty("User-Agent", "HAN-INVEST-Android/2.8")
                         if (connection.responseCode !in 200..299) {
                             throw IllegalStateException("HTTP ${connection.responseCode}")
                         }
