@@ -29,6 +29,7 @@ class BuySignalWorker(
     override fun doWork(): Result {
         return try {
             val paper = PaperTrading(applicationContext)
+            if (paper.isTradingPaused()) return Result.success()
             // Сначала обновляем открытые позиции по прямым котировкам обеих бирж,
             // чтобы обновление PAPER не зависело от наличия новых торговых сигналов.
             paper.refreshOpenPositionsFromExchanges()
