@@ -75,7 +75,7 @@ class BuySignalWorker(
                 throw IllegalStateException("Bybit Spot недоступна: " + errors.joinToString("; "))
             }
             val json = JSONObject().put("assets", combinedAssets)
-            // PAPER-счёт обрабатывает единый список четырёх бирж.
+            // PAPER-счёт обрабатывает только торговые пары Bybit Spot.
             paper.processScan(json)
             // После анализа ещё раз применяем прямые биржевые цены: они важнее снимка сканера.
             paper.refreshOpenPositionsFromExchanges()
