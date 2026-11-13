@@ -300,7 +300,6 @@ class PaperTrading(private val context: Context) {
         val reasons = linkedMapOf<String, Int>()
         fun skipped(reason: String) { reasons[reason] = (reasons[reason] ?: 0) + 1 }
         var bought = 0
-        var skippedAfterLoss = 0
         var qualified = 0
 
         for (i in 0 until assets.length()) {
@@ -311,22 +310,19 @@ class PaperTrading(private val context: Context) {
             val score = coin.optInt("score", 0)
             val positionKey = "$exchange:$symbol"
 
+            // При оценке строго выше 83 баллов оценка становится главным сигналом:
+            // объём, BTC-тренд, trade_ready, сигнал стратегии и cooldown не блокируют PAPER-вход.
+            // Оставляем только технически обязательные условия исполнения: корректная пара/цена,
+            // отсутствие уже открытой позиции по этой паре и наличие виртуального USDT.
             val reason = when {
-                symbol.isBlank() || exchange.isBlank() || price <= 0.0 || price.isNaN() ->
+                symbol.isBlank() || exchange.isBlank() || price <= 0.0 || !price.isFinite() ->
                     "Нет корректной пары или цены"
-                assetBlockKey(exchange, symbol) in blocked ->
-                    "Блокировка после убытка (8 часов)"
                 positionKey in held -> "Позиция уже открыта"
-                score < 83 -> "Оценка ниже 83"
-                !coin.optBoolean("trade_ready", false) -> "Торговая пара не подтверждена"
-                !coin.optBoolean("volume_confirmed", false) -> "Недостаточный объём"
-                !coin.optBoolean("btc_buy_allowed", false) -> "BTC не разрешает вход (тренд не BULLISH)"
-                coin.optString("signal") != "BUY" -> "Сигнал стратегии: " + coin.optString("signal", "нет")
+                score <= 83 -> "Оценка должна быть выше 83"
                 else -> ""
             }
             if (reason.isNotEmpty()) {
                 skipped(reason)
-                if (reason.startsWith("Блокировка")) skippedAfterLoss++
                 continue
             }
 
