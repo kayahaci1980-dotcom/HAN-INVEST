@@ -28,6 +28,25 @@ class PaperTrading(private val context: Context) {
     private fun positions() = readArray("positions")
     private fun history() = readArray("history")
 
+    private fun assetBlockKey(exchange: String, symbol: String): String {
+        val venue = if (exchange.contains("Bybit", ignoreCase = true)) "Bybit" else "Binance"
+        return venue + ":" + symbol.trim().uppercase(Locale.US)
+    }
+
+    private fun blockAssetAfterLoss(exchange: String, symbol: String, entry: Double, exit: Double): Boolean {
+        if (entry <= 0.0 || exit <= 0.0) return false
+        val lossPercent = ((exit - entry) / entry) * 100.0
+        if (lossPercent > -2.0) return false
+        val blocked = prefs.getStringSet("paper_loss_blocked_assets", emptySet())
+            ?.toMutableSet() ?: mutableSetOf()
+        val added = blocked.add(assetBlockKey(exchange, symbol))
+        if (added) prefs.edit().putStringSet("paper_loss_blocked_assets", blocked).apply()
+        return added
+    }
+
+    private fun blockedLossAssets(): Set<String> =
+        prefs.getStringSet("paper_loss_blocked_assets", emptySet())?.toSet() ?: emptySet()
+
     // Получает реальные публичные Spot-котировки обеих бирж и обновляет только уже открытые PAPER-позиции.
     // При недоступности одной биржи её старые цены сохраняются; данные не подменяются нулями.
     fun refreshOpenPositionsFromExchanges(): String {
@@ -129,6 +148,7 @@ class PaperTrading(private val context: Context) {
                 else -> ""
             }
             if (reason.isNotEmpty()) {
+                blockAssetAfterLoss(exchange, symbol, entry, price)
                 cash += quantity * price
                 log.put(JSONObject()
                     .put("type", "SELL")
@@ -184,6 +204,7 @@ class PaperTrading(private val context: Context) {
                 else -> ""
             }
             if (reason.isNotEmpty() && !price.isNaN()) {
+                blockAssetAfterLoss(exchange, symbol, entry, price)
                 val proceeds = qty * price
                 cash += proceeds
                 log.put(JSONObject().put("type", "SELL").put("symbol", symbol)
@@ -195,7 +216,12 @@ class PaperTrading(private val context: Context) {
             }
         }
 
-        // Покупаем любой актив со score >= 83: без проверки BUY, объёма и BTC-фильтра.
+        // После закрытия позиции с убытком 2% или больше актив навсегда блокируется
+        // от повторной PAPER-покупки, независимо от последующего score.
+        val blocked = blockedLossAssets()
+        var skippedAfterLoss = 0
+
+        // Покупаем активы со score >= 83, если они не находятся в списке блокировки.
         // На каждую новую позицию выделяется фиксированно до 100 USDT.
         val held = mutableSetOf<String>()
         for (index in 0 until remaining.length()) {
@@ -209,7 +235,11 @@ class PaperTrading(private val context: Context) {
             val price = coin.optDouble("price", Double.NaN)
             val score = coin.optInt("score", 0)
             val positionKey = "$exchange:$symbol"
-            // Единственные условия PAPER-покупки: известная биржа, цена, ещё нет позиции и score >= 83.
+            // score >= 83 недостаточно, если актив ранее закрылся с убытком >= 2%.
+            if (assetBlockKey(exchange, symbol) in blocked) {
+                skippedAfterLoss++
+                continue
+            }
             if (symbol.isBlank() || exchange.isBlank() || positionKey in held ||
                 price <= 0 || price.isNaN() || score < 83) continue
             val spend = minOf(100.0, cash)
@@ -229,7 +259,7 @@ class PaperTrading(private val context: Context) {
         prefs.edit().putFloat("cash", cash.toFloat()).putLong("last_scan", now).apply()
         saveArray("positions", remaining)
         saveArray("history", log)
-        return "Сканирование обработано. Найдено активов: ${assets.length()}."
+        return "Сканирование обработано. Найдено активов: ${assets.length()}. Заблокировано после убытка 2%: ${blocked.size}; пропущено сейчас: ${skippedAfterLoss}."
     }
 
     private fun remainingValue(open: JSONArray): Double {
