@@ -11,6 +11,8 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 
+from app.technical import calculate_indicators, score_indicators
+
 router = APIRouter()
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 CACHE_TTL = 45
@@ -42,9 +44,9 @@ def rsi(values: list[float], period: int = 14) -> float:
 
 
 def indicators(rows: list[list[Any]], venue: str) -> dict[str, float] | None:
-    # Coinbase: [time, low, high, open, close, volume], newest first.
-    # OKX: [ts, open, high, low, close, volume, ...], newest first.
-    ordered = list(reversed(rows))
+    # Both providers return newest-first candles. Drop the forming candle,
+    # then pass only completed candles in chronological order.
+    ordered = list(reversed(rows))[1:] if rows else []
     try:
         if venue == "Coinbase":
             highs = [float(x[2]) for x in ordered]
@@ -56,55 +58,12 @@ def indicators(rows: list[list[Any]], venue: str) -> dict[str, float] | None:
             lows = [float(x[3]) for x in ordered]
             closes = [float(x[4]) for x in ordered]
             volumes = [float(x[5]) for x in ordered]
-        if len(closes) < 51 or any(x <= 0 for x in closes[-51:]):
-            return None
-        tr = [
-            max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]),
-                abs(lows[i] - closes[i - 1]))
-            for i in range(1, len(closes))
-        ]
-        atr = mean(tr[-14:])
-        avg_volume = mean(volumes[-25:-1])
-        volume_ratio = volumes[-1] / avg_volume if avg_volume > 0 else 0.0
-        price = closes[-1]
-        ema20 = ema(closes[-60:], 20)
-        ema50 = ema(closes[-60:], 50)
-        change24 = (price / closes[-25] - 1.0) * 100.0 if closes[-25] else 0.0
-        current_rsi = rsi(closes)
-        return {
-            "price": price, "ema20": ema20, "ema50": ema50,
-            "rsi": current_rsi, "atr": atr,
-            "atr_pct": (atr / price * 100.0) if price else 0.0,
-            "volume_ratio": volume_ratio, "change24": change24,
-            "quote_volume": mean(volumes[-24:]) * price,
-        }
+        return calculate_indicators(highs, lows, closes, volumes)
     except (ValueError, TypeError, IndexError, ZeroDivisionError):
         return None
 
-
 def score_asset(data: dict[str, float], quote_volume: float) -> dict[str, Any]:
-    price = data["price"]
-    trend = 25 if price > data["ema20"] > data["ema50"] else (
-        12 if price > data["ema20"] else 0
-    )
-    rsi_value = data["rsi"]
-    momentum = 20 if 52 <= rsi_value <= 68 else (10 if 48 <= rsi_value < 52 else 0)
-    volume_score = 15 if data["volume_ratio"] >= 1.5 else (
-        10 if data["volume_ratio"] >= 1.2 else 0
-    )
-    liquidity = 20 if quote_volume >= 5_000_000 else (
-        15 if quote_volume >= 1_000_000 else 0
-    )
-    volatility = 10 if 0.3 <= data["atr_pct"] <= 4.0 else (
-        5 if 0 < data["atr_pct"] <= 6.0 else 0
-    )
-    score = min(100, trend + momentum + volume_score + liquidity + volatility + 10)
-    return {
-        "score": int(score), "rsi_14": round(rsi_value, 2),
-        "ema20": data["ema20"], "ema50": data["ema50"],
-        "atr_14": data["atr"], "atr_pct": round(data["atr_pct"], 3),
-        "volume_ratio": round(data["volume_ratio"], 2),
-    }
+    return score_indicators(data, quote_volume)
 
 
 async def fetch_json(client: httpx.AsyncClient, url: str, params: dict | None = None):
