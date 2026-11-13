@@ -521,17 +521,17 @@ class PaperTrading(private val context: Context) {
         }
         box.addView(scan)
         val expandedScan = Button(context).apply {
-            text = "РАСШИРЕННЫЙ ПОИСК — ДО 1000 ПАР"
+            text = "РАСШИРЕННЫЙ ПОИСК — ДО 300 ПАР"
             setTextColor(Color.WHITE)
             setBackgroundColor(green)
             setOnClickListener {
-                scanLimit = 1000
-                scan.text = "РАСШИРЕННЫЙ ПОИСК: 1000 ПАР — PAPER-СДЕЛКИ"
+                scanLimit = 300
+                scan.text = "РАСШИРЕННЫЙ ПОИСК: 300 ПАР — PAPER-СДЕЛКИ"
                 scan.performClick()
             }
         }
         scan.setOnClickListener {
-            scanLimit = if (scan.text.toString().contains("РАСШИРЕННЫЙ")) 1000 else 100
+            scanLimit = if (scan.text.toString().contains("РАСШИРЕННЫЙ")) 300 else 100
             scan.text = "СКАНИРОВАНИЕ ${scanLimit} ПАР — PAPER-СДЕЛКИ"
             scan.isEnabled = false
             status.text = "Сканируем до ${scanLimit} наиболее ликвидных пар Bybit Spot..."
@@ -567,8 +567,8 @@ class PaperTrading(private val context: Context) {
             }.start()
         }
         expandedScan.setOnClickListener {
-            scanLimit = 1000
-            scan.text = "РАСШИРЕННЫЙ ПОИСК: ДО 1000 ПАР — PAPER-СДЕЛКИ"
+            scanLimit = 300
+            scan.text = "РАСШИРЕННЫЙ ПОИСК: ДО 300 ПАР — PAPER-СДЕЛКИ"
             scan.performClick()
         }
         box.addView(expandedScan)
