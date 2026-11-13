@@ -349,9 +349,20 @@ class CryptoScanner(private val context: Context) {
         }
         root.addView(label("₿ Крипторынок — все биржи", 21f, dark, true))
         root.addView(label(
-            "Четыре списка ТОП-3 загружаются одновременно. Для Coinbase и OKX дополнительно рассчитываются RSI, ATR, EMA20 и техническая оценка.",
+            "Binance, Bybit, OKX и Coinbase Exchange: топ‑3 и одинаковые технические показатели. Одна кнопка обновляет все четыре биржи одновременно.",
             13f, muted
         ))
+
+        val refreshAll = Button(context).apply {
+            text = "ОБНОВИТЬ ВСЕ БИРЖИ"
+            setTextColor(Color.WHITE)
+            textSize = 15f
+            background = GradientDrawable().apply {
+                setColor(blue)
+                cornerRadius = dp(12).toFloat()
+            }
+        }
+        root.addView(refreshAll)
 
         val venues = listOf(
             "binance" to "BINANCE",
@@ -359,6 +370,7 @@ class CryptoScanner(private val context: Context) {
             "okx" to "OKX",
             "coinbase" to "COINBASE EXCHANGE"
         )
+        val statusViews = linkedMapOf<String, TextView>()
         for ((key, title) in venues) {
             val panel = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
@@ -370,42 +382,45 @@ class CryptoScanner(private val context: Context) {
                 elevation = dp(2).toFloat()
             }
             val heading = label(title, 16f, dark, true)
-            val status = label("Загрузка $title...", 13f, dark)
+            val status = label("Ожидание обновления...", 13f, dark)
             status.setPadding(0, dp(10), 0, dp(8))
-            val refresh = Button(context).apply {
-                text = "ОБНОВИТЬ $title"
-                setTextColor(Color.WHITE)
-                background = GradientDrawable().apply {
-                    setColor(blue)
-                    cornerRadius = dp(10).toFloat()
-                }
-            }
-            fun load() {
-                status.text = "Загрузка $title..."
-                Thread {
-                    try {
-                        val result = loadVenue(key)
-                        (context as? android.app.Activity)?.runOnUiThread {
-                            status.text = result
-                        }
-                    } catch (e: Exception) {
-                        (context as? android.app.Activity)?.runOnUiThread {
-                            status.text = "$title: данные временно недоступны. " +
-                                (e.message ?: "Ошибка соединения")
-                        }
-                    }
-                }.start()
-            }
-            refresh.setOnClickListener { load() }
+            statusViews[key] = status
             panel.addView(heading)
             panel.addView(status)
-            panel.addView(refresh)
             root.addView(panel)
             root.addView(View(context).apply {
                 layoutParams = LinearLayout.LayoutParams(1, dp(12))
             })
-            load()
         }
+
+        fun refreshAllExchanges() {
+            refreshAll.isEnabled = false
+            refreshAll.text = "ОБНОВЛЯЮ ВСЕ БИРЖИ..."
+            for ((key, title) in venues) {
+                statusViews[key]?.text = "Загрузка $title..."
+            }
+            val completed = java.util.concurrent.atomic.AtomicInteger(0)
+            for ((key, title) in venues) {
+                Thread {
+                    val result = try {
+                        loadVenue(key)
+                    } catch (e: Exception) {
+                        "$title: данные временно недоступны. " +
+                            (e.message ?: "Ошибка соединения")
+                    }
+                    (context as? android.app.Activity)?.runOnUiThread {
+                        statusViews[key]?.text = result
+                        if (completed.incrementAndGet() == venues.size) {
+                            refreshAll.isEnabled = true
+                            refreshAll.text = "ОБНОВИТЬ ВСЕ БИРЖИ"
+                        }
+                    }
+                }.start()
+            }
+        }
+
+        refreshAll.setOnClickListener { refreshAllExchanges() }
+        refreshAllExchanges()
         return root
     }
 }
