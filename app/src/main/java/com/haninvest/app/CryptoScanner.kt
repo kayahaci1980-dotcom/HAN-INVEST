@@ -152,7 +152,7 @@ class CryptoScanner(private val context: Context) {
             for (future in pool.invokeAll(tasks, 35, TimeUnit.SECONDS)) {
                 try { future.get()?.let { rows.add(it) } } catch (_: Exception) { }
             }
-            rows.sortedByDescending { it.optDouble("_turnover") }.take(3)
+            return rows.sortedByDescending { it.optDouble("_turnover") }.take(3)
         } finally {
             pool.shutdownNow()
         }
@@ -176,7 +176,7 @@ class CryptoScanner(private val context: Context) {
                 a.optDouble(4), a.optDouble(5)
             ))
         }
-        rows.sortedBy { it[0] }
+        return rows.sortedBy { it[0] }
     }
 
     private fun okxCandles(instId: String): List<DoubleArray> {
@@ -195,7 +195,67 @@ class CryptoScanner(private val context: Context) {
                 a.optString(5).toDoubleOrNull() ?: 0.0
             ))
         }
-        rows.sortedBy { it[0] }
+        return rows.sortedBy { it[0] }
+    }
+
+    private fun normalizedSymbol(raw: String): String {
+        val cleaned = raw.uppercase(Locale.US).replace("/", "").replace("-", "").replace("_", "")
+        return when {
+            cleaned.endsWith("USDT") -> cleaned
+            cleaned.endsWith("USD") -> cleaned
+            else -> cleaned + "USDT"
+        }
+    }
+
+    private fun exchangeCandles(venue: String, row: JSONObject): List<DoubleArray> {
+        val symbol = normalizedSymbol(row.optString("symbol", row.optString("id")))
+        if (venue == "okx") return okxCandles(row.optString("id"))
+        if (venue == "coinbase") return coinbaseCandles(row.optString("id"))
+
+        val raw = if (venue == "binance") {
+            val arr = JSONArray(fetch("https://api.binance.com/api/v3/klines?symbol=$symbol&interval=1h&limit=60"))
+            val list = mutableListOf<DoubleArray>()
+            for (i in 0 until arr.length()) {
+                val a = arr.optJSONArray(i) ?: continue
+                if (a.length() < 6) continue
+                list.add(doubleArrayOf(
+                    a.optString(0).toDoubleOrNull() ?: 0.0,
+                    a.optString(2).toDoubleOrNull() ?: 0.0,
+                    a.optString(3).toDoubleOrNull() ?: 0.0,
+                    a.optString(4).toDoubleOrNull() ?: 0.0,
+                    a.optString(5).toDoubleOrNull() ?: 0.0
+                ))
+            }
+            list
+        } else {
+            val data = JSONObject(fetch(
+                "https://api.bybit.com/v5/market/kline?category=spot&symbol=$symbol&interval=60&limit=60"
+            )).optJSONObject("result")?.optJSONArray("list") ?: JSONArray()
+            val list = mutableListOf<DoubleArray>()
+            for (i in 0 until data.length()) {
+                val a = data.optJSONArray(i) ?: continue
+                if (a.length() < 6) continue
+                list.add(doubleArrayOf(
+                    a.optString(0).toDoubleOrNull() ?: 0.0,
+                    a.optString(2).toDoubleOrNull() ?: 0.0,
+                    a.optString(3).toDoubleOrNull() ?: 0.0,
+                    a.optString(4).toDoubleOrNull() ?: 0.0,
+                    a.optString(5).toDoubleOrNull() ?: 0.0
+                ))
+            }
+            list
+        }
+        return raw.sortedBy { it[0] }
+    }
+
+    private fun firstNumber(row: JSONObject, vararg keys: String): Double {
+        for (key in keys) {
+            if (row.has(key)) {
+                val value = row.optString(key).toDoubleOrNull()
+                if (value != null && value.isFinite()) return value
+            }
+        }
+        return Double.NaN
     }
 
     private fun loadVenue(venue: String): String {
@@ -244,44 +304,36 @@ class CryptoScanner(private val context: Context) {
         out.append(venue.uppercase(Locale.US)).append(" — ТОП-3 по обороту 24ч\n")
         for ((index, row) in rows.withIndex()) {
             val symbol = row.optString("symbol", "—")
-            val price = row.optDouble("price", Double.NaN)
-            val change = row.optDouble("change_24h_pct", Double.NaN)
-            val turnover = row.optDouble("_turnover",
-                row.optDouble("volume_24h", 0.0))
+            val price = firstNumber(row, "price", "lastPrice", "last", "close")
+            val change = firstNumber(row, "change_24h_pct", "price_change_pct", "change_pct", "price24hPcnt")
+            val turnoverValue = firstNumber(row, "_turnover", "turnover24h", "quoteVolume", "volume_24h")
+            val turnover = if (turnoverValue.isNaN()) 0.0 else turnoverValue
             out.append("\n").append(index + 1).append(". ").append(symbol).append("\n")
             if (!price.isNaN()) out.append(String.format(Locale.US, "Цена: $%,.8f\n", price))
             if (!change.isNaN()) out.append(String.format(Locale.US, "Изменение 24ч: %+.2f%%\n", change))
             out.append(String.format(Locale.US, "Оборот 24ч: $%,.0f\n", turnover))
 
-            if (venue == "binance" || venue == "bybit") {
-                if (row.has("score")) out.append("Оценка сканера: ")
-                    .append(row.optInt("score")).append("/100 | ")
-                    .append(row.optString("signal", "WATCH")).append("\n")
-                if (row.has("rsi")) out.append("RSI: ").append(row.optString("rsi")).append("\n")
-                if (row.has("atr_pct")) out.append("ATR: ").append(row.optString("atr_pct")).append("%\n")
-            } else {
-                try {
-                    val candles = if (venue == "okx")
-                        okxCandles(row.optString("id"))
-                    else coinbaseCandles(row.optString("id"))
-                    val m = metrics(candles, if (change.isNaN()) 0.0 else change, turnover)
-                    if (m != null) {
-                        val state = when {
-                            m.score >= 70 -> "сильная"
-                            m.score >= 50 -> "нейтральная"
-                            else -> "слабая"
-                        }
-                        out.append("Техническая оценка: ").append(m.score).append("/100 (")
-                            .append(state).append(")\n")
-                        out.append(String.format(Locale.US, "RSI(14): %.1f\n", m.rsi))
-                        out.append(String.format(Locale.US, "ATR(14): %.2f%%\n", m.atrPct))
-                        out.append(String.format(Locale.US, "EMA20: $%,.8f — %s\n", m.ema, m.trend))
-                    } else {
-                        out.append("Техническая оценка: недостаточно свечных данных\n")
+            try {
+                val candles = exchangeCandles(venue, row)
+                val m = metrics(candles, if (change.isNaN()) 0.0 else change, turnover)
+                if (m != null) {
+                    val state = when {
+                        m.score >= 75 -> "сильная"
+                        m.score >= 55 -> "умеренная"
+                        else -> "слабая"
                     }
-                } catch (_: Exception) {
-                    out.append("Техническая оценка: свечи временно недоступны\n")
+                    out.append("Техническая оценка: ").append(m.score).append("/100 (")
+                        .append(state).append(")\\n")
+                    out.append(String.format(Locale.US, "RSI(14): %.1f\\n", m.rsi))
+                    out.append(String.format(Locale.US, "ATR(14): %.2f%%\\n", m.atrPct))
+                    out.append(String.format(Locale.US, "EMA20: $%,.8f — %s\\n", m.ema, m.trend))
+                } else {
+                    out.append("Техническая оценка: недостаточно свечных данных\\n")
+                    out.append("RSI / ATR / EMA20: нет достаточных данных\\n")
                 }
+            } catch (e: Exception) {
+                out.append("Технические показатели временно недоступны: ")
+                    .append(e.message ?: "ошибка получения свечей").append("\\n")
             }
         }
         out.append("\nОбновлено: ").append(
