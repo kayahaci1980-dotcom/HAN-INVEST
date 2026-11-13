@@ -40,7 +40,7 @@ class PaperTrading(private val context: Context) {
     private fun assetBlockKey(exchange: String, symbol: String): String =
         "Bybit:" + symbol.trim().uppercase(Locale.US)
 
-    private val lossBlockDurationMs = 6L * 60L * 60L * 1000L
+    private val lossBlockDurationMs = 2L * 60L * 60L * 1000L
 
     // Храним время окончания блокировки для каждой пары биржа:монета.
     private fun readLossBlocks(): JSONObject = try {
@@ -77,7 +77,7 @@ class PaperTrading(private val context: Context) {
         val currentProfit = quantity * price * (1.0 - paperFeeRate) - cost
         val peakProfit = maxOf(position.optDouble("peak_profit_usdt", 0.0), currentProfit)
         position.put("peak_profit_usdt", peakProfit)
-        return peakProfit > 0.0 && currentProfit <= peakProfit * 0.5
+        return peakProfit > 2.0 && currentProfit <= peakProfit * 0.5
     }
 
     private fun blockedLossAssets(): Set<String> {
