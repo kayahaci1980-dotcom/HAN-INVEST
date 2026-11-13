@@ -104,13 +104,17 @@ async def scan_bybit(limit: int = Query(30, ge=1, le=100), min_volume: float = Q
                 })
                 rows = list(reversed(btc_rows.get("list", [])))[:-1]
                 closes = [float(x[4]) for x in rows]
-                if len(closes) >= 50:
-                    ma20, ma50 = mean(closes[-20:]), mean(closes[-50:])
+                highs = [float(x[2]) for x in rows]
+                lows = [float(x[3]) for x in rows]
+                volumes = [float(x[5]) for x in rows]
+                btc_data = calculate_indicators(highs, lows, closes, volumes)
+                if btc_data:
                     price = float(btc.get("lastPrice") or closes[-1])
-                    btc_state = "BULLISH" if price > ma20 > ma50 else "BEARISH" if price < ma20 < ma50 else "SIDEWAYS"
+                    ema20, ema50 = btc_data["ema20"], btc_data["ema50"]
+                    btc_state = "BULLISH" if price > ema20 > ema50 else "BEARISH" if price < ema20 < ema50 else "SIDEWAYS"
                     btc_info = {"available": True, "buy_allowed": btc_state == "BULLISH",
-                                "market_state": btc_state, "price": price, "ma20": round(ma20, 2),
-                                "ma50": round(ma50, 2)}
+                                "market_state": btc_state, "price": price, "ema20": round(ema20, 2),
+                                "ema50": round(ema50, 2)}
             selected = sorted(tickers, key=lambda x: float(x.get("turnover24h") or 0), reverse=True)[:limit]
             semaphore = asyncio.Semaphore(5)
             async def limited(item):
