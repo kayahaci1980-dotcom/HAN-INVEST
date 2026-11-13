@@ -69,12 +69,12 @@ class CryptoScanner(private val context: Context) {
                 if (!coin.optBoolean("btc_buy_allowed", false)) reasons.add("BTC не в бычьем тренде")
             }
             if (coin.optString("signal") == "BUY" && reasons.isEmpty()) {
-                out.append("Покупка: все фильтры пройдены\\n")
+                out.append("Покупка: все фильтры пройдены\n")
             } else if (reasons.isNotEmpty()) {
-                out.append("Почему пока нет BUY:\\n")
-                for (reason in reasons) out.append(" • ").append(reason).append("\\n")
+                out.append("Почему пока нет BUY:\n")
+                for (reason in reasons) out.append(" • ").append(reason).append("\n")
             } else {
-                out.append("Почему пока нет BUY: нет подтверждённого сигнала\\n")
+                out.append("Почему пока нет BUY: нет подтверждённого сигнала\n")
             }
         }
         out.append("\nОбновлено: ").append(SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()))
