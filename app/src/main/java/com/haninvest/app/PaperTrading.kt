@@ -414,7 +414,24 @@ class PaperTrading(private val context: Context) {
         box.addView(sellActions)
         fun showSellActions() {
             sellActions.removeAllViews()
-            val list=positions()
+            val heading = TextView(context).apply {
+                text = "РУЧНАЯ ПРОДАЖА — ДОСТУПНА ДАЖЕ ПРИ ЭКСТРЕННОМ СТОПЕ"
+                textSize = 14f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(dark)
+                setPadding(0, 10, 0, 8)
+            }
+            sellActions.addView(heading)
+            val list = positions()
+            if (list.length() == 0) {
+                sellActions.addView(TextView(context).apply {
+                    text = "Открытых позиций нет. Кнопки продажи появятся после виртуальной покупки."
+                    textSize = 12f
+                    setTextColor(Color.GRAY)
+                    setPadding(0, 0, 0, 10)
+                })
+                return
+            }
             for(i in 0 until list.length()) {
                 val pos=list.optJSONObject(i)?:continue
                 val ex=pos.optString("exchange","Binance Spot"); val sym=pos.optString("symbol")
@@ -478,11 +495,14 @@ class PaperTrading(private val context: Context) {
                             status.text = message
                             isEnabled = true
                             render(details)
+                            showSellActions()
                         }
                     } catch (e: Exception) {
                         (context as? android.app.Activity)?.runOnUiThread {
                             status.text = "Ошибка сканирования: ${e.message}"
                             isEnabled = true
+                            render(details)
+                            showSellActions()
                         }
                     }
                 }.start()
@@ -498,7 +518,9 @@ class PaperTrading(private val context: Context) {
                 setTradingPaused(paused)
                 text = if (paused) "ВОЗОБНОВИТЬ PAPER-ТОРГОВЛЮ" else "ЭКСТРЕННЫЙ СТОП — ОСТАНОВИТЬ"
                 setBackgroundColor(if (paused) green else red)
-                status.text = if (paused) "Автоматические покупки и продажи остановлены. Позиции сохранены." else "Автоматическая PAPER-торговля возобновлена."
+                status.text = if (paused) "Автоматические покупки и продажи остановлены. Позиции сохранены. Ручная продажа доступна." else "Автоматическая PAPER-торговля возобновлена."
+                render(details)
+                showSellActions()
             }
         }
         box.addView(emergency)
@@ -517,6 +539,7 @@ class PaperTrading(private val context: Context) {
                         status.text = message
                         isEnabled = true
                         render(details)
+                        showSellActions()
                     }
                 }.start()
             }
@@ -529,6 +552,7 @@ class PaperTrading(private val context: Context) {
                     .putString("history", "[]").putLong("last_scan", 0L).apply()
                 status.text = "Виртуальный счёт сброшен до $1 000."
                 render(details)
+                showSellActions()
             }
         }
         box.addView(reset)
