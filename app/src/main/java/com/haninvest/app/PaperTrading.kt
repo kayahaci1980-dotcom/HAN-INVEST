@@ -531,8 +531,8 @@ class PaperTrading(private val context: Context) {
             }
         }
         scan.setOnClickListener {
-            scanLimit = 100
-            scan.text = "СКАНИРОВАНИЕ 100 ПАР — PAPER-СДЕЛКИ"
+            scanLimit = if (scan.text.toString().contains("РАСШИРЕННЫЙ")) 1000 else 100
+            scan.text = "СКАНИРОВАНИЕ ${scanLimit} ПАР — PAPER-СДЕЛКИ"
             scan.isEnabled = false
             status.text = "Сканируем 100 наиболее ликвидных пар Bybit..."
             Thread {
@@ -553,6 +553,7 @@ class PaperTrading(private val context: Context) {
                     (context as? android.app.Activity)?.runOnUiThread {
                         status.text = scanMessage + "\\n" + quoteMessage
                         scan.isEnabled = true; expandedScan.isEnabled = true
+                        scan.text = "СКАНИРОВАТЬ 100 ПАР И ВЫПОЛНИТЬ PAPER-СДЕЛКИ"
                         render(details); showSellActions()
                     }
                 } catch (e: Exception) {
