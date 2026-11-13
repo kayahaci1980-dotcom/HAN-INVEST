@@ -30,16 +30,13 @@ class BuySignalWorker(
         return try {
             val paper = PaperTrading(applicationContext)
             if (paper.isTradingPaused()) return Result.success()
-            // Сначала обновляем открытые позиции по прямым котировкам всех четырёх бирж,
+            // Сначала обновляем открытые позиции по прямым котировкам Bybit Spot,
             // чтобы обновление PAPER не зависело от наличия новых торговых сигналов.
             paper.refreshOpenPositionsFromExchanges()
 
-            // Каждый фоновый цикл независимо сканирует все четыре спотовые биржи.
+            // Каждый фоновый цикл сканирует только Bybit Spot.
             val urls = listOf(
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?limit=30&universe_limit=100&min_volume=1000000&risk_pct=1&capital_usdt=1000",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=30&min_volume=1000000",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/okx/scan?limit=30&min_volume=1000000"
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000"
             )
             val combinedAssets = org.json.JSONArray()
             val errors = mutableListOf<String>()
@@ -63,12 +60,7 @@ class BuySignalWorker(
                     val assets = response.optJSONArray("assets") ?: continue
                     val btcAllowed = response.optJSONObject("btc_market_filter")
                         ?.optBoolean("buy_allowed", false) == true
-                    val defaultExchange = when {
-                        url.contains("/bybit/") -> "Bybit Spot"
-                        url.contains("/coinbase/") -> "Coinbase Exchange"
-                        url.contains("/okx/") -> "OKX Spot"
-                        else -> "Binance Spot"
-                    }
+                    val defaultExchange = "Bybit Spot"
                     for (i in 0 until assets.length()) {
                         val coin = assets.optJSONObject(i) ?: continue
                         if (!coin.has("exchange")) coin.put("exchange", defaultExchange)
@@ -80,7 +72,7 @@ class BuySignalWorker(
                 }
             }
             if (combinedAssets.length() == 0) {
-                throw IllegalStateException("Все четыре биржи недоступны: " + errors.joinToString("; "))
+                throw IllegalStateException("Bybit Spot недоступна: " + errors.joinToString("; "))
             }
             val json = JSONObject().put("assets", combinedAssets)
             // PAPER-счёт обрабатывает единый список четырёх бирж.
