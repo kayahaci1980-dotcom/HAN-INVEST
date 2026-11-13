@@ -9,6 +9,8 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 
+from app.technical import calculate_indicators, score_indicators
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 # Binance documents this host specifically for public market-data-only requests.
@@ -132,70 +134,48 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
     )
     try:
         candles = await _get_json(
-            client,
-            "/api/v3/klines",
+            client, "/api/v3/klines",
             {"symbol": symbol, "interval": "1h", "limit": 60},
         )
-        # Binance's final kline is the currently forming hour. Exclude it so
-        # indicators and volume confirmation use completed candles only.
-        closed_candles = candles[:-1]
-        closes = [float(row[4]) for row in closed_candles if len(row) > 5]
-        highs = [float(row[2]) for row in closed_candles if len(row) > 5]
-        lows = [float(row[3]) for row in closed_candles if len(row) > 5]
-        volumes = [float(row[5]) for row in closed_candles if len(row) > 5]
-        if len(closes) < 50 or len(highs) != len(closes) or len(lows) != len(closes):
+        # Exclude Binance's currently forming hourly candle.
+        closed = [row for row in candles[:-1] if len(row) > 5]
+        closes = [float(row[4]) for row in closed]
+        highs = [float(row[2]) for row in closed]
+        lows = [float(row[3]) for row in closed]
+        volumes = [float(row[5]) for row in closed]
+        if len(closes) < 51:
             return None
 
         last = closes[-1]
         current_price = float(ticker.get("lastPrice") or last)
+        quote_volume = float(ticker.get("quoteVolume") or 0)
+        data = calculate_indicators(highs, lows, closes, volumes)
+        if not data:
+            return None
+        data["price"] = current_price
+        scored = score_indicators(data, quote_volume)
+
         ma20 = _mean(closes[-20:])
         ma50 = _mean(closes[-50:])
-        change_6h = ((last / closes[-7]) - 1) * 100 if closes[-7] else 0
-        change_24h = ((last / closes[-25]) - 1) * 100 if closes[-25] else 0
+        change_6h = ((last / closes[-7]) - 1) * 100 if closes[-7] else 0.0
+        change_24h = data["change24"]
         returns = [
             (closes[i] / closes[i - 1] - 1)
             for i in range(1, len(closes)) if closes[i - 1]
         ]
         hourly_volatility = math.sqrt(_mean([x * x for x in returns])) * 100
-        quote_volume = float(ticker.get("quoteVolume", 0))
-        volume_ratio = (
-            volumes[-1] / _mean(volumes[-25:-1])
-            if len(volumes) >= 25 and _mean(volumes[-25:-1]) > 0 else 1.0
-        )
-        true_ranges = [
-            max(highs[i] - lows[i],
-                abs(highs[i] - closes[i - 1]),
-                abs(lows[i] - closes[i - 1]))
-            for i in range(1, len(closes))
-        ]
-        atr_14 = _mean(true_ranges[-14:])
-
-        trend_score = 20 if last > ma20 > ma50 else 13 if last > ma20 else 5
-        momentum_score = _score_change(change_24h, 0.8)
-        short_score = _score_change(change_6h, 1.2)
-        liquidity_score = min(20, max(0, round(math.log10(max(quote_volume, 1)) * 2)))
-        stability_score = max(0, min(20, round(20 - hourly_volatility * 2)))
-        volume_score = 10 if volume_ratio >= 1.2 else 5 if volume_ratio >= 0.8 else 0
-        score = min(100, trend_score + momentum_score + short_score +
-                    liquidity_score + stability_score + volume_score)
-
-        # BUY is deliberately selective: require a strong score, aligned MA trend,
-        # positive short-term momentum, and a meaningful closed-candle volume surge.
+        volume_ratio = data["volume_ratio"]
+        atr_14 = data["atr"]
         volume_confirmed = volume_ratio >= 1.2
-        # Use the live ticker price too: a stale candle close must not keep BUY active.
-        strong_uptrend = current_price > ma20 > ma50
-        asset_setup_confirmed = (
-            score >= 80 and strong_uptrend and change_6h >= 1.0
-            and volume_confirmed and quote_volume >= 1_000_000
+        strong_uptrend = current_price > data["ema20"] > data["ema50"]
+        setup = (
+            scored["score"] >= 83 and strong_uptrend and change_6h >= 1.0
+            and volume_confirmed and quote_volume >= 1_000_000 and pair_verified
         )
-        early_buy = asset_setup_confirmed and btc_market_state == "SIDEWAYS"
-        if asset_setup_confirmed and btc_market_state == "BULLISH":
-            signal = "BUY"
-        elif score >= 55:
-            signal = "WATCH"
-        else:
-            signal = "HOLD"
-
+        signal = "BUY" if setup and btc_market_state == "BULLISH" else (
+            "WATCH" if scored["score"] >= 55 else "HOLD"
+        )
+        early_buy = setup and btc_market_state == "SIDEWAYS"
         risk = "Высокий" if hourly_volatility >= 2.5 else (
             "Средний" if hourly_volatility >= 1.2 else "Умеренный"
         )
@@ -222,9 +202,13 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "momentum_6h_pct": round(change_6h, 2),
             "momentum_24h_pct": round(change_24h, 2),
             "quote_volume_24h": round(quote_volume, 2),
-            "volume_ratio": round(volume_ratio, 2),
+            "volume_ratio": scored["volume_ratio"],
             "volume_confirmed": volume_confirmed,
-            "atr_14": round(atr_14, 8),
+            "rsi_14": scored["rsi_14"],
+            "ema20": scored["ema20"],
+            "ema50": scored["ema50"],
+            "atr_14": scored["atr_14"],
+            "atr_pct": scored["atr_pct"],
             "entry_price": round(entry_price, 8) if entry_price is not None else None,
             "stop_loss": round(stop_loss, 8) if stop_loss is not None else None,
             "take_profit": round(take_profit, 8) if take_profit is not None else None,
@@ -233,14 +217,13 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "ma20": round(ma20, 8),
             "ma50": round(ma50, 8),
             "hourly_volatility_pct": round(hourly_volatility, 3),
-            "score": score,
+            "score": scored["score"],
             "signal": signal,
             "early_signal": "EARLY BUY" if early_buy else None,
             "risk": risk,
         }
     except (httpx.HTTPError, ValueError, TypeError, IndexError, KeyError, ZeroDivisionError):
         return None
-
 
 async def _scan_coingecko(client: httpx.AsyncClient, limit: int, min_volume: float):
     response = await client.get(
