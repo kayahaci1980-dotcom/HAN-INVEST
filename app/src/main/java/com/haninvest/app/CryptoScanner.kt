@@ -92,7 +92,7 @@ class CryptoScanner(private val context: Context) {
             setTypeface(null, Typeface.BOLD)
         })
         root.addView(TextView(context).apply {
-            text = "Все найденные монеты с оценкой 84–100. Причины отсутствия BUY показываются отдельно."
+            text = "Bybit Spot: стандартный просмотр 100 пар. Для расширенного поиска до 1000 пар используйте кнопку в блоке PAPER TRADING. Все монеты с оценкой выше 83 показываются отдельно."
             textSize = 13f
             setTextColor(muted)
         })
