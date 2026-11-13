@@ -6,6 +6,8 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 
+from app.technical import calculate_indicators, score_indicators
+
 router = APIRouter()
 BASE = "https://api.bybit.com"
 CACHE_TTL = 45
@@ -31,44 +33,51 @@ async def analyze(client: httpx.AsyncClient, ticker: dict, instrument: dict, btc
         result = await get_json(client, "/v5/market/kline", {
             "category": "spot", "symbol": symbol, "interval": "60", "limit": "60"
         })
-        rows = list(reversed(result.get("list", [])))
-        rows = rows[:-1]
-        if len(rows) < 50:
+        # Bybit returns newest first; remove the still-forming hour.
+        rows = list(reversed(result.get("list", [])))[:-1]
+        if len(rows) < 51:
             return None
         closes = [float(row[4]) for row in rows]
         highs = [float(row[2]) for row in rows]
         lows = [float(row[3]) for row in rows]
         volumes = [float(row[5]) for row in rows]
         price = float(ticker.get("lastPrice") or closes[-1])
-        ma20, ma50 = mean(closes[-20:]), mean(closes[-50:])
+        quote_volume = float(ticker.get("turnover24h") or 0)
+        data = calculate_indicators(highs, lows, closes, volumes)
+        if not data:
+            return None
+        data["price"] = price
+        scored = score_indicators(data, quote_volume)
         change6 = (closes[-1] / closes[-7] - 1) * 100 if closes[-7] else 0.0
         change24 = float(ticker.get("price24hPcnt") or 0) * 100
-        vol_ratio = volumes[-1] / mean(volumes[-25:-1]) if mean(volumes[-25:-1]) else 0.0
-        quote_volume = float(ticker.get("turnover24h") or 0)
-        tr = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(1, len(closes))]
-        atr = mean(tr[-14:])
-        trend = 20 if price > ma20 > ma50 else 8
-        momentum = max(0, min(20, round(10 + change24 * 0.8)))
-        short = max(0, min(20, round(10 + change6 * 1.2)))
-        liquidity = min(20, max(0, round(math.log10(max(quote_volume, 1)) * 2)))
-        volume_score = 20 if vol_ratio >= 1.2 else 8
-        score = min(100, trend + momentum + short + liquidity + volume_score)
-        setup = price > ma20 > ma50 and score >= 80 and change6 >= 1 and vol_ratio >= 1.2 and quote_volume >= 1_000_000
-        signal = "BUY" if setup and btc_state == "BULLISH" else "WATCH" if score >= 55 else "HOLD"
+        volume_confirmed = data["volume_ratio"] >= 1.2
+        pair_verified = instrument.get("status") == "Trading"
+        setup = (
+            scored["score"] >= 83 and price > data["ema20"] > data["ema50"]
+            and change6 >= 1.0 and volume_confirmed and quote_volume >= 1_000_000
+            and pair_verified
+        )
+        signal = "BUY" if setup and btc_state == "BULLISH" else "WATCH" if scored["score"] >= 55 else "HOLD"
         early = "EARLY BUY" if setup and btc_state == "SIDEWAYS" else None
         return {
             "symbol": symbol, "name": symbol[:-4], "exchange": "Bybit Spot",
             "source": "bybit", "price": price, "change_24h_pct": round(change24, 2),
-            "momentum_6h_pct": round(change6, 2), "quote_volume_24h": round(quote_volume, 2),
-            "volume_ratio": round(vol_ratio, 2), "volume_confirmed": vol_ratio >= 1.2,
-            "ma20": round(ma20, 8), "ma50": round(ma50, 8), "atr_14": round(atr, 8),
-            "score": score, "signal": signal, "early_signal": early,
-            "trade_ready": instrument.get("status") == "Trading",
+            "momentum_6h_pct": round(change6, 2),
+            "quote_volume_24h": round(quote_volume, 2),
+            "volume_ratio": scored["volume_ratio"], "volume_confirmed": volume_confirmed,
+            "ema20": scored["ema20"], "ema50": scored["ema50"],
+            "ma20": round(mean(closes[-20:]), 8), "ma50": round(mean(closes[-50:]), 8),
+            "rsi_14": scored["rsi_14"], "atr_14": scored["atr_14"],
+            "atr_pct": scored["atr_pct"], "score": scored["score"],
+            "signal": signal, "early_signal": early,
+            "stop_loss": round(price - 1.5 * data["atr"], 10),
+            "take_profit": round(price + 3.0 * data["atr"], 10),
+            "trade_ready": pair_verified, "exchange_pair_verified": pair_verified,
             "pair_status": instrument.get("status"), "quote_currency": "USDT",
+            "btc_buy_allowed": btc_state == "BULLISH",
         }
     except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError, ZeroDivisionError):
         return None
-
 
 @router.get("/api/v1/crypto/bybit/scan")
 async def scan_bybit(limit: int = Query(30, ge=1, le=100), min_volume: float = Query(1_000_000, ge=0)):
@@ -95,13 +104,17 @@ async def scan_bybit(limit: int = Query(30, ge=1, le=100), min_volume: float = Q
                 })
                 rows = list(reversed(btc_rows.get("list", [])))[:-1]
                 closes = [float(x[4]) for x in rows]
-                if len(closes) >= 50:
-                    ma20, ma50 = mean(closes[-20:]), mean(closes[-50:])
+                highs = [float(x[2]) for x in rows]
+                lows = [float(x[3]) for x in rows]
+                volumes = [float(x[5]) for x in rows]
+                btc_data = calculate_indicators(highs, lows, closes, volumes)
+                if btc_data:
                     price = float(btc.get("lastPrice") or closes[-1])
-                    btc_state = "BULLISH" if price > ma20 > ma50 else "BEARISH" if price < ma20 < ma50 else "SIDEWAYS"
+                    ema20, ema50 = btc_data["ema20"], btc_data["ema50"]
+                    btc_state = "BULLISH" if price > ema20 > ema50 else "BEARISH" if price < ema20 < ema50 else "SIDEWAYS"
                     btc_info = {"available": True, "buy_allowed": btc_state == "BULLISH",
-                                "market_state": btc_state, "price": price, "ma20": round(ma20, 2),
-                                "ma50": round(ma50, 2)}
+                                "market_state": btc_state, "price": price, "ema20": round(ema20, 2),
+                                "ema50": round(ema50, 2)}
             selected = sorted(tickers, key=lambda x: float(x.get("turnover24h") or 0), reverse=True)[:limit]
             semaphore = asyncio.Semaphore(5)
             async def limited(item):

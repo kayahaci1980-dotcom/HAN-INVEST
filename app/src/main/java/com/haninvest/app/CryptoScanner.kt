@@ -259,87 +259,48 @@ class CryptoScanner(private val context: Context) {
     }
 
     private fun loadVenue(venue: String): String {
-        val rows: List<JSONObject> = when (venue) {
-            "binance" -> {
-                val json = JSONObject(fetch(
-                    "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?limit=30&universe_limit=100&min_volume=1000000&risk_pct=1"
-                ))
-                val a = json.optJSONArray("assets") ?: JSONArray()
-                (0 until a.length()).mapNotNull { a.optJSONObject(it) }.take(3)
-            }
-            "bybit" -> {
-                val json = JSONObject(fetch(
-                    "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000"
-                ))
-                val a = json.optJSONArray("assets") ?: JSONArray()
-                (0 until a.length()).mapNotNull { a.optJSONObject(it) }.take(3)
-            }
-            "okx" -> {
-                val a = JSONObject(fetch(
-                    "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
-                )).optJSONArray("data") ?: JSONArray()
-                val list = mutableListOf<JSONObject>()
-                for (i in 0 until a.length()) {
-                    val x = a.optJSONObject(i) ?: continue
-                    val id = x.optString("instId")
-                    if (!id.endsWith("-USDT")) continue
-                    val price = x.optString("last").toDoubleOrNull() ?: continue
-                    val turnover = x.optString("volCcy24h").toDoubleOrNull() ?: 0.0
-                    val open = x.optString("open24h").toDoubleOrNull() ?: 0.0
-                    list.add(JSONObject()
-                        .put("id", id)
-                        .put("symbol", id.replace("-", "/"))
-                        .put("price", price)
-                        .put("change_24h_pct", if (open > 0) (price-open)/open*100 else 0.0)
-                        .put("_turnover", turnover)
-                        .put("volume_24h", turnover))
-                }
-                list.sortedByDescending { it.optDouble("_turnover") }.take(3)
-            }
-            else -> coinbaseRows()
+        val endpoint = when (venue) {
+            "binance" -> "/api/v1/crypto/scan?limit=30&universe_limit=100&min_volume=1000000&risk_pct=1"
+            "bybit" -> "/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000"
+            "okx" -> "/api/v1/crypto/okx/scan?limit=30&min_volume=1000000"
+            else -> "/api/v1/crypto/coinbase/scan?limit=30&min_volume=1000000"
         }
+        val json = JSONObject(fetch("https://han-invest-api-test.onrender.com$endpoint"))
+        val assets = json.optJSONArray("assets") ?: JSONArray()
+        if (assets.length() == 0) throw Exception("Нет доступных торговых пар")
 
-        if (rows.isEmpty()) throw Exception("Нет доступных торговых пар")
+        val rows = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
+            .sortedByDescending { it.optInt("score", 0) }
+            .take(3)
         val out = StringBuilder()
-        out.append(venue.uppercase(Locale.US)).append(" — ТОП-3 по обороту 24ч\n")
+        out.append(venue.uppercase(Locale.US)).append(" — ТОП-3 по технической оценке\n")
         for ((index, row) in rows.withIndex()) {
             val symbol = row.optString("symbol", "—")
-            val price = firstNumber(row, "price", "lastPrice", "last", "close")
-            val change = firstNumber(row, "change_24h_pct", "price_change_pct", "change_pct", "price24hPcnt")
-            val turnoverValue = firstNumber(row, "_turnover", "turnover24h", "quoteVolume", "volume_24h")
-            val turnover = if (turnoverValue.isNaN()) 0.0 else turnoverValue
+            val price = firstNumber(row, "price")
+            val change = firstNumber(row, "change_24h_pct")
+            val turnover = firstNumber(row, "quote_volume_24h")
+            val score = row.optInt("score", -1)
+            val rsi = firstNumber(row, "rsi_14")
+            val atrPct = firstNumber(row, "atr_pct")
+            val ema20 = firstNumber(row, "ema20")
             out.append("\n").append(index + 1).append(". ").append(symbol).append("\n")
             if (!price.isNaN()) out.append(String.format(Locale.US, "Цена: $%,.8f\n", price))
             if (!change.isNaN()) out.append(String.format(Locale.US, "Изменение 24ч: %+.2f%%\n", change))
-            out.append(String.format(Locale.US, "Оборот 24ч: $%,.0f\n", turnover))
-
-            try {
-                val candles = exchangeCandles(venue, row)
-                val m = metrics(candles, if (change.isNaN()) 0.0 else change, turnover)
-                if (m != null) {
-                    val state = when {
-                        m.score >= 75 -> "сильная"
-                        m.score >= 55 -> "умеренная"
-                        else -> "слабая"
-                    }
-                    out.append("Техническая оценка: ").append(m.score).append("/100 (")
-                        .append(state).append(")\n")
-                    out.append(String.format(Locale.US, "RSI(14): %.1f\n", m.rsi))
-                    out.append(String.format(Locale.US, "ATR(14): %.2f%%\n", m.atrPct))
-                    out.append(String.format(Locale.US, "EMA20: $%,.8f — %s\n", m.ema, m.trend))
-                } else {
-                    out.append("Техническая оценка: недостаточно свечных данных\n")
-                    out.append("RSI / ATR / EMA20: нет достаточных данных\n")
-                }
-            } catch (e: Exception) {
-                out.append("Технические показатели временно недоступны: ")
-                    .append(e.message ?: "ошибка получения свечей").append("\n")
+            if (!turnover.isNaN()) out.append(String.format(Locale.US, "Оборот 24ч: $%,.0f\n", turnover))
+            if (score >= 0) out.append("Техническая оценка: ").append(score).append("/100\n")
+            if (!rsi.isNaN()) out.append(String.format(Locale.US, "RSI(14): %.1f\n", rsi))
+            if (!atrPct.isNaN()) out.append(String.format(Locale.US, "ATR(14): %.2f%%\n", atrPct))
+            if (!ema20.isNaN()) {
+                val trend = if (!price.isNaN() && price > ema20) "выше EMA20" else "ниже EMA20"
+                out.append(String.format(Locale.US, "EMA20: $%,.8f — %s\n", ema20, trend))
             }
+            out.append("Сигнал: ").append(row.optString("signal", "—")).append("\n")
         }
         out.append("\nОбновлено: ").append(
             SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
         )
-        out.append("\nОценка — аналитический индикатор, не гарантия прибыли и не приказ на сделку.")
+        out.append("\nВсе биржи используют единый расчёт RSI Wilder, ATR Wilder, EMA20/50 и оценки из 100 баллов.")
+        out.append("\nДанные только для анализа; реальные ордера не отправляются.")
         return out.toString()
     }
 

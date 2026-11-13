@@ -19,12 +19,19 @@ class PaperTrading(private val context: Context) {
     private val dark = Color.rgb(30, 42, 65)
     private val green = Color.rgb(25, 160, 105)
     private val red = Color.rgb(205, 65, 65)
+    private val paperFeeRate = 0.001 // 0.1% estimated taker fee per side.
 
     private fun money(v: Double) = String.format(Locale.US, "$%,.2f", v)
     private fun readArray(key: String) = try { JSONArray(prefs.getString(key, "[]")) } catch (_: Exception) { JSONArray() }
     private fun saveArray(key: String, value: JSONArray) { prefs.edit().putString(key, value.toString()).apply() }
 
-    private fun balance(): Double = prefs.getFloat("cash", 1000f).toDouble()
+    private fun balance(): Double {
+        val precise = prefs.getString("cash_usdt", null)?.toDoubleOrNull()
+        return precise ?: prefs.getFloat("cash", 1000f).toDouble()
+    }
+    private fun saveBalance(value: Double) {
+        prefs.edit().putString("cash_usdt", value.toString()).remove("cash").apply()
+    }
     fun isTradingPaused(): Boolean = prefs.getBoolean("paper_trading_paused", false)
     fun setTradingPaused(paused: Boolean) { prefs.edit().putBoolean("paper_trading_paused", paused).apply() }
     private fun positions() = readArray("positions")
@@ -51,7 +58,9 @@ class PaperTrading(private val context: Context) {
 
     private fun blockAssetAfterLoss(exchange: String, symbol: String, entry: Double, exit: Double): Boolean {
         if (entry <= 0.0 || exit <= 0.0) return false
-        val lossPercent = ((exit - entry) / entry) * 100.0
+        val entryWithFee = entry * (1.0 + paperFeeRate)
+        val exitAfterFee = exit * (1.0 - paperFeeRate)
+        val lossPercent = ((exitAfterFee - entryWithFee) / entryWithFee) * 100.0
         if (lossPercent > -2.0) return false
         val blocks = readLossBlocks()
         val key = assetBlockKey(exchange, symbol)
@@ -216,14 +225,17 @@ class PaperTrading(private val context: Context) {
             }
             if (reason.isNotEmpty()) {
                 blockAssetAfterLoss(exchange, symbol, entry, price)
-                cash += quantity * price
+                val proceeds = quantity * price * (1.0 - paperFeeRate)
+                cash += proceeds
+                val cost = position.optDouble("cost", quantity * entry)
                 log.put(JSONObject().put("type", "SELL").put("symbol", symbol)
                     .put("exchange", exchange).put("price", price).put("quantity", quantity)
-                    .put("pnl", (price - entry) * quantity).put("reason", reason).put("time", now))
+                    .put("fee", quantity * price * paperFeeRate)
+                    .put("pnl", proceeds - cost).put("reason", reason).put("time", now))
                 closed++
             } else remaining.put(position)
         }
-        prefs.edit().putFloat("cash", cash.toFloat()).apply()
+        saveBalance(cash)
         saveArray("positions", remaining)
         saveArray("history", log)
         val errorText = if (errors.isEmpty()) "" else " Ошибки: " + errors.joinToString("; ")
@@ -264,11 +276,13 @@ class PaperTrading(private val context: Context) {
             }
             if (reason.isNotEmpty() && !price.isNaN()) {
                 blockAssetAfterLoss(exchange, symbol, entry, price)
-                val proceeds = qty * price
+                val proceeds = qty * price * (1.0 - paperFeeRate)
                 cash += proceeds
+                val cost = p.optDouble("cost", qty * entry)
                 log.put(JSONObject().put("type", "SELL").put("symbol", symbol)
                     .put("exchange", exchange).put("price", price).put("quantity", qty)
-                    .put("pnl", (price - entry) * qty).put("reason", reason).put("time", now))
+                    .put("fee", qty * price * paperFeeRate)
+                    .put("pnl", proceeds - cost).put("reason", reason).put("time", now))
             } else {
                 if (!price.isNaN()) p.put("last_price", price)
                 remaining.put(p)
@@ -308,19 +322,22 @@ class PaperTrading(private val context: Context) {
             if (spend < 5.0) continue
             val stopValue = coin.optDouble("stop_loss", Double.NaN)
             val stop = if (!stopValue.isNaN() && stopValue > 0 && stopValue < price) stopValue else price * 0.97
-            val qty = spend / price
+            val qty = spend / (price * (1.0 + paperFeeRate))
             val targetValue = coin.optDouble("take_profit", Double.NaN)
             val target = if (!targetValue.isNaN() && targetValue > price) targetValue else price * 1.06
             cash -= spend
             remaining.put(JSONObject().put("symbol", symbol).put("exchange", exchange).put("entry", price)
                 .put("last_price", price).put("stop", stop).put("target", target).put("quantity", qty)
-                .put("cost", spend).put("opened_at", now).put("score", score))
+                .put("cost", spend).put("entry_fee", qty * price * paperFeeRate)
+                .put("opened_at", now).put("score", score))
             held.add(positionKey)
             log.put(JSONObject().put("type", "BUY").put("symbol", symbol)
                 .put("exchange", exchange).put("price", price).put("quantity", qty).put("cost", spend)
+                .put("fee", qty * price * paperFeeRate)
                 .put("score", score).put("time", now))
         }
-        prefs.edit().putFloat("cash", cash.toFloat()).putLong("last_scan", now).apply()
+        saveBalance(cash)
+        prefs.edit().putLong("last_scan", now).apply()
         saveArray("positions", remaining)
         saveArray("history", log)
         return "Сканирование обработано. Найдено активов: ${assets.length()}. Заблокировано после убытка 2%: ${blocked.size}; пропущено сейчас: ${skippedAfterLoss}."
@@ -341,13 +358,14 @@ class PaperTrading(private val context: Context) {
     fun sellPosition(exchange: String, symbol: String): String {
         val open=positions()
         val pos=(0 until open.length()).mapNotNull{open.optJSONObject(it)}.firstOrNull{it.optString("exchange")==exchange && it.optString("symbol")==symbol} ?: return "Позиция уже закрыта."
-        val price=fetchManualSellPrice(exchange,symbol); val entry=pos.optDouble("entry"); val qty=pos.optDouble("quantity"); val pnl=(price-entry)*qty
+        val price=fetchManualSellPrice(exchange,symbol); val entry=pos.optDouble("entry"); val qty=pos.optDouble("quantity")
+        val proceeds=qty*price*(1.0-paperFeeRate); val cost=pos.optDouble("cost",qty*entry); val pnl=proceeds-cost
         val remaining=JSONArray()
         for(i in 0 until open.length()){val item=open.optJSONObject(i)?:continue;if(!(item.optString("exchange")==exchange&&item.optString("symbol")==symbol))remaining.put(item)}
         val log=history()
-        log.put(JSONObject().put("type","SELL").put("symbol",symbol).put("exchange",exchange).put("price",price).put("quantity",qty).put("pnl",pnl).put("reason","MANUAL SELL").put("time",System.currentTimeMillis()))
+        log.put(JSONObject().put("type","SELL").put("symbol",symbol).put("exchange",exchange).put("price",price).put("quantity",qty).put("fee",qty*price*paperFeeRate).put("pnl",pnl).put("reason","MANUAL SELL").put("time",System.currentTimeMillis()))
         blockAssetAfterLoss(exchange,symbol,entry,price)
-        prefs.edit().putFloat("cash",(balance()+qty*price).toFloat()).apply()
+        saveBalance(balance()+proceeds)
         saveArray("positions",remaining);saveArray("history",log)
         return "Продано $symbol по "+money(price)+". P/L: "+money(pnl)+"."
     }
@@ -356,7 +374,7 @@ class PaperTrading(private val context: Context) {
         var total = 0.0
         for (i in 0 until open.length()) {
             val p = open.optJSONObject(i) ?: continue
-            total += p.optDouble("quantity") * p.optDouble("last_price", p.optDouble("entry"))
+            total += p.optDouble("quantity") * p.optDouble("last_price", p.optDouble("entry")) * (1.0 - paperFeeRate)
         }
         return total
     }
@@ -406,7 +424,7 @@ class PaperTrading(private val context: Context) {
         var total = 0.0
         for (i in 0 until open.length()) {
             val p = open.getJSONObject(i)
-            total += (p.optDouble("last_price", p.optDouble("entry")) - p.optDouble("entry")) * p.optDouble("quantity")
+            total += p.optDouble("quantity") * p.optDouble("last_price", p.optDouble("entry")) * (1.0 - paperFeeRate) - p.optDouble("cost", p.optDouble("quantity") * p.optDouble("entry"))
         }
         return total
     }
@@ -579,7 +597,8 @@ class PaperTrading(private val context: Context) {
         val reset = Button(context).apply {
             text = "СБРОСИТЬ СЧЁТ ДО \\$1 000"
             setOnClickListener {
-                prefs.edit().putFloat("cash", 1000f).putString("positions", "[]")
+                saveBalance(1000.0)
+                prefs.edit().putString("positions", "[]")
                     .putString("history", "[]").putLong("last_scan", 0L).apply()
                 status.text = "Виртуальный счёт сброшен до $1 000."
                 render(details)
@@ -587,7 +606,7 @@ class PaperTrading(private val context: Context) {
             }
         }
         box.addView(reset)
-        if (!prefs.contains("cash")) prefs.edit().putFloat("cash", 1000f).apply()
+        if (!prefs.contains("cash_usdt") && !prefs.contains("cash")) saveBalance(1000.0)
         render(details)
         showSellActions()
         return box
