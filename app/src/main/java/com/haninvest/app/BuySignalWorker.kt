@@ -30,14 +30,16 @@ class BuySignalWorker(
         return try {
             val paper = PaperTrading(applicationContext)
             if (paper.isTradingPaused()) return Result.success()
-            // Сначала обновляем открытые позиции по прямым котировкам обеих бирж,
+            // Сначала обновляем открытые позиции по прямым котировкам всех четырёх бирж,
             // чтобы обновление PAPER не зависело от наличия новых торговых сигналов.
             paper.refreshOpenPositionsFromExchanges()
 
-            // Каждый фоновый цикл независимо получает котировки Binance и Bybit.
+            // Каждый фоновый цикл независимо сканирует все четыре спотовые биржи.
             val urls = listOf(
                 "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?limit=30&universe_limit=100&min_volume=1000000&risk_pct=1&capital_usdt=1000",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000"
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000",
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=30&min_volume=1000000",
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/okx/scan?limit=30&min_volume=1000000"
             )
             val combinedAssets = org.json.JSONArray()
             val errors = mutableListOf<String>()
@@ -59,11 +61,18 @@ class BuySignalWorker(
                     }
                     val response = JSONObject(responseText)
                     val assets = response.optJSONArray("assets") ?: continue
+                    val btcAllowed = response.optJSONObject("btc_market_filter")
+                        ?.optBoolean("buy_allowed", false) == true
+                    val defaultExchange = when {
+                        url.contains("/bybit/") -> "Bybit Spot"
+                        url.contains("/coinbase/") -> "Coinbase Exchange"
+                        url.contains("/okx/") -> "OKX Spot"
+                        else -> "Binance Spot"
+                    }
                     for (i in 0 until assets.length()) {
                         val coin = assets.optJSONObject(i) ?: continue
-                        if (!coin.has("exchange")) {
-                            coin.put("exchange", if (url.contains("/bybit/")) "Bybit Spot" else "Binance Spot")
-                        }
+                        if (!coin.has("exchange")) coin.put("exchange", defaultExchange)
+                        coin.put("btc_buy_allowed", btcAllowed)
                         combinedAssets.put(coin)
                     }
                 } catch (e: Exception) {
@@ -71,15 +80,13 @@ class BuySignalWorker(
                 }
             }
             if (combinedAssets.length() == 0) {
-                throw IllegalStateException("Обе биржи недоступны: " + errors.joinToString("; "))
+                throw IllegalStateException("Все четыре биржи недоступны: " + errors.joinToString("; "))
             }
             val json = JSONObject().put("assets", combinedAssets)
-            // PAPER-счёт обрабатывает единый список Binance + Bybit.
+            // PAPER-счёт обрабатывает единый список четырёх бирж.
             paper.processScan(json)
             // После анализа ещё раз применяем прямые биржевые цены: они важнее снимка сканера.
             paper.refreshOpenPositionsFromExchanges()
-            val btc = json.optJSONObject("btc_market_filter")
-            val btcAllowsBuys = btc?.optBoolean("buy_allowed", false) == true
             val assets = json.optJSONArray("assets")
                 ?: return Result.retry()
 
@@ -95,7 +102,7 @@ class BuySignalWorker(
                     coin.optBoolean("trade_ready", false) &&
                     coin.optBoolean("volume_confirmed", false)
 
-                if (btcAllowsBuys && tradeableAndConfirmed &&
+                if (coin.optBoolean("btc_buy_allowed", false) && tradeableAndConfirmed &&
                     coin.optString("signal") == "BUY") {
                     currentBuySymbols.add(positionKey)
                 }
