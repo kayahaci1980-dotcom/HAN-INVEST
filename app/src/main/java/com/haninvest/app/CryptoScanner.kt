@@ -251,12 +251,9 @@ class CryptoScanner(private val context: Context) {
     private fun buyBlockReason(row: JSONObject): String {
         val score = row.optInt("score", 0)
         return when {
-            score < 83 -> "Оценка ниже порога 83"
-            !row.optBoolean("trade_ready", false) -> "Пара не подтверждена"
-            !row.optBoolean("volume_confirmed", false) -> "Недостаточный объём"
-            !row.optBoolean("btc_buy_allowed", false) -> "BTC не в восходящем тренде"
-            row.optString("signal") != "BUY" -> "Сигнал стратегии: " + row.optString("signal", "нет")
-            else -> "Фильтры пройдены; проверяются баланс, открытая позиция и блокировка после убытка"
+            score > 83 -> "Приоритетная покупка: остальные рыночные фильтры игнорируются; проверяются только корректность пары/цены, отсутствие уже открытой позиции и виртуальный баланс"
+            score <= 83 -> "Оценка должна быть выше 83"
+            else -> "Ожидание сигнала"
         }
     }
 
