@@ -336,7 +336,8 @@ class PaperTrading(private val context: Context) {
                 .put("fee", qty * price * paperFeeRate)
                 .put("score", score).put("time", now))
         }
-        prefs.edit().putFloat("cash", cash.toFloat()).putLong("last_scan", now).apply()
+        saveBalance(cash)
+        prefs.edit().putLong("last_scan", now).apply()
         saveArray("positions", remaining)
         saveArray("history", log)
         return "Сканирование обработано. Найдено активов: ${assets.length()}. Заблокировано после убытка 2%: ${blocked.size}; пропущено сейчас: ${skippedAfterLoss}."
