@@ -86,79 +86,102 @@ async def scan_coinbase(limit: int, min_volume: float):
                 "USDT", "USDC", "DAI", "EUR", "GBP"
             }
         ]
-        sem = asyncio.Semaphore(5)
+        sem = asyncio.Semaphore(8)
 
-        async def analyze(product):
+        async def get_candidate(product):
             async with sem:
-                product_id = product["id"]
                 try:
-                    ticker, candles = await asyncio.gather(
-                        fetch_json(client, f"https://api.exchange.coinbase.com/products/{product_id}/ticker"),
-                        fetch_json(client, f"https://api.exchange.coinbase.com/products/{product_id}/candles",
-                                   {"granularity": 3600, "limit": 60}),
+                    ticker = await fetch_json(
+                        client, f"https://api.exchange.coinbase.com/products/{product['id']}/ticker"
                     )
-                    rows = candles if isinstance(candles, list) else []
-                    data = indicators(rows, "Coinbase")
+                    price = float(ticker.get("price") or 0)
+                    base_volume = float(ticker.get("volume") or 0)
+                    quote_volume = price * base_volume
+                    if price <= 0 or quote_volume < min_volume:
+                        return None
+                    return product, ticker, quote_volume
+                except (httpx.HTTPError, ValueError, TypeError, KeyError):
+                    return None
+
+        # Rank the entire eligible product universe by live 24h quote turnover
+        # before spending candle-request budget on the most liquid candidates.
+        candidates = await asyncio.gather(*(get_candidate(p) for p in eligible))
+        ranked = sorted(
+            [item for item in candidates if item],
+            key=lambda item: item[2],
+            reverse=True,
+        )
+        selected = ranked[:max(limit * 3, 60)]
+
+        btc_state = "UNKNOWN"
+        try:
+            btc_rows = await fetch_json(
+                client,
+                "https://api.exchange.coinbase.com/products/BTC-USD/candles",
+                {"granularity": 3600},
+            )
+            btc = indicators(btc_rows if isinstance(btc_rows, list) else [], "Coinbase")
+            if btc:
+                btc_state = (
+                    "BULLISH" if btc["price"] > btc["ema20"] > btc["ema50"]
+                    else "BEARISH" if btc["price"] < btc["ema20"] < btc["ema50"]
+                    else "SIDEWAYS"
+                )
+        except (httpx.HTTPError, ValueError, TypeError, KeyError):
+            pass
+
+        async def analyze(item):
+            product, ticker, quote_volume = item
+            async with sem:
+                try:
+                    product_id = product["id"]
+                    candles = await fetch_json(
+                        client,
+                        f"https://api.exchange.coinbase.com/products/{product_id}/candles",
+                        {"granularity": 3600},
+                    )
+                    data = indicators(candles if isinstance(candles, list) else [], "Coinbase")
                     if not data:
                         return None
                     price = float(ticker.get("price") or data["price"])
-                    base_volume = float(ticker.get("volume") or 0)
-                    quote_volume = base_volume * price
-                    if quote_volume < min_volume:
-                        return None
                     data["price"] = price
                     scored = score_asset(data, quote_volume)
                     base, quote = product["base_currency"], product["quote_currency"]
                     symbol = base + quote
-                    btc_allowed = btc_state == "BULLISH"
+                    volume_confirmed = data["volume_ratio"] >= 1.2
                     confirmed = (
                         scored["score"] >= 83 and price > data["ema20"] > data["ema50"]
-                        and data["change24"] >= 1.0 and data["volume_ratio"] >= 1.2
+                        and data["change24"] >= 1.0 and volume_confirmed
                         and quote_volume >= min_volume
                     )
-                    stop = price - 2.0 * data["atr"]
-                    target = price + 4.0 * data["atr"]
+                    btc_allowed = btc_state == "BULLISH"
                     return {
                         "symbol": symbol, "name": base, "exchange": "Coinbase Exchange",
                         "source": "coinbase", "quote_currency": quote, "price": price,
                         "change_24h_pct": round(data["change24"], 2),
                         "quote_volume_24h": round(quote_volume, 2),
                         "trade_ready": True, "exchange_pair_verified": True,
-                        "volume_confirmed": data["volume_ratio"] >= 1.2,
+                        "volume_confirmed": volume_confirmed,
                         "btc_buy_allowed": btc_allowed,
                         "signal": "BUY" if confirmed and btc_allowed else "HOLD",
                         "early_signal": "EARLY BUY" if scored["score"] >= 75 and not (confirmed and btc_allowed) else None,
-                        "stop_loss": round(stop, 10), "take_profit": round(target, 10),
+                        "stop_loss": round(price - 1.5 * data["atr"], 10),
+                        "take_profit": round(price + 3.0 * data["atr"], 10),
                         **scored,
                     }
                 except (httpx.HTTPError, ValueError, TypeError, KeyError):
                     return None
 
-        btc_product = next((p for p in eligible if p.get("id") == "BTC-USD"), None)
-        btc_state = "UNKNOWN"
-        if btc_product:
-            try:
-                rows = await fetch_json(client, "https://api.exchange.coinbase.com/products/BTC-USD/candles",
-                                        {"granularity": 3600, "limit": 60})
-                btc = indicators(rows, "Coinbase")
-                if btc:
-                    btc_state = "BULLISH" if btc["price"] > btc["ema20"] > btc["ema50"] else "BEARISH"
-                    if btc_state != "BULLISH" and btc["price"] > btc["ema20"]:
-                        btc_state = "SIDEWAYS"
-            except (httpx.HTTPError, ValueError, TypeError):
-                pass
-        chosen = eligible[:max(limit * 3, 60)]
-        results = await asyncio.gather(*(analyze(p) for p in chosen))
-        assets = sorted([x for x in results if x], key=lambda x: x["score"], reverse=True)[:limit]
+        results = await asyncio.gather(*(analyze(item) for item in selected))
+        assets = sorted([item for item in results if item], key=lambda item: item["score"], reverse=True)[:limit]
         return {
             "source": "Coinbase Exchange public spot data", "exchange": "Coinbase Exchange",
             "scanned": len(assets), "btc_market_filter": {
                 "available": btc_state != "UNKNOWN", "buy_allowed": btc_state == "BULLISH",
                 "market_state": btc_state
             }, "updated_at": datetime.now(timezone.utc).isoformat(), "assets": assets,
-            "notice": "Только публичные спотовые рынки Coinbase. Сделки в приложении — PAPER, реальные ордера не отправляются."
+            "notice": "Только публичные спотовые рынки Coinbase. Индикаторы рассчитаны по закрытым часовым свечам; PAPER-сделки не отправляют реальные ордера."
         }
-
 
 async def scan_okx(limit: int, min_volume: float):
     async with httpx.AsyncClient(timeout=20, headers={"User-Agent": "HAN-INVEST/1.0"}) as client:
