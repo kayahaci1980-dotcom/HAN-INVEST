@@ -703,15 +703,15 @@ class PaperTrading(private val context: Context) {
 
         // Отдельный SHORT-сканер: открывает только виртуальные SHORT, LONG-логика не запускается.
         val shortScan = Button(context).apply {
-            text = "СКАНИРОВАТЬ SHORT — ДО 300 ПАР"
+            text = "СКАНИРОВАТЬ SHORT — ДО 100 ПАР"
             setTextColor(Color.WHITE)
-            setBackgroundColor(red)
+            setBackgroundColor(blue)
             setOnClickListener {
                 isEnabled = false
-                status.text = "Ищем медвежьи сигналы SHORT среди 300 пар Bybit Spot..."
+                status.text = "Ищем медвежьи сигналы SHORT среди 100 пар Bybit Spot..."
                 Thread {
                     try {
-                        val url = "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=300&min_volume=1000000"
+                        val url = "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=100&min_volume=1000000"
                         val conn = URL(url).openConnection() as HttpURLConnection
                         val body = try {
                             conn.connectTimeout = 20000
