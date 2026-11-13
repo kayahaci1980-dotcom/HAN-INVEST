@@ -255,10 +255,10 @@ class PaperTrading(private val context: Context) {
             val entry = p.optDouble("entry")
             val qty = p.optDouble("quantity")
             val stop = p.optDouble("stop")
-            val take = entry * 1.10
+            val take = p.optDouble("target", entry * 1.10)
             val reason = when {
                 !price.isNaN() && price <= stop -> "STOP LOSS"
-                !price.isNaN() && price >= take -> "TAKE PROFIT +10%"
+                !price.isNaN() && price >= take -> "TAKE PROFIT"
                 coin != null && score < 83 -> "Сигнал ниже 83"
                 else -> ""
             }
