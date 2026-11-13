@@ -40,7 +40,7 @@ class PaperTrading(private val context: Context) {
     private fun assetBlockKey(exchange: String, symbol: String): String =
         "Bybit:" + symbol.trim().uppercase(Locale.US)
 
-    private val lossBlockDurationMs = 8L * 60L * 60L * 1000L
+    private val lossBlockDurationMs = 6L * 60L * 60L * 1000L
 
     // Храним время окончания блокировки для каждой пары биржа:монета.
     private fun readLossBlocks(): JSONObject = try {
@@ -61,6 +61,23 @@ class PaperTrading(private val context: Context) {
         blocks.put(key, until)
         prefs.edit().putString("paper_loss_blocked_until", blocks.toString()).apply()
         return true
+    }
+
+    private fun blockAssetForCooldown(exchange: String, symbol: String) {
+        val blocks = readLossBlocks()
+        blocks.put(assetBlockKey(exchange, symbol), System.currentTimeMillis() + lossBlockDurationMs)
+        prefs.edit().putString("paper_loss_blocked_until", blocks.toString()).apply()
+    }
+
+    // Фиксируем максимальную чистую PAPER-прибыль. При возврате половины от пика закрываем позицию.
+    private fun shouldCloseAfterProfitGiveback(position: JSONObject, price: Double): Boolean {
+        val quantity = position.optDouble("quantity")
+        val cost = position.optDouble("cost", quantity * position.optDouble("entry"))
+        if (quantity <= 0.0 || price <= 0.0 || !price.isFinite()) return false
+        val currentProfit = quantity * price * (1.0 - paperFeeRate) - cost
+        val peakProfit = maxOf(position.optDouble("peak_profit_usdt", 0.0), currentProfit)
+        position.put("peak_profit_usdt", peakProfit)
+        return peakProfit > 0.0 && currentProfit <= peakProfit * 0.5
     }
 
     private fun blockedLossAssets(): Set<String> {
@@ -149,14 +166,20 @@ class PaperTrading(private val context: Context) {
             val quantity = position.optDouble("quantity")
             val stop = position.optDouble("stop")
             val target = position.optDouble("target", entry * 1.10)
+            val profitGiveback = shouldCloseAfterProfitGiveback(position, price)
             val reason = when {
                 isTradingPaused() -> ""
+                profitGiveback -> "ОТДАТЬ 50% МАКСИМАЛЬНОЙ ПРИБЫЛИ"
                 stop > 0.0 && price <= stop -> "STOP LOSS"
                 target > 0.0 && price >= target -> "TAKE PROFIT"
                 else -> ""
             }
             if (reason.isNotEmpty()) {
-                blockAssetAfterLoss(exchange, symbol, entry, price)
+                if (reason == "ОТДАТЬ 50% МАКСИМАЛЬНОЙ ПРИБЫЛИ") {
+                    blockAssetForCooldown(exchange, symbol)
+                } else {
+                    blockAssetAfterLoss(exchange, symbol, entry, price)
+                }
                 val proceeds = quantity * price * (1.0 - paperFeeRate)
                 cash += proceeds
                 val cost = position.optDouble("cost", quantity * entry)
@@ -199,14 +222,20 @@ class PaperTrading(private val context: Context) {
             val qty = p.optDouble("quantity")
             val stop = p.optDouble("stop")
             val take = p.optDouble("target", entry * 1.10)
+            val profitGiveback = !price.isNaN() && shouldCloseAfterProfitGiveback(p, price)
             val reason = when {
+                profitGiveback -> "ОТДАТЬ 50% МАКСИМАЛЬНОЙ ПРИБЫЛИ"
                 !price.isNaN() && price <= stop -> "STOP LOSS"
                 !price.isNaN() && price >= take -> "TAKE PROFIT"
                 coin != null && score < 83 -> "Сигнал ниже 83"
                 else -> ""
             }
             if (reason.isNotEmpty() && !price.isNaN()) {
-                blockAssetAfterLoss(exchange, symbol, entry, price)
+                if (reason == "ОТДАТЬ 50% МАКСИМАЛЬНОЙ ПРИБЫЛИ") {
+                    blockAssetForCooldown(exchange, symbol)
+                } else {
+                    blockAssetAfterLoss(exchange, symbol, entry, price)
+                }
                 val proceeds = qty * price * (1.0 - paperFeeRate)
                 cash += proceeds
                 val cost = p.optDouble("cost", qty * entry)
@@ -251,6 +280,7 @@ class PaperTrading(private val context: Context) {
                 symbol.isBlank() || price <= 0.0 || !price.isFinite() ->
                     "Нет корректной пары или цены"
                 positionKey in held -> "Позиция уже открыта"
+                assetBlockKey(exchange, symbol) in blocked -> "Монета заблокирована на 6 часов после закрытия"
                 score <= 83 -> "Оценка должна быть выше 83"
                 else -> ""
             }
