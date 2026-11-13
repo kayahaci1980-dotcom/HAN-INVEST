@@ -597,7 +597,8 @@ class PaperTrading(private val context: Context) {
         val reset = Button(context).apply {
             text = "СБРОСИТЬ СЧЁТ ДО \\$1 000"
             setOnClickListener {
-                prefs.edit().putFloat("cash", 1000f).putString("positions", "[]")
+                saveBalance(1000.0)
+                prefs.edit().putString("positions", "[]")
                     .putString("history", "[]").putLong("last_scan", 0L).apply()
                 status.text = "Виртуальный счёт сброшен до $1 000."
                 render(details)
@@ -605,7 +606,7 @@ class PaperTrading(private val context: Context) {
             }
         }
         box.addView(reset)
-        if (!prefs.contains("cash")) prefs.edit().putFloat("cash", 1000f).apply()
+        if (!prefs.contains("cash_usdt") && !prefs.contains("cash")) saveBalance(1000.0)
         render(details)
         showSellActions()
         return box
