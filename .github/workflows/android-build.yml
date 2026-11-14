@@ -37,6 +37,9 @@ jobs:
 
       - name: Backend import and database smoke test
         run: PYTHONPATH=server python -c "from app.main import app; from app.paper_trading import _init_db; _init_db(); print('HAN INVEST backend ready', len(app.routes))"
+      - name: Install pytest
+        run: python -m pip install pytest
+
       - name: Run PAPER trading tests
         run: PYTHONPATH=server pytest -q server/tests/test_paper_trading_rules.py
 
