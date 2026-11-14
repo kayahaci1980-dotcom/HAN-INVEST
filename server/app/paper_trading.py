@@ -186,27 +186,79 @@ def _account_snapshot() -> dict[str, Any]:
             "SELECT * FROM paper_trades ORDER BY id DESC LIMIT 30"
         ).fetchall()
 
-    holdings = sum(float(p["quantity"]) * float(p["last_price"]) for p in positions)
-    holdings += sum(float(p["margin_usdt"]) + float(p["quantity"]) *
-                    (float(p["entry_price"]) - float(p["last_price"])) for p in shorts)
     cash = float(account["cash"])
+    fee_rate = float(_FEE_RATE)
+
+    # Closed-trade P/L is aggregated over the full ledger, not only the
+    # latest 30 rows returned to the UI.
+    with _connect() as db:
+        realized_rows = db.execute(
+            "SELECT pnl_usdt FROM paper_trades WHERE pnl_usdt IS NOT NULL"
+        ).fetchall()
+
+    realized_profit = sum(max(0.0, float(row["pnl_usdt"])) for row in realized_rows)
+    realized_loss = sum(max(0.0, -float(row["pnl_usdt"])) for row in realized_rows)
+
+    long_positions = []
+    short_positions = []
+    holdings = 0.0
+    unrealized_profit = 0.0
+    unrealized_loss = 0.0
+
+    for p in positions:
+        quantity = float(p["quantity"])
+        last_price = float(p["last_price"])
+        cost = float(p["cost_usdt"])
+        market_value = quantity * last_price
+        unrealized = market_value - cost
+        holdings += market_value
+        unrealized_profit += max(0.0, unrealized)
+        unrealized_loss += max(0.0, -unrealized)
+        long_positions.append(dict(p, side="LONG", market_value_usdt=market_value,
+                                   unrealized_pnl_usdt=unrealized))
+
+    for p in shorts:
+        quantity = float(p["quantity"])
+        entry = float(p["entry_price"])
+        last_price = float(p["last_price"])
+        margin = float(p["margin_usdt"])
+        entry_fee = float(p["entry_fee_usdt"])
+        exit_fee_estimate = quantity * last_price * fee_rate
+        unrealized = quantity * (entry - last_price) - entry_fee - exit_fee_estimate
+        # Cash was reduced by margin + entry fee at entry. Add back margin,
+        # mark-to-market P/L and estimated exit fee to obtain equity.
+        market_value = margin + quantity * (entry - last_price) - exit_fee_estimate
+        holdings += market_value
+        unrealized_profit += max(0.0, unrealized)
+        unrealized_loss += max(0.0, -unrealized)
+        short_positions.append(dict(
+            p, side="SHORT",
+            cost_usdt=margin + entry_fee,
+            market_value_usdt=market_value,
+            estimated_exit_fee_usdt=exit_fee_estimate,
+            unrealized_pnl_usdt=unrealized,
+        ))
+
+    profit = realized_profit + unrealized_profit
+    loss = realized_loss + unrealized_loss
+    equity = cash + holdings
+    net_pnl = profit - loss
+
     return {
         "mode": "PAPER",
         "enabled": bool(account["enabled"]),
         "initial_cash_usdt": float(account["initial_cash"]),
         "cash_usdt": cash,
         "holdings_value_usdt": holdings,
-        "equity_usdt": cash + holdings,
-        "open_positions": (
-            [dict(p, side="LONG",
-                  unrealized_pnl_usdt=float(p["quantity"]) * float(p["last_price"]) -
-                  float(p["cost_usdt"])) for p in positions]
-            + [dict(p, side="SHORT",
-                    cost_usdt=float(p["margin_usdt"]) + float(p["entry_fee_usdt"]),
-                    unrealized_pnl_usdt=float(p["quantity"]) *
-                    (float(p["entry_price"]) - float(p["last_price"])))
-               for p in shorts]
-        ),
+        "equity_usdt": equity,
+        "profit_usdt": profit,
+        "loss_usdt": loss,
+        "net_pnl_usdt": net_pnl,
+        "realized_profit_usdt": realized_profit,
+        "realized_loss_usdt": realized_loss,
+        "unrealized_profit_usdt": unrealized_profit,
+        "unrealized_loss_usdt": unrealized_loss,
+        "open_positions": long_positions + short_positions,
         "history": [dict(t) for t in trades],
         "last_scan_at": account["last_scan_at"],
         "last_error": account["last_error"],
