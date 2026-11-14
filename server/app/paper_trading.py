@@ -97,17 +97,54 @@ def _account_snapshot() -> dict[str, Any]:
         trades = db.execute(
             "SELECT * FROM paper_trades ORDER BY id DESC LIMIT 30"
         ).fetchall()
+        # Use the complete ledger for totals; history returned to the app stays capped at 30.
+        realized_rows = db.execute(
+            "SELECT pnl_usdt FROM paper_trades WHERE pnl_usdt IS NOT NULL"
+        ).fetchall()
 
-    holdings = sum(float(p["quantity"]) * float(p["last_price"]) for p in positions)
     cash = float(account["cash"])
+    holdings = 0.0
+    realized_profit = sum(max(0.0, float(row["pnl_usdt"])) for row in realized_rows)
+    realized_loss = sum(max(0.0, -float(row["pnl_usdt"])) for row in realized_rows)
+    unrealized_profit = 0.0
+    unrealized_loss = 0.0
+    open_position_items = []
+
+    for position in positions:
+        quantity = float(position["quantity"])
+        last_price = float(position["last_price"])
+        cost = float(position["cost_usdt"])
+        market_value = quantity * last_price
+        unrealized = market_value - cost
+        holdings += market_value
+        unrealized_profit += max(0.0, unrealized)
+        unrealized_loss += max(0.0, -unrealized)
+        open_position_items.append(dict(
+            position, side="LONG",
+            market_value_usdt=market_value,
+            unrealized_pnl_usdt=unrealized,
+        ))
+
+    profit = realized_profit + unrealized_profit
+    loss = realized_loss + unrealized_loss
+    equity = cash + holdings
+    net_pnl = profit - loss
+
     return {
         "mode": "PAPER",
         "enabled": bool(account["enabled"]),
         "initial_cash_usdt": float(account["initial_cash"]),
         "cash_usdt": cash,
         "holdings_value_usdt": holdings,
-        "equity_usdt": cash + holdings,
-        "open_positions": [dict(p) for p in positions],
+        "equity_usdt": equity,
+        "profit_usdt": profit,
+        "loss_usdt": loss,
+        "net_pnl_usdt": net_pnl,
+        "realized_profit_usdt": realized_profit,
+        "realized_loss_usdt": realized_loss,
+        "unrealized_profit_usdt": unrealized_profit,
+        "unrealized_loss_usdt": unrealized_loss,
+        "open_positions": open_position_items,
         "history": [dict(t) for t in trades],
         "last_scan_at": account["last_scan_at"],
         "last_error": account["last_error"],
