@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os
 import sqlite3
+
+import httpx
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -554,4 +556,49 @@ async def disable_paper_trading():
             "UPDATE paper_account SET enabled=FALSE, updated_at=? WHERE id=1",
             (_now(),),
         )
+    return _account_snapshot()
+
+
+@router.post("/sell")
+async def sell_paper_position(payload: dict[str, Any]):
+    """Manually close one Bybit virtual position at a fresh public spot price."""
+    exchange = str(payload.get("exchange") or "").strip()
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    if exchange.lower() not in {"bybit", "bybit spot"}:
+        raise HTTPException(status_code=400, detail="Разрешена ручная продажа только позиции Bybit.")
+    if not symbol.endswith("USDT") or not symbol.replace("USDT", "").isalnum():
+        raise HTTPException(status_code=400, detail="Некорректный Spot USDT символ.")
+
+    async with _cycle_lock:
+        with _connect() as db:
+            position = db.execute(
+                "SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
+                ("Bybit", symbol),
+            ).fetchone()
+            if not position:
+                raise HTTPException(status_code=404, detail="Открытая позиция не найдена.")
+
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    response = await client.get(
+                        "https://api.bybit.com/v5/market/tickers",
+                        params={"category": "spot", "symbol": symbol},
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                if data.get("retCode") != 0:
+                    raise ValueError("Bybit ticker unavailable")
+                rows = data.get("result", {}).get("list", [])
+                if not rows:
+                    raise ValueError("Bybit ticker unavailable")
+                price = float(rows[0].get("lastPrice") or 0)
+                if not math.isfinite(price) or price <= 0:
+                    raise ValueError("Invalid Bybit price")
+            except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Не удалось получить актуальную цену Bybit. Позиция оставлена открытой.",
+                ) from exc
+
+            _close_position(db, position, price, "MANUAL_SELL")
     return _account_snapshot()
