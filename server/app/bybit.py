@@ -198,7 +198,7 @@ async def analyze(
 
 @router.get("/api/v1/crypto/bybit/scan")
 async def scan_bybit(
-    limit: int = Query(30, ge=1, le=100),
+    limit: int = Query(30, ge=1, le=500),
     min_volume: float = Query(1_000_000, ge=0),
     capital_usdt: float | None = Query(None, gt=0),
     risk_pct: float = Query(1.0, ge=0.1, le=5.0),
