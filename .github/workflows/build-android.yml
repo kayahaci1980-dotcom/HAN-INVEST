@@ -7,6 +7,7 @@ on:
     branches:
       - main
       - auto-paper-rules-coinbase-okx
+      - ui-redesign-paper-controls
 
 jobs:
   build:
