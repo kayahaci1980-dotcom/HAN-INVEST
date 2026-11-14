@@ -295,7 +295,7 @@ class PaperTrading(private val context: Context) {
                 profitGiveback -> "ЗАЩИТА ПРИБЫЛИ: ОТДАТЬ 50% ОТ МАКСИМУМА"
                 hitStop -> "STOP LOSS"
                 hitTarget -> "TAKE PROFIT"
-                coin != null && score < 75 -> "Сигнал ниже 75"
+                coin != null && score < 83 -> "Сигнал ниже 83"
                 else -> ""
             }
             if (reason.isNotEmpty() && !price.isNaN()) {
@@ -345,12 +345,12 @@ class PaperTrading(private val context: Context) {
             val side = when (forcedDirection?.uppercase(Locale.US)) {
                 "SHORT" -> "SHORT"
                 "LONG" -> "LONG"
-                else -> if (shortScore >= 75 && (shortScore > longScore || declaredSide.contains("SHORT"))) "SHORT" else "LONG"
+                else -> if (shortScore >= 83 && (shortScore > longScore || declaredSide.contains("SHORT"))) "SHORT" else "LONG"
             }
             val score = if (side == "SHORT") shortScore else longScore
             val positionKey = "$exchange:$symbol"
 
-            // При оценке 75 баллов и выше оценка становится главным сигналом:
+            // При оценке 83 балла и выше оценка становится главным сигналом:
             // объём, BTC-тренд и trade_ready не блокируют PAPER-вход; активная блокировка монеты учитывается отдельно.
             // Оставляем только технически обязательные условия исполнения: корректная пара/цена,
             // отсутствие уже открытой позиции по этой паре и наличие виртуального USDT.
@@ -363,7 +363,7 @@ class PaperTrading(private val context: Context) {
                 (if (side == "SHORT") openShortCount >= 10 else openLongCount >= 10) ->
                     if (side == "SHORT") "Достигнут лимит: максимум 10 открытых SHORT-позиций"
                     else "Достигнут лимит: максимум 10 открытых LONG-позиций"
-                score < 75 -> if (side == "SHORT") "SHORT-оценка должна быть не ниже 75" else "Оценка должна быть не ниже 75"
+                score < 83 -> if (side == "SHORT") "SHORT-оценка должна быть не ниже 83" else "Оценка должна быть не ниже 83"
                 else -> ""
             }
             if (reason.isNotEmpty()) {
