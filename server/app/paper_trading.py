@@ -31,6 +31,9 @@ _SCAN_INTERVAL_SECONDS = max(60, int(os.getenv("PAPER_SCAN_INTERVAL_SECONDS", "3
 _worker_task: asyncio.Task | None = None
 _scan_requested = asyncio.Event()
 _cycle_lock = asyncio.Lock()
+_last_market_breadth: dict[str, Any] = {
+    "available": False, "status": "NOT_SCANNED", "allow_new_entries": False
+}
 
 
 class _PostgresCompatConnection:
@@ -154,6 +157,7 @@ def _account_snapshot() -> dict[str, Any]:
         "history": [dict(t) for t in trades],
         "last_scan_at": account["last_scan_at"],
         "last_error": account["last_error"],
+        "market_breadth": dict(_last_market_breadth),
         "storage": "supabase_postgres" if _DATABASE_URL else ("persistent_disk" if _STORAGE_PERSISTENT else "temporary_container_storage"),
         "storage_persistent_configured": _STORAGE_PERSISTENT,
         "scan_interval_seconds": _SCAN_INTERVAL_SECONDS,
@@ -344,6 +348,7 @@ def _apply_market_data(
 
 
 async def _scan_cycle() -> None:
+    global _last_market_breadth
     async with _cycle_lock:
         try:
             # Each exchange is scanned independently. All requests are public market data only.
@@ -363,9 +368,15 @@ async def _scan_cycle() -> None:
             errors = []
             if isinstance(breadth_result, BaseException) or not isinstance(breadth_result, dict):
                 allow_new_entries = False
+                _last_market_breadth = {
+                    "available": False, "status": "UNAVAILABLE",
+                    "allow_new_entries": False,
+                    "reason": "Нет достоверных глобальных данных; новые входы заблокированы.",
+                }
                 errors.append("Market breadth: unavailable; new entries blocked")
                 logger.warning("Market breadth unavailable; fail-closed entry filter active")
             else:
+                _last_market_breadth = dict(breadth_result)
                 allow_new_entries = breadth_result.get("allow_new_entries") is True
                 logger.info(
                     "Market breadth %s: rising=%s falling=%s total=%s; new entries=%s",
