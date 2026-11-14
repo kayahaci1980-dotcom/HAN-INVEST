@@ -1,5 +1,6 @@
 import asyncio
 import math
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -8,6 +9,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 BASE = "https://api.bybit.com"
 CACHE_TTL = 45
 _NAME_CACHE_TTL = 21600
@@ -192,7 +194,8 @@ async def analyze(
             "trade_ready": pair_verified, "pair_status": instrument.get("status"),
             "quote_currency": "USDT",
         }
-    except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError, ZeroDivisionError):
+    except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError, ZeroDivisionError) as exc:
+        logger.warning("Bybit analysis skipped for %s: %s", symbol, type(exc).__name__)
         return None
 
 
@@ -261,6 +264,14 @@ async def scan_bybit(
             payload = {
                 "source": "Bybit public market data", "exchange": "Bybit Spot",
                 "scanned": len(assets), "eligible_pairs": len(instruments),
+                "diagnostics": {
+                    "exchange_pairs": len(instruments),
+                    "volume_qualified_candidates": len(tickers),
+                    "analysis_attempted": len(selected),
+                    "analysis_succeeded": len(assets),
+                    "analysis_skipped": len(selected) - len(assets),
+                    "skip_reason": "Недостаточно свечей, ошибка API или некорректные данные; детали в логах сервера.",
+                },
                 "btc_market_filter": btc_info, "updated_at": datetime.now(timezone.utc).isoformat(),
                 "assets": assets, "limit": limit,
                 "cache_key": (limit, min_volume, capital_usdt, risk_pct, fee_rate),
