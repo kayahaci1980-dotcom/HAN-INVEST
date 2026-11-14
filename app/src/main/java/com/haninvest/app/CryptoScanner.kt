@@ -402,8 +402,19 @@ class CryptoScanner(private val context: Context) {
                 if (remoteHistory.length() == 0) content.addView(label("История серверных сделок пока пуста или ещё загружается.", 13f, muted))
                 for (i in remoteHistory.length() - 1 downTo maxOf(0, remoteHistory.length() - 100)) {
                     val trade = remoteHistory.optJSONObject(i) ?: continue
-                    content.addView(label(trade.optString("side") + " • " + trade.optString("symbol") + " • " + trade.optString("exchange"), 14f, dark, true))
-                    content.addView(label("Цена: " + formatNumber(trade.optDouble("price"), 8) + " • Результат: " + formatNumber(trade.optDouble("pnl_usdt"), 2) + " USDT", 12f, muted))
+                    val tradeSide = trade.optString("side")
+                    val sideLabel = when (tradeSide) {
+                        "SHORT_OPEN" -> "ОТКРЫТИЕ SHORT"
+                        "SHORT_COVER" -> "ЗАКРЫТИЕ SHORT"
+                        "BUY" -> "ОТКРЫТИЕ LONG"
+                        "SELL" -> "ЗАКРЫТИЕ LONG"
+                        else -> tradeSide
+                    }
+                    content.addView(label(sideLabel + " • " + trade.optString("symbol") + " • " + trade.optString("exchange"), 14f, dark, true))
+                    val pnlText = if (trade.isNull("pnl_usdt")) "Открыта позиция" else
+                        "Результат: " + (if (trade.optDouble("pnl_usdt") >= 0) "+" else "") +
+                            formatNumber(trade.optDouble("pnl_usdt"), 3) + " USDT"
+                    content.addView(label("Цена: " + formatNumber(trade.optDouble("price"), 8) + " • " + pnlText, 12f, muted))
                 }
                 val reloadHistory = Button(context).apply { text = "Обновить историю"; buttonStyle(this, blue); setOnClickListener { refreshPaperServer() } }
                 content.addView(reloadHistory)
@@ -448,17 +459,34 @@ class CryptoScanner(private val context: Context) {
                         val p = remotePositions.optJSONObject(i) ?: continue
                         val symbol = p.optString("symbol")
                         val exchange = p.optString("exchange")
-                        val side = p.optString("side", "LONG").uppercase()
+                        val side = p.optString("direction", p.optString("side", "LONG")).uppercase()
                         content.addView(label(
                             symbol + " • " + side + " • " + exchange +
                                 " • Вход " + formatNumber(p.optDouble("entry_price"), 8) +
                                 " • Сейчас " + formatNumber(p.optDouble("last_price"), 8),
                             12f, dark, true
                         ))
+                        val quantity = p.optDouble("quantity")
+                        val entryPrice = p.optDouble("entry_price")
+                        val lastPrice = p.optDouble("last_price")
+                        val cost = p.optDouble("cost_usdt")
+                        val feeRate = remote.optDouble("fee_rate_per_side", 0.001)
+                        val estimatedPnl = if (side == "SHORT") {
+                            (entryPrice - lastPrice) * quantity -
+                                (cost - entryPrice * quantity) -
+                                (lastPrice * quantity * feeRate)
+                        } else {
+                            lastPrice * quantity * (1.0 - feeRate) - cost
+                        }
                         content.addView(label(
-                            "Количество: " + formatNumber(p.optDouble("quantity"), 8) +
-                                " • Стоимость: " + formatNumber(p.optDouble("quantity") * p.optDouble("last_price"), 2) + " USDT",
+                            "Количество: " + formatNumber(quantity, 8) +
+                                " • Вход: " + formatNumber(entryPrice * quantity, 2) + " USDT",
                             11f, muted
+                        ))
+                        content.addView(label(
+                            "Результат сейчас: " + (if (estimatedPnl >= 0) "+" else "") +
+                                formatNumber(estimatedPnl, 3) + " USDT (оценка до закрытия)",
+                            12f, if (estimatedPnl >= 0) Color.rgb(20, 190, 115) else Color.rgb(235, 85, 85), true
                         ))
                         val manualSell = Button(context).apply {
                             text = if (side == "SHORT") "Закрыть виртуальный SHORT" else "Продать виртуальную LONG"
