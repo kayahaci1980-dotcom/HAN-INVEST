@@ -314,8 +314,8 @@ def _apply_market_data(
                     and _open_position(db, exchange, asset, "AUTO_REBUY_AFTER_10_PERCENT")
                 ):
                     logger.info("Paper re-bought %s on %s after +10%%", position["symbol"], exchange)
-            elif score < 83:
-                _close_position(db, position, price, "SCORE_BELOW_83")
+            elif score <= 83:
+                _close_position(db, position, price, "SCORE_AT_OR_BELOW_83")
             elif change_pct <= -2.0:
                 _close_position(db, position, price, "DRAWDOWN_2_PERCENT")
 
