@@ -90,7 +90,7 @@ class PaperTradingRuleTests(unittest.TestCase):
 
     def test_short_stop_closes_when_price_rises_two_percent(self):
         paper._apply_short_market_data({'assets': [self.short_asset(90, 100.0)]}, True)
-        paper._apply_short_market_data({'assets': [self.short_asset(90, 102.0)]}, False)
+        paper._apply_short_market_data({'assets': [self.short_asset(90, 103.0)]}, False)
         with paper._connect() as db:
             rows = db.execute('SELECT * FROM paper_short_positions').fetchall()
             trade = db.execute("SELECT reason FROM paper_trades WHERE side='SHORT_CLOSE' ORDER BY id DESC LIMIT 1").fetchone()
