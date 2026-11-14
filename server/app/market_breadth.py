@@ -45,18 +45,21 @@ def summarize_market_breadth(rows: list[dict[str, Any]], *, full_catalogue: bool
     falling = sum(1 for _, change in by_id.values() if change < 0)
     unchanged = total - rising - falling
 
+    allow_new_longs = total > 0 and rising > total / 2
+    allow_new_shorts = total > 0 and falling > total / 2
     if total == 0:
-        status, allow_new_entries = "UNAVAILABLE", False
+        status = "UNAVAILABLE"
         reason = "Нет достоверных данных по изменению цен за 24 часа."
-    elif rising > total / 2:
-        status, allow_new_entries = "ALLOW_NEW_BUYS", True
+    elif allow_new_longs:
+        status = "ALLOW_NEW_LONGS"
         reason = "Растёт больше половины уникальных криптовалют рынка."
-    elif falling > total / 2:
-        status, allow_new_entries = "BLOCK_NEW_BUYS", False
+    elif allow_new_shorts:
+        status = "ALLOW_NEW_SHORTS"
         reason = "Падает больше половины уникальных криптовалют рынка."
     else:
-        status, allow_new_entries = "WAIT", False
+        status = "WAIT"
         reason = "Ни растущие, ни падающие монеты не составляют больше половины рынка."
+    allow_new_entries = allow_new_longs
 
     return {
         "available": total > 0,
@@ -82,6 +85,8 @@ def summarize_market_breadth(rows: list[dict[str, Any]], *, full_catalogue: bool
         "unchanged_pct": round(unchanged / total * 100, 2) if total else 0.0,
         "status": status,
         "allow_new_entries": allow_new_entries,
+        "allow_new_longs": allow_new_longs,
+        "allow_new_shorts": allow_new_shorts,
         "reason": reason,
     }
 
