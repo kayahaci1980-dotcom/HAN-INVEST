@@ -109,7 +109,7 @@ class CryptoScanner(private val context: Context) {
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            background = rounded(Color.WHITE)
+            background = rounded(Color.rgb(17, 25, 52))
         }
         val scroll = ScrollView(context).apply {
             isFillViewport = true
@@ -204,7 +204,7 @@ class CryptoScanner(private val context: Context) {
                 setOnClickListener {
                     selectedTab = key
                     render()
-                    if (key == "PAPER") refreshPaperServer()
+                    if (key == "PAPER" || key == "HISTORY") refreshPaperServer()
                 }
             }
             tabs.addView(b)
@@ -314,24 +314,32 @@ class CryptoScanner(private val context: Context) {
 
         render = {
             tabs.removeAllViews()
-            addTab("Главная · TOP 3", "HOME", blue)
-            addTab("Binance", "BINANCE", blue)
-            addTab("Bybit", "BYBIT", orange)
-            addTab("Coinbase", "COINBASE", blue)
-            addTab("OKX", "OKX", purple)
-            addTab("Вирт. счёт", "PAPER", Color.rgb(20, 145, 90))
+            addTab("Главная", "HOME", purple)
+            addTab("Рынок LIVE", "MARKET", blue)
+            addTab("Анализ", "ANALYSIS", blue)
+            addTab("PAPER", "PAPER", Color.rgb(20, 145, 90))
+            addTab("История", "HISTORY", purple)
             content.removeAllViews()
             content.addView(label(
                 when (selectedTab) {
-                    "BINANCE" -> "🟡 BINANCE SPOT — отдельные данные биржи"
-                    "BYBIT" -> "🟠 BYBIT SPOT — отдельные данные биржи"
-                    "COINBASE" -> "🔵 COINBASE EXCHANGE — отдельные данные биржи"
-                    "OKX" -> "⚫ OKX SPOT — отдельные данные биржи"
-                    "PAPER" -> "ВИРТУАЛЬНЫЙ СЧЁТ — PAPER TRADING"
-                    else -> "ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА"
+                    "MARKET" -> "РЫНОК LIVE — BINANCE • BYBIT • COINBASE • OKX"
+                    "ANALYSIS" -> "АНАЛИЗ — ТЕХНИЧЕСКИЕ ПОКАЗАТЕЛИ"
+                    "PAPER" -> "PAPER TRADING — ВИРТУАЛЬНЫЙ СЧЁТ"
+                    "HISTORY" -> "ИСТОРИЯ СДЕЛОК"
+                    else -> "HAN INVEST — ГЛАВНАЯ"
                 }, 17f, dark, true
             ))
-            if (selectedTab == "PAPER") {
+            if (selectedTab == "HISTORY") {
+                val remoteHistory = serverPaperState?.optJSONArray("history") ?: JSONArray()
+                if (remoteHistory.length() == 0) content.addView(label("История серверных сделок пока пуста или ещё загружается.", 13f, muted))
+                for (i in remoteHistory.length() - 1 downTo maxOf(0, remoteHistory.length() - 100)) {
+                    val trade = remoteHistory.optJSONObject(i) ?: continue
+                    content.addView(label(trade.optString("side") + " • " + trade.optString("symbol") + " • " + trade.optString("exchange"), 14f, dark, true))
+                    content.addView(label("Цена: " + formatNumber(trade.optDouble("price"), 8) + " • Результат: " + formatNumber(trade.optDouble("pnl_usdt"), 2) + " USDT", 12f, muted))
+                }
+                val reloadHistory = Button(context).apply { text = "Обновить историю"; buttonStyle(this, blue); setOnClickListener { refreshPaperServer() } }
+                content.addView(reloadHistory)
+            } else if (selectedTab == "PAPER") {
                 content.addView(label("ПРАВИЛА АВТОМАТИЧЕСКОЙ ТОРГОВЛИ", 13f, dark, true))
                 content.addView(label(
                     "Покупка: оценка 83+ без ожидания BUY.\\n" +
@@ -517,7 +525,7 @@ class CryptoScanner(private val context: Context) {
                 content.addView(label("Ожидаем ответы четырёх бирж.\n${status.text}", 14f, muted))
             } else {
             val maxRisk = capital * risk / 100.0
-            if (selectedTab == "HOME") {
+            if (selectedTab == "HOME" || selectedTab == "MARKET" || selectedTab == "ANALYSIS") {
                 marketContext?.let { context ->
                     val market = context.optJSONObject("market")
                     if (market != null && market.optBoolean("available")) {
@@ -564,12 +572,13 @@ class CryptoScanner(private val context: Context) {
                 if (y.error == null) y.assets.forEach { combined.add(it to y) }
                 if (c.error == null) c.assets.forEach { combined.add(it to c) }
                 if (o.error == null) o.assets.forEach { combined.add(it to o) }
-                val top = combined.sortedWith(
+                val ranked = combined.sortedWith(
                     compareByDescending<Pair<JSONObject, ExchangeResult>> { it.first.optInt("score", 0) }
                         .thenByDescending { it.first.optDouble("volume_ratio", 0.0) }
-                ).take(3)
-                if (top.isEmpty()) content.addView(label("Нет доступных результатов. Проверьте соединение.", 14f, muted))
-                top.forEach { (coin, exchange) -> coinCard(coin, exchange.exchange, exchange, maxRisk) }
+                )
+                val shown = when (selectedTab) { "HOME" -> ranked.take(3); "ANALYSIS" -> ranked.take(30); else -> ranked }
+                if (shown.isEmpty()) content.addView(label("Нет доступных результатов. Проверьте соединение.", 14f, muted))
+                shown.forEach { (coin, exchange) -> coinCard(coin, exchange.exchange, exchange, maxRisk) }
                 content.addView(label(
                     "Binance: ${b.assets.size} • Bybit: ${y.assets.size} • Coinbase: ${c.assets.size} • OKX: ${o.assets.size}",
                     12f, muted
