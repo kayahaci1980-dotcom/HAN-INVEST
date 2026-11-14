@@ -662,7 +662,7 @@ class CryptoScanner(private val context: Context) {
                     content.addView(label("● РЫНОК LIVE", 17f, Color.rgb(20, 220, 110), true))
                     content.addView(label("ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА", 16f, dark, true))
                 }
-                if (selectedTab == "ANALYSIS") {
+                if (selectedTab == "MARKET") {
                     val totalScanned = listOf(b, y, c, o).filter { it.error == null }.sumOf { it.scanned }
                     val allScannedAssets = combined.map { it.first }
                     val gainers = allScannedAssets.count { moveValue(it) > 0.0 }
@@ -686,9 +686,6 @@ class CryptoScanner(private val context: Context) {
                     }
                     content.addView(breadth)
                     content.addView(label("Автоматическое обновление каждые 60 секунд", 11f, muted))
-                    content.addView(label("АНАЛИЗ РЫНКА • ТЕХНИЧЕСКИЕ ПОКАЗАТЕЛИ", 14f, dark, true))
-                }
-                if (selectedTab == "MARKET") {
                     val exchangeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
                     listOf("ALL" to "Все", "Binance" to "Binance", "Bybit" to "Bybit",
                         "Coinbase Exchange" to "Coinbase", "OKX" to "OKX").forEach { (key, title) ->
