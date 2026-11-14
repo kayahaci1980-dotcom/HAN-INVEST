@@ -154,14 +154,53 @@ class LiveMarket(private val context: Context) {
 
     fun createView(): View {
         val root = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(TextView(context).apply {
+
+        // Компактная строка заголовка: LIVE свёрнут по умолчанию.
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(8), dp(8), dp(8))
+            background = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = dp(14).toFloat()
+                setStroke(dp(1), 0xFFE4E9F2.toInt())
+            }
+        }
+        val heading = TextView(context).apply {
             text = "РЫНОК LIVE"
-            textSize = 20f; setTextColor(dark); setTypeface(null, Typeface.BOLD)
-        })
-        root.addView(TextView(context).apply {
+            textSize = 15f
+            setTextColor(dark)
+            setTypeface(null, Typeface.BOLD)
+        }
+        header.addView(heading, LinearLayout.LayoutParams(0, -2, 1f))
+
+        val toggle = Button(context).apply {
+            text = "⌄"
+            textSize = 20f
+            isAllCaps = false
+            setPadding(0, 0, 0, 0)
+            setTextColor(blue)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0xFFF0F4FF.toInt())
+                setStroke(dp(1), 0xFFDCE5FF.toInt())
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+        }
+        header.addView(toggle)
+        root.addView(header)
+
+        val content = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        content.addView(TextView(context).apply {
             text = "Движение криптовалют на Binance, Bybit, OKX и Coinbase"
-            textSize = 13f; setTextColor(muted)
+            textSize = 13f
+            setTextColor(muted)
+            setPadding(dp(4), dp(8), dp(4), 0)
         })
+
         val filters = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -170,21 +209,39 @@ class LiveMarket(private val context: Context) {
         val specs = listOf("ALL" to "Все", "UP" to "Рост", "DOWN" to "Падение")
         for ((key, title) in specs) {
             val b = Button(context).apply {
-                text = title; isAllCaps = false; textSize = 12f
+                text = title
+                isAllCaps = false
+                textSize = 12f
                 setPadding(0, 0, 0, 0)
                 layoutParams = LinearLayout.LayoutParams(dp(68), dp(68)).apply {
-                    marginStart = dp(8); marginEnd = dp(8)
+                    marginStart = dp(8)
+                    marginEnd = dp(8)
                 }
                 setOnClickListener { select(key) }
             }
             buttons[key] = b
             filters.addView(b)
         }
-        root.addView(filters)
-        updated = TextView(context).apply { textSize = 12f; setTextColor(muted); setPadding(0, 0, 0, dp(8)) }
-        root.addView(updated)
+        content.addView(filters)
+
+        updated = TextView(context).apply {
+            textSize = 12f
+            setTextColor(muted)
+            setPadding(dp(4), 0, dp(4), dp(8))
+        }
+        content.addView(updated)
         list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(list)
+        content.addView(list)
+        root.addView(content)
+
+        var expanded = false
+        toggle.setOnClickListener {
+            expanded = !expanded
+            content.visibility = if (expanded) View.VISIBLE else View.GONE
+            toggle.text = if (expanded) "⌃" else "⌄"
+            toggle.contentDescription = if (expanded) "Свернуть рынок LIVE" else "Развернуть рынок LIVE"
+        }
+
         select("ALL")
         running = true
         handler.post(ticker)
