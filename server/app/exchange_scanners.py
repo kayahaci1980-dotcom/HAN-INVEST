@@ -151,13 +151,37 @@ async def _coinbase_scan(limit: int, min_volume: float) -> dict[str, Any]:
         }
 
 
+async def _okx_get(client: httpx.AsyncClient, path: str, params: dict[str, str]):
+    """Retry transient OKX rate-limit and server errors with bounded backoff."""
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = await client.get(f"{OKX}{path}", params=params)
+            response.raise_for_status()
+            return response
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            status = exc.response.status_code
+            if status != 429 and status < 500:
+                raise
+            logger.warning("OKX transient HTTP %s for %s (attempt %s/3)", status, path, attempt + 1)
+        except httpx.RequestError as exc:
+            last_error = exc
+            logger.warning("OKX network error for %s (attempt %s/3): %s", path, attempt + 1, type(exc).__name__)
+        if attempt < 2:
+            await asyncio.sleep(0.6 * (2 ** attempt))
+    if last_error:
+        raise last_error
+    raise RuntimeError("OKX request failed without a response")
+
+
 async def _okx_scan(limit: int, min_volume: float) -> dict[str, Any]:
     timeout = httpx.Timeout(20.0)
     headers = {"User-Agent": "HAN-INVEST/0.7", "Accept": "application/json"}
     async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
         instruments_response, tickers_response = await asyncio.gather(
-            client.get(f"{OKX}/api/v5/public/instruments", params={"instType": "SPOT"}),
-            client.get(f"{OKX}/api/v5/market/tickers", params={"instType": "SPOT"}),
+            _okx_get(client, "/api/v5/public/instruments", {"instType": "SPOT"}),
+            _okx_get(client, "/api/v5/market/tickers", {"instType": "SPOT"}),
         )
         instruments_response.raise_for_status()
         tickers_response.raise_for_status()
@@ -175,7 +199,7 @@ async def _okx_scan(limit: int, min_volume: float) -> dict[str, Any]:
             and float(x.get("volCcy24h") or 0) >= min_volume
         ]
         tickers.sort(key=lambda x: float(x.get("volCcy24h") or 0), reverse=True)
-        semaphore = asyncio.Semaphore(5)
+        semaphore = asyncio.Semaphore(2)
 
         async def analyze(ticker: dict[str, Any]):
             async with semaphore:
@@ -186,10 +210,10 @@ async def _okx_scan(limit: int, min_volume: float) -> dict[str, Any]:
                     return None
                 try:
                     hourly_response, daily_response = await asyncio.gather(
-                        client.get(f"{OKX}/api/v5/market/candles",
-                                   params={"instId": inst_id, "bar": "1H", "limit": "60"}),
-                        client.get(f"{OKX}/api/v5/market/candles",
-                                   params={"instId": inst_id, "bar": "1D", "limit": "20"}),
+                        _okx_get(client, "/api/v5/market/candles",
+                                 {"instId": inst_id, "bar": "1H", "limit": "60"}),
+                        _okx_get(client, "/api/v5/market/candles",
+                                 {"instId": inst_id, "bar": "1D", "limit": "20"}),
                     )
                     hourly_response.raise_for_status()
                     daily_response.raise_for_status()
@@ -235,7 +259,9 @@ async def _okx_scan(limit: int, min_volume: float) -> dict[str, Any]:
                         "volume_ratio": metrics["volume_ratio"],
                     }
                 except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
-                    logger.warning("OKX analysis skipped for %s: %s", inst_id, type(exc).__name__)
+                    status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                    logger.warning("OKX analysis skipped for %s: %s status=%s",
+                                   inst_id, type(exc).__name__, status)
                     return None
 
         rows = await asyncio.gather(*(analyze(t) for t in tickers[:limit]))
