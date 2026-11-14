@@ -350,7 +350,8 @@ def _open_short_position(db, exchange: str, asset: dict[str, Any], reason: str) 
 
 
 def _apply_market_data(
-    exchange: str, payload: dict[str, Any], allow_new_entries: bool = False
+    exchange: str, payload: dict[str, Any], allow_new_entries: bool = False,
+    allow_short_entries: bool = False,
 ) -> None:
     assets = payload.get("assets") or []
     if not isinstance(assets, list):
@@ -404,7 +405,7 @@ def _apply_market_data(
                     _close_position(db, position, price, "DRAWDOWN_2_PERCENT")
 
         # Market breadth blocks only new entries. Position exits above always run.
-        if not allow_new_entries:
+        if not allow_new_entries and not allow_short_entries:
             return
 
         current_positions = db.execute("SELECT COUNT(*) AS n FROM paper_positions").fetchone()["n"]
@@ -429,9 +430,9 @@ def _apply_market_data(
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
                 continue
             opened = False
-            if score >= 83:
+            if allow_new_entries and score >= 83:
                 opened = _open_position(db, exchange, asset, "AUTO_LONG_SCORE_83_PLUS")
-            elif score <= 65 and price > 0 and ma20 > 0 and ma50 > 0 and price < ma20 <= ma50:
+            elif allow_short_entries and score <= 65 and price > 0 and ma20 > 0 and ma50 > 0 and price < ma20 <= ma50:
                 opened = _open_short_position(db, exchange, asset, "AUTO_SHORT_BEARISH_SCORE_65_OR_BELOW")
             if opened:
                 current_positions += 1
@@ -458,6 +459,7 @@ async def _scan_cycle() -> None:
             errors = []
             if isinstance(breadth_result, BaseException) or not isinstance(breadth_result, dict):
                 allow_new_entries = False
+                allow_short_entries = False
                 _last_market_breadth = {
                     "available": False, "status": "UNAVAILABLE",
                     "allow_new_entries": False,
@@ -468,6 +470,7 @@ async def _scan_cycle() -> None:
             else:
                 _last_market_breadth = dict(breadth_result)
                 allow_new_entries = breadth_result.get("allow_new_entries") is True
+                allow_short_entries = breadth_result.get("available") is True
                 logger.info(
                     "Market breadth %s: rising=%s falling=%s total=%s; new entries=%s",
                     breadth_result.get("status"), breadth_result.get("rising_coins"),
@@ -490,12 +493,14 @@ async def _scan_cycle() -> None:
 
             bybit_payload = exchange_payloads.get("Bybit")
             if isinstance(bybit_payload, dict):
-                _apply_market_data("Bybit", bybit_payload, allow_new_entries=allow_new_entries)
+                _apply_market_data("Bybit", bybit_payload, allow_new_entries=allow_new_entries,
+                                   allow_short_entries=allow_short_entries)
             else:
                 errors.append("Bybit: trading skipped because Bybit market data is unavailable")
             coinbase_payload = exchange_payloads.get("Coinbase Exchange")
             if isinstance(coinbase_payload, dict):
-                _apply_market_data("Coinbase Exchange", coinbase_payload, allow_new_entries=allow_new_entries)
+                _apply_market_data("Coinbase Exchange", coinbase_payload, allow_new_entries=allow_new_entries,
+                                   allow_short_entries=allow_short_entries)
             else:
                 errors.append("Coinbase Exchange: trading skipped because market data is unavailable")
             logger.info("Paper trading venues: Bybit Spot and Coinbase Exchange; virtual LONG/SHORT")
