@@ -278,6 +278,67 @@ class CryptoScanner(private val context: Context) {
                 metrics.addView(metric)
             }
             card.addView(metrics)
+            val detailsButton = Button(context).apply {
+                text = "ⓘ  Подробнее об активе"
+                textSize = 11f
+                buttonStyle(this, blue)
+                setOnClickListener {
+                    val dialogContent = LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(18), dp(10), dp(18), dp(16))
+                        background = rounded(Color.rgb(10, 17, 39), 18)
+                    }
+                    val dialogHeader = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = android.view.Gravity.CENTER_VERTICAL
+                    }
+                    dialogHeader.addView(label("$coinName ($shortSymbol)", 19f, Color.WHITE, true),
+                        LinearLayout.LayoutParams(0, -2, 1f))
+                    val close = TextView(context).apply {
+                        text = "✕"
+                        textSize = 23f
+                        setTextColor(Color.WHITE)
+                        gravity = android.view.Gravity.CENTER
+                        setPadding(dp(12), dp(5), dp(5), dp(5))
+                    }
+                    dialogHeader.addView(close)
+                    dialogContent.addView(dialogHeader)
+                    dialogContent.addView(label("Биржа: $exchange", 13f, muted))
+                    dialogContent.addView(label("Оценка: $score / 100", 16f, purple, true))
+                    dialogContent.addView(label("Сигнал: $signalText", 13f, dark, true))
+                    dialogContent.addView(label("Цена: ${if (price.isNaN()) "—" else formatNumber(price, 8)} USDT", 14f, dark))
+                    dialogContent.addView(label("Изменение за 24 часа: $change24%", 14f, dark))
+                    dialogContent.addView(label("RSI (14): $rsi", 14f, dark))
+                    dialogContent.addView(label("ATR (14): $atrValue", 14f, dark))
+                    dialogContent.addView(label("EMA20: $ema20", 14f, dark))
+                    dialogContent.addView(label("MA20: ${coin.optString("ma20", "—")}", 14f, dark))
+                    dialogContent.addView(label("MA50: ${coin.optString("ma50", "—")}", 14f, dark))
+                    dialogContent.addView(label("ATR дневной: ${coin.optString("atr_14_1d", "—")}", 14f, dark))
+                    dialogContent.addView(label("Сила против BTC: ${coin.optString("relative_strength_vs_btc_24h_pct", "—")}%", 14f, dark))
+                    dialogContent.addView(label("Объём к среднему: ${coin.optString("volume_ratio", "—")}x", 14f, dark))
+                    if (buyAllowed) {
+                        val sizing = coin.optJSONObject("position_sizing")
+                        dialogContent.addView(label("Вход: ${coin.optString("entry_price", "—")}", 14f, dark))
+                        dialogContent.addView(label("Stop Loss: ${coin.optString("stop_loss", "—")}", 14f, dark))
+                        dialogContent.addView(label("Take Profit: ${coin.optString("take_profit", "—")}", 14f, dark))
+                        dialogContent.addView(label("Количество: ${sizing?.optString("quantity", "—")}", 14f, dark))
+                        dialogContent.addView(label("Размер позиции: ${sizing?.optString("position_value_usdt", "—")} USDT", 14f, dark))
+                        dialogContent.addView(label("Риск при Stop Loss: ${sizing?.optString("potential_loss_at_stop_usdt", "—")} USDT", 14f, dark))
+                    }
+                    val detailDialog = android.app.AlertDialog.Builder(context)
+                        .setView(dialogContent)
+                        .create()
+                    close.setOnClickListener { detailDialog.dismiss() }
+                    detailDialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+                    detailDialog.show()
+                    detailDialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+                    detailDialog.window?.setLayout(
+                        (resources.displayMetrics.widthPixels * 0.92).toInt(),
+                        android.view.WindowManager.LayoutParams.WRAP_CONTENT
+                    )
+                }
+            }
+            card.addView(detailsButton)
             card.addView(label(
                 "MA20: ${coin.optString("ma20", "—")}   |   MA50: ${coin.optString("ma50", "—")}   |   ATR(14): ${coin.optString("atr_14_1d", coin.optString("atr_14", "—"))}",
                 11f, muted
