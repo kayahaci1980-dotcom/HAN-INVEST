@@ -1052,7 +1052,7 @@ class CryptoScanner(private val context: Context) {
 
         refresh.setOnClickListener { loadAll() }
         section.addView(label(
-            "Экран обновляет рыночные данные каждые 60 секунд; серверная виртуальная торговля работает независимо от открытого экрана.",
+            "Рынок и PAPER-баланс обновляются каждые 60 секунд; серверная виртуальная торговля работает независимо от открытого экрана.",
             11f, muted
         ))
         val handler = Handler(Looper.getMainLooper())
@@ -1060,6 +1060,9 @@ class CryptoScanner(private val context: Context) {
             override fun run() {
                 if (!section.isAttachedToWindow) return
                 loadAll()
+                if (selectedTab == "HOME" || selectedTab == "PAPER" || selectedTab == "HISTORY") {
+                    refreshPaperServer()
+                }
                 handler.postDelayed(this, 60L * 1000L)
             }
         }
