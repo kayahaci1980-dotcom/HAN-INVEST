@@ -683,6 +683,9 @@ class CryptoScanner(private val context: Context) {
                     content.addView(label("ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА", 16f, dark, true))
                 }
                 if (selectedTab == "MARKET") {
+                    if (loadingCount > 0) {
+                        content.addView(label("Обновление рынка… показываем последние полученные данные.", 11f, muted))
+                    }
                     val allScannedAssets = ranked.map { it.first }
                     val totalScanned = allScannedAssets.size
                     val gainers = allScannedAssets.count { moveValue(it) > 0.0 }
@@ -813,9 +816,15 @@ class CryptoScanner(private val context: Context) {
                     content.addView(paper)
                 }
                 content.addView(label(
-                    "Binance: ${b.assets.size} • Bybit: ${y.assets.size} • Coinbase: ${c.assets.size} • OKX: ${o.assets.size}",
+                    "Binance: ${if (b.error == null) b.assets.size.toString() else "ошибка"} • Bybit: ${if (y.error == null) y.assets.size.toString() else "ошибка"} • Coinbase: ${if (c.error == null) c.assets.size.toString() else "ошибка"} • OKX: ${if (o.error == null) o.assets.size.toString() else "ошибка"}",
                     12f, muted
                 ))
+                listOf(b, y, c, o).filter { it.error != null }.forEach { failed ->
+                    content.addView(label("${failed.exchange}: ${failed.error}", 11f, Color.rgb(245, 95, 95)))
+                }
+                listOf(b, y, c, o).filter { it.error == null && it.assets.isEmpty() }.forEach { empty ->
+                    content.addView(label("${empty.exchange}: сервер ответил, но список assets пуст.", 11f, Color.rgb(230, 170, 65)))
+                })
             } else {
                 val result = when (selectedTab) { "BINANCE" -> b; "BYBIT" -> y; "COINBASE" -> c; else -> o }
                 content.addView(label(
@@ -981,10 +990,7 @@ class CryptoScanner(private val context: Context) {
                 riskInput.error = "Допустимый риск: от 0,1% до 5%"
                 return
             }
-            binance = null
-            bybit = null
-            coinbase = null
-            okx = null
+            // Keep the last successful snapshot visible while the next refresh is running.
             marketContext = null
             fetchMarketContext()
             loadingCount = 4
