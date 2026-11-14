@@ -977,7 +977,7 @@ class CryptoScanner(private val context: Context) {
             loadingCount = 4
             status.text = "Загружаем Binance, Bybit, Coinbase Exchange и OKX независимо..."
             render()
-            val query = "limit=100&universe_limit=200&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk"
+            val query = "limit=500&universe_limit=500&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk"
             fetchExchange("Binance",
                 "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?$query") {
                 binance = it
@@ -987,7 +987,7 @@ class CryptoScanner(private val context: Context) {
                 render()
             }
             fetchExchange("Bybit",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=100&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk") {
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=500&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk") {
                 bybit = it
                 loadingCount--
                 status.text = if (loadingCount == 0) "Данные всех четырёх бирж обновлены."
@@ -995,7 +995,7 @@ class CryptoScanner(private val context: Context) {
                 render()
             }
             fetchExchange("Coinbase Exchange",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=100&min_volume=1000000") {
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=500&min_volume=1000000") {
                 coinbase = it
                 loadingCount--
                 status.text = if (loadingCount == 0) "Данные всех четырёх бирж обновлены."
@@ -1003,7 +1003,7 @@ class CryptoScanner(private val context: Context) {
                 render()
             }
             fetchExchange("OKX",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/okx/scan?limit=100&min_volume=1000000") {
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/okx/scan?limit=500&min_volume=1000000") {
                 okx = it
                 loadingCount--
                 status.text = if (loadingCount == 0) "Данные всех четырёх бирж обновлены."
