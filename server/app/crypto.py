@@ -291,7 +291,8 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "early_signal": "EARLY BUY" if early_buy else None,
             "risk": risk,
         }
-    except (httpx.HTTPError, ValueError, TypeError, IndexError, KeyError, ZeroDivisionError):
+    except (httpx.HTTPError, ValueError, TypeError, IndexError, KeyError, ZeroDivisionError) as exc:
+        logger.warning("Binance analysis skipped for %s: %s", symbol, type(exc).__name__)
         return None
 
 
@@ -609,6 +610,14 @@ async def scan_crypto(
         "source": "Binance public market data",
         "scanned": len(assets),
         "eligible_pairs": len(eligible),
+        "diagnostics": {
+            "exchange_pairs": len(spot_pairs),
+            "volume_qualified_candidates": len(eligible),
+            "analysis_attempted": len(selected),
+            "analysis_succeeded": len(assets),
+            "analysis_skipped": len(results) - len(assets),
+            "skip_reason": "Свечи/API/данные не прошли проверку; детали в логах сервера.",
+        },
         "universe_limit": universe_limit,
         "returned": min(len(assets), limit),
         "btc_market_filter": btc_market,
