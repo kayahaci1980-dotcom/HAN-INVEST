@@ -564,14 +564,17 @@ async def _scan_cycle() -> None:
                 scan_bybit(limit=50, min_volume=1_000_000,
                            capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
                            fee_rate=_FEE_RATE),
+                scan_bybit_short(limit=50, min_volume=1_000_000),
                 scan_coinbase(limit=50, min_volume=1_000_000),
                 scan_okx(limit=50, min_volume=1_000_000),
                 return_exceptions=True,
             )
             breadth_result, *results = gathered
             errors = []
+            allow_new_shorts = False
             if isinstance(breadth_result, BaseException) or not isinstance(breadth_result, dict):
                 allow_new_entries = False
+                allow_new_shorts = False
                 _last_market_breadth = {
                     "available": False, "status": "UNAVAILABLE",
                     "allow_new_entries": False,
@@ -581,7 +584,8 @@ async def _scan_cycle() -> None:
                 logger.warning("Market breadth unavailable; fail-closed entry filter active")
             else:
                 _last_market_breadth = dict(breadth_result)
-                allow_new_entries = breadth_result.get("allow_new_entries") is True
+                allow_new_entries = breadth_result.get("allow_new_longs", breadth_result.get("allow_new_entries")) is True
+                allow_new_shorts = breadth_result.get("allow_new_shorts") is True
                 logger.info(
                     "Market breadth %s: rising=%s falling=%s total=%s; new entries=%s",
                     breadth_result.get("status"), breadth_result.get("rising_coins"),
@@ -591,7 +595,7 @@ async def _scan_cycle() -> None:
             # All four exchanges provide market analysis, but Bybit Spot is the
             # ONLY exchange allowed to open or close paper-trading positions.
             exchange_payloads = dict(zip(
-                ("Binance", "Bybit", "Coinbase Exchange", "OKX"), results
+                ("Binance", "Bybit", "Bybit SHORT", "Coinbase Exchange", "OKX"), results
             ))
             successes = 0
             for exchange, payload in exchange_payloads.items():
@@ -606,9 +610,14 @@ async def _scan_cycle() -> None:
             if isinstance(bybit_payload, dict):
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=allow_new_entries)
             else:
-                errors.append("Bybit: trading skipped because Bybit market data is unavailable")
+                errors.append("Bybit Spot: LONG trading skipped because market data is unavailable")
+            short_payload = exchange_payloads.get("Bybit SHORT")
+            if isinstance(short_payload, dict):
+                _apply_short_market_data(short_payload, allow_new_shorts=allow_new_shorts)
+            else:
+                errors.append("Bybit Perpetual: SHORT trading skipped because market data is unavailable")
             logger.info(
-                "Paper trading venue: Bybit Spot only; Binance, Coinbase Exchange and OKX are analysis-only"
+                "Paper trading venues: Bybit Spot LONG and Bybit USDT Perpetual SHORT (virtual 1x); other exchanges analysis-only"
             )
             with _connect() as db:
                 db.execute(
