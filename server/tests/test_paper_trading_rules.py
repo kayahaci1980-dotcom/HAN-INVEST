@@ -69,15 +69,43 @@ class PaperTradingRuleTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(trade["reason"], "SCORE_AT_OR_BELOW_82")
 
-    def test_loss_of_two_percent_starts_three_hour_cooldown_and_blocks_rebuy(self):
+    def short_asset(self, score=83, price=100.0):
+        return {
+            'symbol': 'ETHUSDT', 'price': price, 'short_score': score,
+            'short_ready': True, 'trade_ready': True,
+        }
+
+    def test_short_score_83_opens_virtual_short(self):
+        paper._apply_short_market_data({'assets': [self.short_asset(83)]}, True)
+        with paper._connect() as db:
+            rows = db.execute('SELECT * FROM paper_short_positions').fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['symbol'], 'ETHUSDT')
+
+    def test_short_score_below_83_does_not_open(self):
+        paper._apply_short_market_data({'assets': [self.short_asset(82)]}, True)
+        with paper._connect() as db:
+            rows = db.execute('SELECT * FROM paper_short_positions').fetchall()
+        self.assertEqual(len(rows), 0)
+
+    def test_short_stop_closes_when_price_rises_two_percent(self):
+        paper._apply_short_market_data({'assets': [self.short_asset(90, 100.0)]}, True)
+        paper._apply_short_market_data({'assets': [self.short_asset(90, 102.0)]}, False)
+        with paper._connect() as db:
+            rows = db.execute('SELECT * FROM paper_short_positions').fetchall()
+            trade = db.execute("SELECT reason FROM paper_trades WHERE side='SHORT_CLOSE' ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(len(rows), 0)
+        self.assertEqual(trade['reason'], 'SHORT_STOP_LOSS_2_PERCENT')
+
+    def test_loss_of_two_percent_starts_eight_hour_cooldown_and_blocks_rebuy(self):
         self.seed_position()
         paper._apply_market_data("Bybit", {"assets": [self.asset(90, 98.0)]}, False)
         self.assertEqual(len(self.positions()), 0)
         cooldown = self.cooldown()
         self.assertIsNotNone(cooldown)
         remaining = float(cooldown["blocked_until"]) - paper._now().timestamp()
-        self.assertGreater(remaining, 10_700)
-        self.assertLessEqual(remaining, 10_800)
+        self.assertGreater(remaining, 28_700)
+        self.assertLessEqual(remaining, 28_800)
         paper._apply_market_data("Bybit", {"assets": [self.asset(90, 100.0)]}, True)
         self.assertEqual(len(self.positions()), 0)
 
