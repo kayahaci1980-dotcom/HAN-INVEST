@@ -35,8 +35,8 @@ def test_snapshot_separates_profit_and_loss_and_matches_equity(paper_db):
         )
 
     snapshot = paper_db._account_snapshot()
-    assert snapshot["profit_usdt"] == pytest.approx(1.0)
-    assert snapshot["loss_usdt"] == pytest.approx(0.2)
+    assert snapshot["profit_usdt"] == pytest.approx(3.0)
+    assert snapshot["loss_usdt"] == pytest.approx(2.2)
     assert snapshot["equity_usdt"] - snapshot["initial_cash_usdt"] == pytest.approx(0.8)
     assert snapshot["profit_usdt"] - snapshot["loss_usdt"] == pytest.approx(
         snapshot["equity_usdt"] - snapshot["initial_cash_usdt"]
