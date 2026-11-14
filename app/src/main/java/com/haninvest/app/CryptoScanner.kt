@@ -997,7 +997,7 @@ class CryptoScanner(private val context: Context) {
             status.text = "Загружаем Bybit и Coinbase Exchange независимо..."
             render()
             fetchExchange("Bybit",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=500&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk") {
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=1000&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk") {
                 bybit = it
                 loadingCount--
                 status.text = if (loadingCount == 0) "Данные Bybit и Coinbase Exchange обновлены."
@@ -1005,7 +1005,7 @@ class CryptoScanner(private val context: Context) {
                 render()
             }
             fetchExchange("Coinbase Exchange",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=500&min_volume=1000000") {
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=1000&min_volume=1000000") {
                 coinbase = it
                 loadingCount--
                 status.text = if (loadingCount == 0) "Данные Bybit и Coinbase Exchange обновлены."
