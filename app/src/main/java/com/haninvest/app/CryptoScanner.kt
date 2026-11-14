@@ -825,6 +825,7 @@ class CryptoScanner(private val context: Context) {
                 listOf(b, y, c, o).filter { it.error == null && it.assets.isEmpty() }.forEach { empty ->
                     content.addView(label("${empty.exchange}: сервер ответил, но список assets пуст.", 11f, Color.rgb(230, 170, 65)))
                
+                }
             } else {
                 val result = when (selectedTab) { "BINANCE" -> b; "BYBIT" -> y; "COINBASE" -> c; else -> o }
                 content.addView(label(
