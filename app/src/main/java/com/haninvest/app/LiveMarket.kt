@@ -138,7 +138,7 @@ class LiveMarket(private val context: Context) {
         Thread {
             val fresh = loadAll()
             handler.post {
-                if (fresh.isNotEmpty()) rows = fresh
+                if (fresh.isNotEmpty()) rows = fresh.toMutableList()
                 render()
             }
         }.start()
