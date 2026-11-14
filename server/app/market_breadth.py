@@ -1,4 +1,5 @@
 import math
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -7,8 +8,8 @@ import httpx
 from fastapi import APIRouter, HTTPException
 
 router = APIRouter()
-SOURCE_URL = "https://api.coinpaprika.com/v1/tickers"
-SOURCE_LIMIT = 2000
+FREE_SOURCE_URL = "https://api.coinpaprika.com/v1/tickers"
+PAID_SOURCE_URL = "https://api-pro.coinpaprika.com/v1/tickers"
 CACHE_TTL_SECONDS = 60
 _cache: tuple[float, dict[str, Any]] | None = None
 
@@ -19,7 +20,7 @@ _STABLECOINS = {
 }
 
 
-def summarize_market_breadth(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize_market_breadth(rows: list[dict[str, Any]], *, full_catalogue: bool = False) -> dict[str, Any]:
     """Count each CoinPaprika asset ID once; exclude stablecoins by symbol."""
     by_id: dict[str, tuple[str, float]] = {}
     for coin in rows:
@@ -61,12 +62,16 @@ def summarize_market_breadth(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "available": total > 0,
         "source": "CoinPaprika global tickers (USD, 24h)",
         "attribution": "Powered by CoinPaprika",
-        "license_note": "Free API access is for personal use; commercial use requires an appropriate paid plan.",
+        "license_note": "Free API is for personal use only; paid self-serve plans cover internal commercial use. Redistribution to customers requires Enterprise.",
         "deduplication": "unique_asset_id",
-        "requested_limit": SOURCE_LIMIT,
+        "plan_mode": "paid_all_available" if full_catalogue else "free_up_to_2000",
         "returned_assets": len(rows),
-        "full_catalogue_coverage": False,
-        "coverage_note": "Используется до 2 000 активов CoinPaprika; это широкий рыночный охват, но не весь каталог.",
+        "full_catalogue_coverage": full_catalogue,
+        "coverage_note": (
+            "Получен весь доступный каталог CoinPaprika по платному API-плану."
+            if full_catalogue
+            else "Бесплатный API возвращает до 2 000 активов CoinPaprika; это не весь каталог."
+        ),
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "total_coins": total,
         "rising_coins": rising,
@@ -82,23 +87,32 @@ def summarize_market_breadth(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 async def get_market_breadth() -> dict[str, Any]:
-    """CoinPaprika failure is fail-closed for new entries."""
+    """Use the largest catalogue allowed by the configured CoinPaprika plan."""
     global _cache
     if _cache and time.time() - _cache[0] < CACHE_TTL_SECONDS:
         return _cache[1]
+
+    api_key = os.getenv("COINPAPRIKA_API_KEY", "").strip()
+    full_catalogue = bool(api_key)
+    source_url = PAID_SOURCE_URL if full_catalogue else FREE_SOURCE_URL
+    headers = {"User-Agent": "HAN-INVEST/0.7", "Accept": "application/json"}
+    if api_key:
+        # CoinPaprika expects the API key itself, without a Bearer prefix.
+        headers["Authorization"] = api_key
+
     try:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(20.0),
-            headers={"User-Agent": "HAN-INVEST/0.7", "Accept": "application/json"},
+            headers=headers,
         ) as client:
-            response = await client.get(
-                SOURCE_URL, params={"quotes": "USD", "limit": SOURCE_LIMIT}
-            )
+            # Do not send a fixed limit: CoinPaprika applies the account plan's
+            # maximum automatically (up to 2,000 on Free; all assets on paid).
+            response = await client.get(source_url, params={"quotes": "USD"})
             response.raise_for_status()
             rows = response.json()
             if not isinstance(rows, list):
                 raise ValueError("CoinPaprika returned an unexpected response")
-            result = summarize_market_breadth(rows)
+            result = summarize_market_breadth(rows, full_catalogue=full_catalogue)
             if not result["available"]:
                 raise ValueError("CoinPaprika returned no valid market breadth data")
             _cache = (time.time(), result)
