@@ -51,10 +51,10 @@ def summarize_market_breadth(rows: list[dict[str, Any]], *, full_catalogue: bool
         status = "UNAVAILABLE"
         reason = "Нет достоверных данных по изменению цен за 24 часа."
     elif allow_new_longs:
-        status = "ALLOW_NEW_LONGS"
+        status = "ALLOW_NEW_BUYS"
         reason = "Растёт больше половины уникальных криптовалют рынка."
     elif allow_new_shorts:
-        status = "ALLOW_NEW_SHORTS"
+        status = "BLOCK_NEW_BUYS"
         reason = "Падает больше половины уникальных криптовалют рынка."
     else:
         status = "WAIT"
