@@ -389,7 +389,7 @@ def _apply_market_data(
                 (price, exchange, position["symbol"]),
             )
             direction = str(position["direction"] if "direction" in position.keys() else "LONG").upper()
-            change_pct = ((entry / price - 1.0) if direction == "SHORT" else (price / entry - 1.0)) * 100.0
+            change_pct = (((entry - price) / entry) if direction == "SHORT" else (price / entry - 1.0)) * 100.0
             if direction == "SHORT":
                 if change_pct >= 10.0:
                     _close_position(db, position, price, "SHORT_TAKE_PROFIT_10")
@@ -493,9 +493,12 @@ async def _scan_cycle() -> None:
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=allow_new_entries)
             else:
                 errors.append("Bybit: trading skipped because Bybit market data is unavailable")
-            logger.info(
-                "Paper trading venue: Bybit Spot only; Binance, Coinbase Exchange and OKX are analysis-only"
-            )
+            coinbase_payload = exchange_payloads.get("Coinbase Exchange")
+            if isinstance(coinbase_payload, dict):
+                _apply_market_data("Coinbase Exchange", coinbase_payload, allow_new_entries=allow_new_entries)
+            else:
+                errors.append("Coinbase Exchange: trading skipped because market data is unavailable")
+            logger.info("Paper trading venues: Bybit Spot and Coinbase Exchange; virtual LONG/SHORT")
             with _connect() as db:
                 db.execute(
                     """UPDATE paper_account SET last_scan_at=?, last_error=?, updated_at=?
