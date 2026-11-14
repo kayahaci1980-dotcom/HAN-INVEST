@@ -307,7 +307,7 @@ def _apply_market_data(
             # market-breadth gate allows new entries. The next scan applies normal exits.
             if change_pct >= 10.0:
                 _close_position(db, position, price, "TAKE_PROFIT_10_REBUY")
-                if allow_new_entries and _open_position(db, exchange, asset, "AUTO_REBUY_AFTER_10_PERCENT"):
+                if (allow_new_entries and score > 83 and asset.get("trade_ready") is True\n                        and _open_position(db, exchange, asset, "AUTO_REBUY_AFTER_10_PERCENT")):
                     logger.info("Paper re-bought %s on %s after +10%%", position["symbol"], exchange)
             elif score < 83:
                 _close_position(db, position, price, "SCORE_BELOW_83")
@@ -318,7 +318,7 @@ def _apply_market_data(
         if not allow_new_entries:
             return
 
-        # Automatic entries use score >= 83; no BUY signal or bullish BTC filter is required.
+        # Automatic entries require a score strictly above 83; no BUY signal or bullish BTC filter is required.
         current_positions = db.execute(
             "SELECT COUNT(*) AS n FROM paper_positions"
         ).fetchone()["n"]
@@ -384,16 +384,28 @@ async def _scan_cycle() -> None:
                     breadth_result.get("falling_coins"), breadth_result.get("total_coins"),
                     "allowed" if allow_new_entries else "blocked",
                 )
+            # All four exchanges provide market analysis, but Bybit Spot is the
+            # ONLY exchange allowed to open or close paper-trading positions.
+            exchange_payloads = dict(zip(
+                ("Binance", "Bybit", "Coinbase Exchange", "OKX"), results
+            ))
             successes = 0
-            for exchange, payload in zip(("Binance", "Bybit", "Coinbase Exchange", "OKX"), results):
+            for exchange, payload in exchange_payloads.items():
                 if isinstance(payload, BaseException):
                     errors.append(exchange + ": " + type(payload).__name__)
-                    continue
-                if not isinstance(payload, dict):
+                elif not isinstance(payload, dict):
                     errors.append(exchange + ": invalid response")
-                    continue
-                _apply_market_data(exchange, payload, allow_new_entries=allow_new_entries)
-                successes += 1
+                else:
+                    successes += 1
+
+            bybit_payload = exchange_payloads.get("Bybit")
+            if isinstance(bybit_payload, dict):
+                _apply_market_data("Bybit", bybit_payload, allow_new_entries=allow_new_entries)
+            else:
+                errors.append("Bybit: trading skipped because Bybit market data is unavailable")
+            logger.info(
+                "Paper trading venue: Bybit Spot only; Binance, Coinbase Exchange and OKX are analysis-only"
+            )
             with _connect() as db:
                 db.execute(
                     """UPDATE paper_account SET last_scan_at=?, last_error=?, updated_at=?
