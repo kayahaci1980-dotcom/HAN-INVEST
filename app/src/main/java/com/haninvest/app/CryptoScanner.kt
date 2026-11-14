@@ -662,6 +662,32 @@ class CryptoScanner(private val context: Context) {
                     content.addView(label("● РЫНОК LIVE", 17f, Color.rgb(20, 220, 110), true))
                     content.addView(label("ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА", 16f, dark, true))
                 }
+                if (selectedTab == "ANALYSIS") {
+                    val totalScanned = listOf(b, y, c, o).filter { it.error == null }.sumOf { it.scanned }
+                    val allScannedAssets = combined.map { it.first }
+                    val gainers = allScannedAssets.count { moveValue(it) > 0.0 }
+                    val losers = allScannedAssets.count { moveValue(it) < 0.0 }
+                    val breadth = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        setPadding(dp(10), dp(12), dp(10), dp(12))
+                        background = rounded(Color.rgb(20, 30, 62), 13)
+                    }
+                    listOf("Всего" to totalScanned.toString(),
+                        "Рост ↑" to gainers.toString(),
+                        "Падение ↓" to losers.toString()).forEachIndexed { index, item ->
+                        val cell = LinearLayout(context).apply {
+                            orientation = LinearLayout.VERTICAL
+                            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                        }
+                        cell.addView(label(item.first, 11f, muted, true))
+                        cell.addView(label(item.second, 20f,
+                            when (index) { 1 -> Color.rgb(25, 220, 125); 2 -> Color.rgb(245, 75, 95); else -> Color.WHITE }, true))
+                        breadth.addView(cell)
+                    }
+                    content.addView(breadth)
+                    content.addView(label("Автоматическое обновление каждые 60 секунд", 11f, muted))
+                    content.addView(label("АНАЛИЗ РЫНКА • ТЕХНИЧЕСКИЕ ПОКАЗАТЕЛИ", 14f, dark, true))
+                }
                 if (selectedTab == "MARKET") {
                     val exchangeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
                     listOf("ALL" to "Все", "Binance" to "Binance", "Bybit" to "Bybit",
@@ -983,7 +1009,7 @@ class CryptoScanner(private val context: Context) {
 
         refresh.setOnClickListener { loadAll() }
         section.addView(label(
-            "Экран обновляет список каждые 15 минут; серверная виртуальная торговля работает независимо от открытого экрана.",
+            "Экран обновляет рыночные данные каждые 60 секунд; серверная виртуальная торговля работает независимо от открытого экрана.",
             11f, muted
         ))
         val handler = Handler(Looper.getMainLooper())
@@ -991,13 +1017,13 @@ class CryptoScanner(private val context: Context) {
             override fun run() {
                 if (!section.isAttachedToWindow) return
                 loadAll()
-                handler.postDelayed(this, 15L * 60L * 1000L)
+                handler.postDelayed(this, 60L * 1000L)
             }
         }
         section.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(view: View) {
                 handler.removeCallbacks(task)
-                handler.postDelayed(task, 15L * 60L * 1000L)
+                handler.postDelayed(task, 60L * 1000L)
             }
             override fun onViewDetachedFromWindow(view: View) {
                 handler.removeCallbacks(task)
