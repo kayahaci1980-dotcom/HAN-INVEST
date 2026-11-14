@@ -1,3 +1,4 @@
+import asyncio
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -166,7 +167,7 @@ async def crypto_market_context():
         headers={"User-Agent": "HAN-INVEST/1.0", "Accept": "*/*"},
         follow_redirects=True,
     ) as client:
-        market, news = await __import__("asyncio").gather(
+        market, news = await asyncio.gather(
             _fetch_global_market(client), _fetch_news(client)
         )
 
