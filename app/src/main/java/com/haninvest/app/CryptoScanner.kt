@@ -641,10 +641,22 @@ class CryptoScanner(private val context: Context) {
                 if (y.error == null) y.assets.forEach { combined.add(it to y) }
                 if (c.error == null) c.assets.forEach { combined.add(it to c) }
                 if (o.error == null) o.assets.forEach { combined.add(it to o) }
-                val ranked = combined.sortedWith(
+                fun baseAssetKey(coin: JSONObject): String {
+                    val raw = coin.optString("symbol", "").uppercase().replace("-", "").replace("/", "")
+                    return when {
+                        raw.endsWith("USDT") -> raw.removeSuffix("USDT")
+                        raw.endsWith("USDC") -> raw.removeSuffix("USDC")
+                        else -> raw
+                    }
+                }
+                val rankedAll = combined.sortedWith(
                     compareByDescending<Pair<JSONObject, ExchangeResult>> { it.first.optInt("score", 0) }
                         .thenByDescending { it.first.optDouble("volume_ratio", 0.0) }
                 )
+                // Combined view: one best-scoring listing per base coin, at most 2000 unique coins.
+                val ranked = rankedAll.groupBy { baseAssetKey(it.first) }
+                    .values.mapNotNull { matches -> matches.firstOrNull() }
+                    .take(2000)
                 fun moveValue(coin: JSONObject): Double {
                     return coin.optDouble("change_24h_pct",
                         coin.optDouble("price_change_percent_24h", coin.optDouble("change_24h", 0.0)))
@@ -671,8 +683,8 @@ class CryptoScanner(private val context: Context) {
                     content.addView(label("ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА", 16f, dark, true))
                 }
                 if (selectedTab == "MARKET") {
-                    val totalScanned = listOf(b, y, c, o).filter { it.error == null }.sumOf { it.scanned }
-                    val allScannedAssets = combined.map { it.first }
+                    val allScannedAssets = ranked.map { it.first }
+                    val totalScanned = allScannedAssets.size
                     val gainers = allScannedAssets.count { moveValue(it) > 0.0 }
                     val losers = allScannedAssets.count { moveValue(it) < 0.0 }
                     val breadth = LinearLayout(context).apply {
@@ -723,7 +735,8 @@ class CryptoScanner(private val context: Context) {
                 }
                 var shown = when (selectedTab) { "HOME" -> ranked.take(3); "ANALYSIS" -> ranked.take(30); else -> ranked }
                 if (selectedTab == "MARKET") {
-                    shown = shown.filter { (_, ex) ->
+                    val marketSource = if (marketExchangeFilter == "ALL") ranked else rankedAll
+                    shown = marketSource.filter { (_, ex) ->
                         marketExchangeFilter == "ALL" || ex.exchange.equals(marketExchangeFilter, true)
                     }.filter { (coin, _) ->
                         when (marketMoveFilter) { "UP" -> moveValue(coin) > 0; "DOWN" -> moveValue(coin) < 0; else -> true }
