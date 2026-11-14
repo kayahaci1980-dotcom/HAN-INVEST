@@ -307,7 +307,12 @@ def _apply_market_data(
             # market-breadth gate allows new entries. The next scan applies normal exits.
             if change_pct >= 10.0:
                 _close_position(db, position, price, "TAKE_PROFIT_10_REBUY")
-                if (allow_new_entries and score > 83 and asset.get("trade_ready") is True\n                        and _open_position(db, exchange, asset, "AUTO_REBUY_AFTER_10_PERCENT")):
+                if (
+                    allow_new_entries
+                    and score > 83
+                    and asset.get("trade_ready") is True
+                    and _open_position(db, exchange, asset, "AUTO_REBUY_AFTER_10_PERCENT")
+                ):
                     logger.info("Paper re-bought %s on %s after +10%%", position["symbol"], exchange)
             elif score < 83:
                 _close_position(db, position, price, "SCORE_BELOW_83")
@@ -338,7 +343,7 @@ def _apply_market_data(
             except (TypeError, ValueError):
                 continue
             if (
-                score < 83
+                score <= 83
                 or asset.get("trade_ready") is not True
                 or not asset.get("symbol")
             ):
