@@ -6,6 +6,7 @@ on:
     branches:
       - crypto-v0.6.0
       - auto-paper-rules-coinbase-okx
+      - fix/test-render-paper-accounting
     paths:
       - "app/**"
       - "server/**"
