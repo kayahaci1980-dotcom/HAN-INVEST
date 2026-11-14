@@ -196,10 +196,16 @@ def _account_snapshot() -> dict[str, Any]:
         "cash_usdt": cash,
         "holdings_value_usdt": holdings,
         "equity_usdt": cash + holdings,
-        "open_positions": ([dict(p, side="LONG") for p in positions] +
-                           [dict(p, side="SHORT",
-                                 cost_usdt=float(p["margin_usdt"]) + float(p["entry_fee_usdt"]))
-                            for p in shorts]),
+        "open_positions": (
+            [dict(p, side="LONG",
+                  unrealized_pnl_usdt=float(p["quantity"]) * float(p["last_price"]) -
+                  float(p["cost_usdt"])) for p in positions]
+            + [dict(p, side="SHORT",
+                    cost_usdt=float(p["margin_usdt"]) + float(p["entry_fee_usdt"]),
+                    unrealized_pnl_usdt=float(p["quantity"]) *
+                    (float(p["entry_price"]) - float(p["last_price"])))
+               for p in shorts]
+        ),
         "history": [dict(t) for t in trades],
         "last_scan_at": account["last_scan_at"],
         "last_error": account["last_error"],
