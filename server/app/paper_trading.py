@@ -165,15 +165,38 @@ def _account_snapshot() -> dict[str, Any]:
             "SELECT * FROM paper_trades ORDER BY id DESC LIMIT 30"
         ).fetchall()
 
-    holdings = sum(float(p["quantity"]) * float(p["last_price"]) for p in positions)
     cash = float(account["cash"])
+    holdings = 0.0
+    unrealized_pnl = 0.0
+    for p in positions:
+        quantity = float(p["quantity"])
+        entry = float(p["entry_price"])
+        price = float(p["last_price"])
+        cost = float(p["cost_usdt"])
+        direction = str(p["direction"] if "direction" in p.keys() else "LONG").upper()
+        if direction == "SHORT":
+            # Cash already excludes the short collateral. Add collateral back
+            # and mark the short to market, including estimated closing fee.
+            holdings += cost + (entry - price) * quantity - price * quantity * _FEE_RATE
+            unrealized_pnl += (entry - price) * quantity - (cost - entry * quantity) - price * quantity * _FEE_RATE
+        else:
+            holdings += price * quantity
+            unrealized_pnl += price * quantity * (1.0 - _FEE_RATE) - cost
+    equity = cash + holdings
+    realized_pnl = sum(float(t["pnl_usdt"] or 0.0) for t in trades if t["side"] in ("SELL", "SHORT_COVER"))
+    total_pnl = equity - float(account["initial_cash"])
     return {
         "mode": "PAPER",
         "enabled": bool(account["enabled"]),
         "initial_cash_usdt": float(account["initial_cash"]),
         "cash_usdt": cash,
         "holdings_value_usdt": holdings,
-        "equity_usdt": cash + holdings,
+        "equity_usdt": equity,
+        "realized_pnl_usdt": realized_pnl,
+        "unrealized_pnl_usdt": unrealized_pnl,
+        "total_pnl_usdt": total_pnl,
+        "profit_usdt": max(0.0, total_pnl),
+        "loss_usdt": min(0.0, total_pnl),
         "open_positions": [dict(p) for p in positions],
         "history": [dict(t) for t in trades],
         "last_scan_at": account["last_scan_at"],
