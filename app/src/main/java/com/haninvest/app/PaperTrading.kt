@@ -486,7 +486,13 @@ class PaperTrading(private val context: Context) {
         for (i in 0 until open.length()) {
             val p = open.getJSONObject(i)
             val price = p.optDouble("last_price", p.optDouble("entry"))
-            out.append(direction(p)).append(" ").append(p.optString("exchange", "Bybit Spot")).append(" ").append(p.optString("symbol")).append(" | вход ").append(money(p.optDouble("entry")))
+            val positionPnl = netOpenPnl(p, price)
+            val movement = when {
+                positionPnl > 0.000001 -> "🟢 РАСТЁТ"
+                positionPnl < -0.000001 -> "🔴 ПАДАЕТ"
+                else -> "⚪ БЕЗ ИЗМЕНЕНИЙ"
+            }
+            out.append(movement).append(" | ").append(direction(p)).append(" ").append(p.optString("exchange", "Bybit Spot")).append(" ").append(p.optString("symbol")).append(" | вход ").append(money(p.optDouble("entry")))
                 .append(" | сейчас ").append(money(price))
                 .append(" | P/L ").append(money(netOpenPnl(p,price)))
                 .append(" | SL ").append(money(p.optDouble("stop"))).append(" | TP ").append(money(p.optDouble("target")))
