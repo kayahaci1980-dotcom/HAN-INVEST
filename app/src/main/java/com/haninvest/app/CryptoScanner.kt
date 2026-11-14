@@ -667,7 +667,7 @@ class CryptoScanner(private val context: Context) {
                     val balance = remote?.optDouble("equity_usdt", 1000.0) ?: 1000.0
                     val holdings = remote?.optJSONArray("open_positions")?.length() ?: 0
                     listOf("ВИРТУАЛЬНЫЙ СЧЁТ" to "$" + formatNumber(balance, 2),
-                        "ОТКРЫТЫХ ПОЗИЦИЙ" to "$holdings / 3").forEach { item ->
+                        "ОТКРЫТЫХ ПОЗИЦИЙ" to "$holdings / 10").forEach { item ->
                         val tile = LinearLayout(context).apply {
                             orientation = LinearLayout.VERTICAL
                             setPadding(dp(10), dp(12), dp(10), dp(12))
