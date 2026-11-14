@@ -1,34 +1,31 @@
-name: HAN INVEST Backend Tests
+name: CoinPaprika market breadth tests
 
 on:
   push:
     branches:
-      - feature/market-breadth-entry-filter
+      - feature/coinpaprika-market-filter-final
+    paths:
+      - "server/app/market_breadth.py"
+      - "server/tests/test_market_breadth.py"
+      - ".github/workflows/market-breadth-tests.yml"
   pull_request:
     branches:
       - auto-paper-rules-coinbase-okx
+    paths:
+      - "server/app/market_breadth.py"
+      - "server/tests/test_market_breadth.py"
+      - ".github/workflows/market-breadth-tests.yml"
 
 jobs:
-  backend-tests:
+  test-market-breadth:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install backend dependencies and pytest
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r server/requirements.txt pytest
-
-      - name: Compile backend
-        run: python -m compileall -q server/app
-
-      - name: Run backend tests
-        env:
-          PYTHONPATH: server
-        run: pytest -q server/tests
+      - run: pip install fastapi httpx pytest
+      - run: PYTHONPATH=. pytest -q tests/test_market_breadth.py
