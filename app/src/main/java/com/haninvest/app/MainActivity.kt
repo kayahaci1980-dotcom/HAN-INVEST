@@ -482,6 +482,10 @@ class MainActivity : Activity() {
         root.addView(banner)
         root.addView(space(12))
 
+        // LIVE-РЫНОК: круглые фильтры роста и падения всех подключённых бирж
+        root.addView(LiveMarket(this).createView())
+        root.addView(space(18))
+
         // PAPER TRADING: виртуальный счёт с сохранением на телефоне
         root.addView(PaperTrading(this).createView())
         root.addView(space(22))
