@@ -333,7 +333,7 @@ async def analyze_short(
             and instrument.get("contractType") in ("LinearPerpetual", "LinearFutures")
         )
         short_ready = (
-            pair_verified and short_score >= 83 and price < ma20 < ma50
+            pair_verified and short_score >= 65 and price < ma20 < ma50
             and rsi < 50 and volume_ratio >= 0.8 and quote_volume >= 1_000_000
         )
         return {
