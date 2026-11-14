@@ -5,6 +5,7 @@ on:
     branches:
       - ui-exchange-tabs-top3
       - feature/bybit-only-paper
+      - feature/paper-monitor-share-report
   workflow_dispatch:
 
 permissions:
