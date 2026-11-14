@@ -818,24 +818,8 @@ class CryptoScanner(private val context: Context) {
                         9f, if (enabled) Color.rgb(20, 220, 120) else muted, true
                     ))
                     paper.addView(paperTitle)
-                    val cash = remote?.optDouble("cash_usdt", 1000.0) ?: 1000.0
-                    val equity = remote?.optDouble("equity_usdt", 1000.0) ?: 1000.0
-                    val count = remote?.optJSONArray("open_positions")?.length() ?: 0
-                    val metrics = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-                    listOf("Баланс" to "$" + formatNumber(cash, 2),
-                        "Прибыль (общая)" to (if (equity >= 1000) "+" else "") + "$" + formatNumber(equity - 1000, 2),
-                        "Открытых позиций" to "$count / 3").forEach { pair ->
-                        val tile = LinearLayout(context).apply {
-                            orientation = LinearLayout.VERTICAL
-                            setPadding(dp(7), dp(9), dp(5), dp(9))
-                            background = rounded(Color.rgb(25, 37, 75), 10)
-                            layoutParams = LinearLayout.LayoutParams(0, dp(70), 1f).apply { marginEnd = dp(5) }
-                        }
-                        tile.addView(label(pair.first, 8f, muted, true))
-                        tile.addView(label(pair.second, 12f, Color.WHITE, true))
-                        metrics.addView(tile)
-                    }
-                    paper.addView(metrics)
+                    // Balance, available cash, profit and loss are shown once in the unified HOME summary above.
+                    // Avoid a second independently refreshed snapshot in the PAPER card.
                     val controls = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
                     val scanButton = Button(context).apply {
                         text = "Сканировать"
