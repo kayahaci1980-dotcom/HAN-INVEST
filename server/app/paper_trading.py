@@ -359,7 +359,7 @@ def _apply_market_data(
                 ):
                     logger.info("Paper re-bought %s on %s after +10%%", position["symbol"], exchange)
             elif score <= 82:
-                _close_position(db, position, price, "SCORE_AT_OR_BELOW_83")
+                _close_position(db, position, price, "SCORE_AT_OR_BELOW_82")
             elif change_pct <= -2.0:
                 _close_position(db, position, price, "DRAWDOWN_2_PERCENT")
 
@@ -367,7 +367,7 @@ def _apply_market_data(
         if not allow_new_entries:
             return
 
-        # Automatic entries require a score strictly above 83; no BUY signal or bullish BTC filter is required.
+        # Automatic entries require a score of at least 83; no BUY signal or bullish BTC filter is required.
         current_positions = db.execute(
             "SELECT COUNT(*) AS n FROM paper_positions"
         ).fetchone()["n"]
