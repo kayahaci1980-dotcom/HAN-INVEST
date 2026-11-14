@@ -8,10 +8,10 @@ from fastapi import APIRouter, HTTPException
 
 router = APIRouter()
 SOURCE_URL = "https://api.coinpaprika.com/v1/tickers"
+SOURCE_LIMIT = 2000
 CACHE_TTL_SECONDS = 60
 _cache: tuple[float, dict[str, Any]] | None = None
 
-# Stablecoins do not represent directional risk appetite and would distort breadth.
 _STABLECOINS = {
     "USDT", "USDC", "USDE", "USDS", "DAI", "FDUSD", "TUSD", "USDP",
     "PYUSD", "GUSD", "FRAX", "USDD", "UST", "USTC", "USDX", "USDJ",
@@ -20,7 +20,7 @@ _STABLECOINS = {
 
 
 def summarize_market_breadth(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Count each CoinPaprika asset ID once; exchange listings are not counted separately."""
+    """Count each CoinPaprika asset ID once; exclude stablecoins by symbol."""
     by_id: dict[str, tuple[str, float]] = {}
     for coin in rows:
         if not isinstance(coin, dict):
@@ -37,7 +37,6 @@ def summarize_market_breadth(rows: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         if not math.isfinite(change_value):
             continue
-        # The provider's unique asset ID, not the ticker symbol, is the deduplication key.
         by_id.setdefault(coin_id, (symbol, change_value))
 
     total = len(by_id)
@@ -46,20 +45,16 @@ def summarize_market_breadth(rows: list[dict[str, Any]]) -> dict[str, Any]:
     unchanged = total - rising - falling
 
     if total == 0:
-        status = "UNAVAILABLE"
-        allow_new_entries = False
+        status, allow_new_entries = "UNAVAILABLE", False
         reason = "Нет достоверных данных по изменению цен за 24 часа."
     elif rising > total / 2:
-        status = "ALLOW_NEW_BUYS"
-        allow_new_entries = True
+        status, allow_new_entries = "ALLOW_NEW_BUYS", True
         reason = "Растёт больше половины уникальных криптовалют рынка."
     elif falling > total / 2:
-        status = "BLOCK_NEW_BUYS"
-        allow_new_entries = False
+        status, allow_new_entries = "BLOCK_NEW_BUYS", False
         reason = "Падает больше половины уникальных криптовалют рынка."
     else:
-        status = "WAIT"
-        allow_new_entries = False
+        status, allow_new_entries = "WAIT", False
         reason = "Ни растущие, ни падающие монеты не составляют больше половины рынка."
 
     return {
@@ -68,9 +63,10 @@ def summarize_market_breadth(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "attribution": "Powered by CoinPaprika",
         "license_note": "Free API access is for personal use; commercial use requires an appropriate paid plan.",
         "deduplication": "unique_asset_id",
-        "coverage": "CoinPaprika free API: up to 2,000 active assets",
+        "requested_limit": SOURCE_LIMIT,
+        "returned_assets": len(rows),
         "full_catalogue_coverage": False,
-        "coverage_note": "Бесплатный источник возвращает до 2 000 активных активов; это широкий рыночный охват, но не весь каталог CoinPaprika.",
+        "coverage_note": "Используется до 2 000 активов CoinPaprika; это широкий рыночный охват, но не весь каталог.",
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "total_coins": total,
         "rising_coins": rising,
@@ -86,17 +82,18 @@ def summarize_market_breadth(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 async def get_market_breadth() -> dict[str, Any]:
-    """Fetch the global coin universe; failure is fail-closed for new entries."""
+    """CoinPaprika failure is fail-closed for new entries."""
     global _cache
     if _cache and time.time() - _cache[0] < CACHE_TTL_SECONDS:
         return _cache[1]
-
     try:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(20.0),
             headers={"User-Agent": "HAN-INVEST/0.7", "Accept": "application/json"},
         ) as client:
-            response = await client.get(SOURCE_URL, params={"quotes": "USD"})
+            response = await client.get(
+                SOURCE_URL, params={"quotes": "USD", "limit": SOURCE_LIMIT}
+            )
             response.raise_for_status()
             rows = response.json()
             if not isinstance(rows, list):
