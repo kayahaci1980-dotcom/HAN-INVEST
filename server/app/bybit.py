@@ -274,3 +274,140 @@ async def scan_bybit(
             return payload
     except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
         raise HTTPException(status_code=503, detail="Данные Bybit Spot временно недоступны.") from exc
+
+
+def _rsi(values: list[float], period: int = 14) -> float:
+    if len(values) <= period:
+        return 50.0
+    changes = [values[i] - values[i - 1] for i in range(1, len(values))]
+    gains = [max(x, 0.0) for x in changes[-period:]]
+    losses = [max(-x, 0.0) for x in changes[-period:]]
+    avg_gain, avg_loss = mean(gains), mean(losses)
+    if avg_loss <= 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+async def analyze_short(
+    client: httpx.AsyncClient, ticker: dict, instrument: dict,
+    btc_change_24h_pct: float,
+) -> dict[str, Any] | None:
+    """Independent bearish score for Bybit USDT perpetual contracts."""
+    symbol = str(ticker.get("symbol") or "")
+    try:
+        result = await get_json(client, "/v5/market/kline", {
+            "category": "linear", "symbol": symbol, "interval": "60", "limit": "60"
+        })
+        rows = list(reversed(result.get("list", [])))[:-1]
+        if len(rows) < 50:
+            return None
+        closes = [float(row[4]) for row in rows]
+        volumes = [float(row[5]) for row in rows]
+        if not all(math.isfinite(x) for x in closes + volumes):
+            return None
+        price = float(ticker.get("lastPrice") or closes[-1])
+        if not math.isfinite(price) or price <= 0:
+            return None
+        ma20, ma50 = mean(closes[-20:]), mean(closes[-50:])
+        change6 = (closes[-1] / closes[-7] - 1.0) * 100 if closes[-7] else 0.0
+        change24 = float(ticker.get("price24hPcnt") or 0) * 100
+        quote_volume = float(ticker.get("turnover24h") or 0)
+        baseline_volume = mean(volumes[-25:-1])
+        volume_ratio = volumes[-1] / baseline_volume if baseline_volume > 0 else 0.0
+        rsi = _rsi(closes)
+        relative_weakness = change24 - btc_change_24h_pct
+
+        trend = 25 if price < ma20 < ma50 else 17 if price < ma20 else 5
+        momentum = max(0, min(20, round(10 - change6 * 1.2)))
+        daily_momentum = max(0, min(15, round(7.5 - change24 * 0.5)))
+        rsi_score = 15 if rsi < 40 else 10 if rsi < 48 else 5 if rsi < 55 else 0
+        volume_score = 10 if volume_ratio >= 1.2 else 5 if volume_ratio >= 0.8 else 0
+        liquidity_score = min(15, max(0, round(math.log10(max(quote_volume, 1)) * 1.5)))
+        weakness_score = 10 if relative_weakness <= -2 else 6 if relative_weakness < 0 else 0
+        short_score = min(100, trend + momentum + daily_momentum + rsi_score
+                          + volume_score + liquidity_score + weakness_score)
+        pair_verified = (
+            instrument.get("status") == "Trading"
+            and instrument.get("quoteCoin") == "USDT"
+            and instrument.get("contractType") in ("LinearPerpetual", "LinearFutures")
+        )
+        short_ready = (
+            pair_verified and short_score >= 83 and price < ma20 < ma50
+            and rsi < 50 and volume_ratio >= 0.8 and quote_volume >= 1_000_000
+        )
+        return {
+            "symbol": symbol, "exchange": "Bybit USDT Perpetual",
+            "source": "bybit_linear", "side": "SHORT",
+            "price": price, "change_24h_pct": round(change24, 2),
+            "momentum_6h_pct": round(change6, 2),
+            "relative_strength_vs_btc_24h_pct": round(relative_weakness, 2),
+            "ma20": round(ma20, 8), "ma50": round(ma50, 8),
+            "rsi_14": round(rsi, 2), "volume_ratio": round(volume_ratio, 2),
+            "quote_volume_24h": round(quote_volume, 2),
+            "short_score": short_score, "score": short_score,
+            "signal": "SHORT" if short_ready else "WATCH",
+            "short_ready": short_ready, "trade_ready": pair_verified,
+            "pair_status": instrument.get("status"), "quote_currency": "USDT",
+            "leverage": 1,
+        }
+    except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError, ZeroDivisionError):
+        return None
+
+
+_short_cache: tuple[float, dict[str, Any]] | None = None
+
+
+@router.get("/api/v1/crypto/bybit/short-scan")
+async def scan_bybit_short(
+    limit: int = Query(50, ge=1, le=100),
+    min_volume: float = Query(1_000_000, ge=0),
+):
+    """Bearish-only scanner for virtual 1x USDT perpetual paper shorts."""
+    global _short_cache
+    if (_short_cache and time.time() - _short_cache[0] < CACHE_TTL
+            and _short_cache[1].get("cache_key") == (limit, min_volume)):
+        return _short_cache[1]
+    try:
+        async with httpx.AsyncClient(timeout=20, headers={"User-Agent": "HAN-INVEST/1.0"}) as client:
+            instruments_data, tickers_data = await asyncio.gather(
+                get_json(client, "/v5/market/instruments-info", {"category": "linear", "limit": "1000"}),
+                get_json(client, "/v5/market/tickers", {"category": "linear"}),
+            )
+            instruments = {
+                x.get("symbol"): x for x in instruments_data.get("list", [])
+                if x.get("quoteCoin") == "USDT"
+                and x.get("status") == "Trading"
+                and x.get("contractType") in ("LinearPerpetual", "LinearFutures")
+            }
+            tickers = [
+                x for x in tickers_data.get("list", [])
+                if x.get("symbol") in instruments
+                and float(x.get("turnover24h") or 0) >= min_volume
+            ]
+            btc = next((x for x in tickers if x.get("symbol") == "BTCUSDT"), None)
+            btc_change = float(btc.get("price24hPcnt") or 0) * 100 if btc else 0.0
+            selected = sorted(tickers, key=lambda x: float(x.get("turnover24h") or 0), reverse=True)[:limit]
+            semaphore = asyncio.Semaphore(5)
+
+            async def limited(item):
+                async with semaphore:
+                    return await analyze_short(client, item, instruments[item["symbol"]], btc_change)
+
+            assets = [x for x in await asyncio.gather(*(limited(x) for x in selected)) if x]
+            assets.sort(key=lambda x: x["short_score"], reverse=True)
+            for rank, asset in enumerate(assets, 1):
+                asset["market_rank"] = rank
+            payload = {
+                "source": "Bybit public linear perpetual market data",
+                "exchange": "Bybit USDT Perpetual", "side": "SHORT",
+                "scanned": len(assets), "eligible_pairs": len(instruments),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "assets": assets, "limit": limit,
+                "cache_key": (limit, min_volume),
+                "notice": "Отдельная медвежья оценка SHORT Score 0–100. Виртуальная торговля 1x; реальные ордера не отправляются.",
+            }
+            _short_cache = (time.time(), payload)
+            return payload
+    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(status_code=503, detail="Данные Bybit USDT Perpetual временно недоступны.") from exc
