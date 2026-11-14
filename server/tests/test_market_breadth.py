@@ -12,6 +12,8 @@ def test_deduplicates_by_id_and_excludes_stablecoins():
     assert (result["total_coins"], result["rising_coins"], result["falling_coins"]) == (3, 2, 1)
     assert result["status"] == "ALLOW_NEW_BUYS"
     assert result["allow_new_entries"] is True
+    assert result["plan_mode"] == "free_up_to_2000"
+    assert result["full_catalogue_coverage"] is False
 
 
 def test_falling_majority_blocks_new_entries():
@@ -45,3 +47,12 @@ def test_duplicate_id_is_counted_once_even_if_duplicate_value_differs():
     assert result["falling_coins"] == 0
     assert result["unchanged_coins"] == 1
     assert result["status"] == "WAIT"
+
+
+
+def test_paid_plan_reports_full_catalogue_mode():
+    rows = [coin("btc", "BTC", 1), coin("eth", "ETH", -1)]
+    result = summarize_market_breadth(rows, full_catalogue=True)
+    assert result["plan_mode"] == "paid_all_available"
+    assert result["full_catalogue_coverage"] is True
+    assert "весь доступный каталог" in result["coverage_note"]
