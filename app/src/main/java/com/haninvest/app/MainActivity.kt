@@ -23,12 +23,12 @@ import java.util.Locale
 
 class MainActivity : Activity() {
 
-    private val blue = Color.rgb(55, 105, 245)
-    private val purple = Color.rgb(125, 75, 235)
-    private val green = Color.rgb(25, 175, 115)
-    private val dark = Color.rgb(30, 42, 65)
-    private val muted = Color.rgb(125, 137, 158)
-    private val page = Color.rgb(246, 248, 253)
+    private val blue = Color.rgb(76, 67, 245)
+    private val purple = Color.rgb(177, 66, 255)
+    private val green = Color.rgb(24, 220, 130)
+    private val dark = Color.rgb(242, 244, 255)
+    private val muted = Color.rgb(158, 169, 197)
+    private val page = Color.rgb(8, 12, 30)
 
     private fun dp(v: Int) =
         (v * resources.displayMetrics.density).toInt()
@@ -55,7 +55,7 @@ class MainActivity : Activity() {
         LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(17), dp(15), dp(17), dp(15))
-            background = bg(Color.WHITE, 19)
+            background = bg(Color.rgb(17, 25, 52), 19)
             elevation = dp(2).toFloat()
         }
 
@@ -434,8 +434,7 @@ class MainActivity : Activity() {
 
         window.statusBarColor = page
         window.navigationBarColor = page
-        window.decorView.systemUiVisibility =
-            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        window.decorView.systemUiVisibility = 0
 
         val scroll = ScrollView(this)
         val root = LinearLayout(this).apply {
