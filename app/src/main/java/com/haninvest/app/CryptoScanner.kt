@@ -689,23 +689,48 @@ class CryptoScanner(private val context: Context) {
                         coin.optDouble("price_change_percent_24h", coin.optDouble("change_24h", 0.0)))
                 }
                 if (selectedTab == "HOME") {
-                    val stats = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
                     val remote = serverPaperState
-                    val balance = remote?.optDouble("equity_usdt", 1000.0) ?: 1000.0
+                    val totalBalance = remote?.optDouble("equity_usdt", 1000.0) ?: 1000.0
+                    val availableCash = remote?.optDouble("cash_usdt", 1000.0) ?: 1000.0
+                    val profit = remote?.optDouble("profit_usdt", 0.0) ?: 0.0
+                    val loss = remote?.optDouble("loss_usdt", 0.0) ?: 0.0
                     val holdings = remote?.optJSONArray("open_positions")?.length() ?: 0
-                    listOf("ВИРТУАЛЬНЫЙ СЧЁТ" to "$" + formatNumber(balance, 2),
-                        "ОТКРЫТЫХ ПОЗИЦИЙ" to "$holdings / 10").forEach { item ->
-                        val tile = LinearLayout(context).apply {
-                            orientation = LinearLayout.VERTICAL
-                            setPadding(dp(10), dp(12), dp(10), dp(12))
-                            background = rounded(Color.rgb(24, 34, 68), 13)
-                            layoutParams = LinearLayout.LayoutParams(0, dp(72), 1f).apply { marginEnd = dp(7) }
+                    val rows = listOf(
+                        listOf("ОБЩИЙ БАЛАНС" to "$" + formatNumber(totalBalance, 2),
+                            "ОСТАТОК СРЕДСТВ" to "$" + formatNumber(availableCash, 2)),
+                        listOf("ПРИБЫЛЬ" to "+$" + formatNumber(profit, 2),
+                            "УБЫТОК" to "-$" + formatNumber(kotlin.math.abs(loss), 2)),
+                        listOf("ОТКРЫТЫХ ПОЗИЦИЙ" to "$holdings / 10")
+                    )
+                    rows.forEach { rowItems ->
+                        val stats = LinearLayout(context).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(7) }
                         }
-                        tile.addView(label(item.first, 9f, muted, true))
-                        tile.addView(label(item.second, 17f, dark, true))
-                        stats.addView(tile)
+                        rowItems.forEach { item ->
+                            val tile = LinearLayout(context).apply {
+                                orientation = LinearLayout.VERTICAL
+                                setPadding(dp(10), dp(10), dp(10), dp(10))
+                                background = rounded(Color.rgb(24, 34, 68), 13)
+                                layoutParams = LinearLayout.LayoutParams(0, dp(66), 1f).apply {
+                                    marginEnd = dp(7)
+                                }
+                            }
+                            tile.addView(label(item.first, 9f, muted, true))
+                            val valueColor = when (item.first) {
+                                "ПРИБЫЛЬ" -> Color.rgb(20, 190, 115)
+                                "УБЫТОК" -> Color.rgb(235, 85, 85)
+                                else -> dark
+                            }
+                            tile.addView(label(item.second, 16f, valueColor, true))
+                            stats.addView(tile)
+                        }
+                        if (rowItems.size == 1) {
+                            val spacer = android.view.View(context)
+                            stats.addView(spacer, LinearLayout.LayoutParams(0, dp(66), 1f))
+                        }
+                        content.addView(stats)
                     }
-                    content.addView(stats)
                     content.addView(label("● РЫНОК LIVE", 17f, Color.rgb(20, 220, 110), true))
                     content.addView(label("ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА", 16f, dark, true))
                 }
