@@ -639,6 +639,74 @@ class CryptoScanner(private val context: Context) {
                 }
                 if (shown.isEmpty()) content.addView(label("Нет доступных результатов. Проверьте соединение.", 14f, muted))
                 shown.forEach { (coin, exchange) -> coinCard(coin, exchange.exchange, exchange, maxRisk) }
+                if (selectedTab == "HOME") {
+                    val remote = serverPaperState
+                    val paper = LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(14), dp(14), dp(14), dp(14))
+                        background = rounded(Color.rgb(13, 25, 55), 16)
+                    }
+                    val paperTitle = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = android.view.Gravity.CENTER_VERTICAL
+                    }
+                    paperTitle.addView(label("▣  PAPER TRADING", 16f, Color.WHITE, true),
+                        LinearLayout.LayoutParams(0, -2, 1f))
+                    val enabled = remote?.optBoolean("enabled", false) ?: false
+                    paperTitle.addView(label(
+                        if (enabled) "● АВТО-ТОРГОВЛЯ: АКТИВНА" else "● АВТО-ТОРГОВЛЯ: ОСТАНОВЛЕНА",
+                        9f, if (enabled) Color.rgb(20, 220, 120) else muted, true
+                    ))
+                    paper.addView(paperTitle)
+                    val cash = remote?.optDouble("cash_usdt", 1000.0) ?: 1000.0
+                    val equity = remote?.optDouble("equity_usdt", 1000.0) ?: 1000.0
+                    val count = remote?.optJSONArray("open_positions")?.length() ?: 0
+                    val metrics = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                    listOf("Баланс" to "$" + formatNumber(cash, 2),
+                        "Прибыль (общая)" to (if (equity >= 1000) "+" else "") + "$" + formatNumber(equity - 1000, 2),
+                        "Открытых позиций" to "$count / 3").forEach { pair ->
+                        val tile = LinearLayout(context).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setPadding(dp(7), dp(9), dp(5), dp(9))
+                            background = rounded(Color.rgb(25, 37, 75), 10)
+                            layoutParams = LinearLayout.LayoutParams(0, dp(70), 1f).apply { marginEnd = dp(5) }
+                        }
+                        tile.addView(label(pair.first, 8f, muted, true))
+                        tile.addView(label(pair.second, 12f, Color.WHITE, true))
+                        metrics.addView(tile)
+                    }
+                    paper.addView(metrics)
+                    val controls = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                    val scanButton = Button(context).apply {
+                        text = "Сканировать"
+                        textSize = 10f
+                        buttonStyle(this, blue)
+                        layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(5) }
+                        setOnClickListener { loadAll() }
+                    }
+                    val stopButton = Button(context).apply {
+                        text = if (enabled) "Экстренный стоп" else "Запустить авто"
+                        textSize = 10f
+                        buttonStyle(this, if (enabled) Color.rgb(195, 25, 48) else Color.rgb(20, 145, 90))
+                        layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
+                        isEnabled = remote != null && !serverPaperLoading &&
+                            (enabled || remote.optBoolean("storage_persistent_configured", false))
+                        setOnClickListener { togglePaperServer(!enabled) }
+                    }
+                    controls.addView(scanButton)
+                    controls.addView(stopButton)
+                    paper.addView(controls)
+                    val positions = remote?.optJSONArray("open_positions") ?: JSONArray()
+                    for (i in 0 until positions.length()) {
+                        val p = positions.optJSONObject(i) ?: continue
+                        paper.addView(label(
+                            p.optString("symbol") + " • " + p.optString("exchange") +
+                                " • P/L " + formatNumber(p.optDouble("unrealized_pnl_usdt"), 2) + " USDT",
+                            11f, dark, true
+                        ))
+                    }
+                    content.addView(paper)
+                }
                 content.addView(label(
                     "Binance: ${b.assets.size} • Bybit: ${y.assets.size} • Coinbase: ${c.assets.size} • OKX: ${o.assets.size}",
                     12f, muted
