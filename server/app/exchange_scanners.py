@@ -1,5 +1,6 @@
 import asyncio
 import math
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -7,6 +8,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 COINBASE = "https://api.exchange.coinbase.com"
 OKX = "https://www.okx.com"
 CACHE_SECONDS = 45
@@ -124,7 +126,8 @@ async def _coinbase_scan(limit: int, min_volume: float) -> dict[str, Any]:
                         "hourly_volatility_pct": metrics["hourly_volatility_pct"],
                         "volume_ratio": metrics["volume_ratio"],
                     }
-                except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError):
+                except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
+                    logger.warning("Coinbase analysis skipped for %s: %s", product_id, type(exc).__name__)
                     return None
 
         rows = await asyncio.gather(*(analyze(p) for p in products))
@@ -136,6 +139,13 @@ async def _coinbase_scan(limit: int, min_volume: float) -> dict[str, Any]:
             "source": "Coinbase Exchange public market data",
             "exchange": "Coinbase Exchange", "scanned": min(len(assets), limit),
             "eligible_pairs": len(products),
+            "diagnostics": {
+                "exchange_pairs": len(products),
+                "analysis_attempted": len(products),
+                "analysis_succeeded": len(assets),
+                "analysis_skipped": len(products) - len(assets),
+                "skip_reason": "Пара не прошла фильтр объёма либо свечи/API/данные не прошли проверку; детали в логах сервера.",
+            },
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "assets": assets[:limit],
         }
@@ -224,7 +234,8 @@ async def _okx_scan(limit: int, min_volume: float) -> dict[str, Any]:
                         "hourly_volatility_pct": metrics["hourly_volatility_pct"],
                         "volume_ratio": metrics["volume_ratio"],
                     }
-                except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError):
+                except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
+                    logger.warning("OKX analysis skipped for %s: %s", inst_id, type(exc).__name__)
                     return None
 
         rows = await asyncio.gather(*(analyze(t) for t in tickers[:limit]))
@@ -236,6 +247,15 @@ async def _okx_scan(limit: int, min_volume: float) -> dict[str, Any]:
             "source": "OKX public market data",
             "exchange": "OKX", "scanned": len(assets),
             "eligible_pairs": len(instruments),
+            "volume_qualified_candidates": len(tickers),
+            "diagnostics": {
+                "exchange_pairs": len(instruments),
+                "volume_qualified_candidates": len(tickers),
+                "analysis_attempted": min(len(tickers), limit),
+                "analysis_succeeded": len(assets),
+                "analysis_skipped": min(len(tickers), limit) - len(assets),
+                "skip_reason": "Свечи/API/данные не прошли проверку; детали в логах сервера.",
+            },
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "assets": assets,
         }
