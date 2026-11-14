@@ -723,6 +723,31 @@ class PaperTrading(private val context: Context) {
         }
         box.addView(expandedScan)
 
+        // Автоматическое полное сканирование торговых пар раз в 60 секунд,
+        // пока экран PAPER TRADING открыт. Если предыдущий запрос ещё идёт,
+        // повторяем проверку через 5 секунд и не запускаем параллельный скан.
+        val autoPairScanHandler = Handler(Looper.getMainLooper())
+        val autoPairScan = object : Runnable {
+            override fun run() {
+                if (!box.isAttachedToWindow) return
+                if (scan.isEnabled) {
+                    scan.performClick()
+                    autoPairScanHandler.postDelayed(this, 60000L)
+                } else {
+                    autoPairScanHandler.postDelayed(this, 5000L)
+                }
+            }
+        }
+        box.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {
+                autoPairScanHandler.removeCallbacks(autoPairScan)
+                autoPairScanHandler.postDelayed(autoPairScan, 60000L)
+            }
+            override fun onViewDetachedFromWindow(v: View) {
+                autoPairScanHandler.removeCallbacks(autoPairScan)
+            }
+        })
+
         // Отдельный SHORT-сканер: открывает только виртуальные SHORT, LONG-логика не запускается.
         val shortScan = Button(context).apply {
             text = "СКАНИРОВАТЬ SHORT — ДО 100 ПАР"
