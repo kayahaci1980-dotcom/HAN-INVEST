@@ -682,7 +682,7 @@ class CryptoScanner(private val context: Context) {
                         textSize = 10f
                         buttonStyle(this, blue)
                         layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(5) }
-                        setOnClickListener { loadAll() }
+                        setOnClickListener { refresh.performClick() }
                     }
                     val stopButton = Button(context).apply {
                         text = if (enabled) "Экстренный стоп" else "Запустить авто"
