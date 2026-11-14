@@ -151,12 +151,22 @@ async def _coinbase_scan(limit: int, min_volume: float) -> dict[str, Any]:
         }
 
 
+_OKX_REQUEST_LOCK = asyncio.Lock()
+_OKX_LAST_REQUEST_AT = 0.0
+
+
 async def _okx_get(client: httpx.AsyncClient, path: str, params: dict[str, str]):
     """Retry transient OKX rate-limit and server errors with bounded backoff."""
+    global _OKX_LAST_REQUEST_AT
     last_error = None
     for attempt in range(3):
         try:
-            response = await client.get(f"{OKX}{path}", params=params)
+            async with _OKX_REQUEST_LOCK:
+                wait = 0.15 - (time.monotonic() - _OKX_LAST_REQUEST_AT)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                response = await client.get(f"{OKX}{path}", params=params)
+                _OKX_LAST_REQUEST_AT = time.monotonic()
             response.raise_for_status()
             return response
         except httpx.HTTPStatusError as exc:
@@ -199,7 +209,7 @@ async def _okx_scan(limit: int, min_volume: float) -> dict[str, Any]:
             and float(x.get("volCcy24h") or 0) >= min_volume
         ]
         tickers.sort(key=lambda x: float(x.get("volCcy24h") or 0), reverse=True)
-        semaphore = asyncio.Semaphore(2)
+        semaphore = asyncio.Semaphore(1)
 
         async def analyze(ticker: dict[str, Any]):
             async with semaphore:
