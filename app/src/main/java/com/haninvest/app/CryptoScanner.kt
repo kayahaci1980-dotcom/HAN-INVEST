@@ -352,15 +352,22 @@ class CryptoScanner(private val context: Context) {
                     "Вход: ${coin.optString("entry_price", "—")}   |   Stop Loss: ${coin.optString("stop_loss", "—")}   |   Take Profit: ${coin.optString("take_profit", "—")}",
                     13f, dark
                 ))
-                val sizing = coin.optJSONObject("position_sizing")!!
-                card.addView(label(
-                    "Количество: ${sizing.optString("quantity", "—")}   |   Позиция: ${sizing.optString("position_value_usdt", "—")} USDT",
-                    13f, dark
-                ))
-                card.addView(label(
-                    "Риск при Stop Loss: ${sizing.optString("potential_loss_at_stop_usdt", "—")} USDT (лимит ${formatNumber(maxRisk, 2)} USDT)",
-                    13f, dark, true
-                ))
+                val sizing = coin.optJSONObject("position_sizing")
+                if (sizing != null) {
+                    card.addView(label(
+                        "Количество: ${sizing.optString("quantity", "—")}   |   Позиция: ${sizing.optString("position_value_usdt", "—")} USDT",
+                        13f, dark
+                    ))
+                    card.addView(label(
+                        "Риск при Stop Loss: ${sizing.optString("potential_loss_at_stop_usdt", "—")} USDT (лимит ${formatNumber(maxRisk, 2)} USDT)",
+                        13f, dark, true
+                    ))
+                } else {
+                    card.addView(label(
+                        "Расчёт размера позиции пока недоступен; автоматическая покупка заблокирована.",
+                        12f, Color.rgb(190, 90, 45), true
+                    ))
+                }
             } else if (serverSignal == "BUY") {
                 card.addView(label(
                     "BUY заблокирован: не все проверки подтверждены или расчёт риска превышает лимит.",
