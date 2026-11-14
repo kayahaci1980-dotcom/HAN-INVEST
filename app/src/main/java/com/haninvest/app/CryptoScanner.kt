@@ -123,9 +123,10 @@ class CryptoScanner(private val context: Context) {
         }
         panel.addView(status)
         panel.addView(refresh)
-        section.addView(panel)
+        panel.visibility = View.GONE
         section.addView(tabs)
         section.addView(scroll)
+        section.addView(panel)
 
         var selectedTab = "HOME"
         lateinit var render: () -> Unit
@@ -199,11 +200,11 @@ class CryptoScanner(private val context: Context) {
         fun addTab(title: String, key: String, color: Int) {
             val b = Button(context).apply {
                 text = when (key) {
-                    "HOME" -> "⌂\\n$title"
-                    "MARKET" -> "▥\\n$title"
-                    "ANALYSIS" -> "◎\\n$title"
-                    "PAPER" -> "▣\\n$title"
-                    else -> "◷\\n$title"
+                    "HOME" -> "⌂\n$title"
+                    "MARKET" -> "▥\n$title"
+                    "ANALYSIS" -> "◎\n$title"
+                    "PAPER" -> "▣\n$title"
+                    else -> "◷\n$title"
                 }
                 textSize = 11f
                 setTypeface(null, Typeface.BOLD)
@@ -597,6 +598,7 @@ class CryptoScanner(private val context: Context) {
                         stats.addView(tile)
                     }
                     content.addView(stats)
+                    content.addView(label("● РЫНОК LIVE", 17f, Color.rgb(20, 220, 110), true))
                     content.addView(label("ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА", 16f, dark, true))
                 }
                 if (selectedTab == "MARKET") {
