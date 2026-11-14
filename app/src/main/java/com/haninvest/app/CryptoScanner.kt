@@ -20,12 +20,12 @@ import java.net.URL
 import java.util.Locale
 
 class CryptoScanner(private val context: Context) {
-    private val blue = Color.rgb(55, 105, 245)
-    private val orange = Color.rgb(230, 135, 25)
-    private val purple = Color.rgb(125, 75, 235)
-    private val dark = Color.rgb(30, 42, 65)
-    private val muted = Color.rgb(125, 137, 158)
-    private val page = Color.rgb(246, 248, 253)
+    private val blue = Color.rgb(76, 67, 245)
+    private val orange = Color.rgb(255, 157, 45)
+    private val purple = Color.rgb(177, 66, 255)
+    private val dark = Color.rgb(242, 244, 255)
+    private val muted = Color.rgb(158, 169, 197)
+    private val page = Color.rgb(8, 12, 30)
 
     private data class ExchangeResult(
         val exchange: String,
@@ -60,7 +60,7 @@ class CryptoScanner(private val context: Context) {
 
     private fun buttonStyle(button: Button, color: Int) {
         button.setTextColor(Color.WHITE)
-        button.background = rounded(color, 12)
+        button.background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(color, purple)).apply { cornerRadius = dp(12).toFloat() }
         button.isAllCaps = false
     }
 
@@ -77,7 +77,7 @@ class CryptoScanner(private val context: Context) {
         val panel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded(Color.WHITE)
+            background = rounded(Color.rgb(17, 25, 52))
             elevation = dp(2).toFloat()
         }
         panel.addView(label("РАСЧЁТ РАЗМЕРА ПОЗИЦИИ", 13f, muted, true))
@@ -234,7 +234,7 @@ class CryptoScanner(private val context: Context) {
             val card = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(11), dp(12), dp(11))
-                background = rounded(page, 12)
+                background = rounded(Color.rgb(20, 29, 59), 12)
             }
             val signalText = if (buyAllowed) "АВТОПОКУПКА: оценка 83+"
                 else if (early) "EARLY BUY — наблюдение" else "WATCH — наблюдение"
