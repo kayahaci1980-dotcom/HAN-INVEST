@@ -341,8 +341,18 @@ def _apply_market_data(
             # market-breadth gate allows new entries. The next scan applies normal exits.
             if change_pct >= 10.0:
                 _close_position(db, position, price, "TAKE_PROFIT_10_REBUY")
+                cooldown = db.execute(
+                    """SELECT blocked_until FROM paper_loss_cooldowns
+                       WHERE exchange=? AND symbol=?""",
+                    (exchange, position["symbol"]),
+                ).fetchone()
+                cooldown_active = (
+                    cooldown is not None
+                    and float(cooldown["blocked_until"]) > _now().timestamp()
+                )
                 if (
                     allow_new_entries
+                    and not cooldown_active
                     and score > 83
                     and asset.get("trade_ready") is True
                     and _open_position(db, exchange, asset, "AUTO_REBUY_AFTER_10_PERCENT")
