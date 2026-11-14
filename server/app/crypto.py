@@ -461,7 +461,7 @@ async def _scan_coinpaprika(client: httpx.AsyncClient, limit: int, min_volume: f
 
 @router.get("/api/v1/crypto/scan")
 async def scan_crypto(
-    limit: int = Query(30, ge=5, le=50),
+    limit: int = Query(100, ge=5, le=100),
     universe_limit: int = Query(100, ge=30, le=200),
     min_volume: float = Query(1_000_000, ge=0),
     capital_usdt: float | None = Query(None, gt=0),
