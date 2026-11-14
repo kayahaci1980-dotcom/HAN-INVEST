@@ -69,21 +69,21 @@ class PaperTradingRuleTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(trade["reason"], "SCORE_AT_OR_BELOW_82")
 
-    def short_asset(self, score=83, price=100.0):
+    def short_asset(self, score=65, price=100.0):
         return {
             'symbol': 'ETHUSDT', 'price': price, 'short_score': score,
             'short_ready': True, 'trade_ready': True,
         }
 
-    def test_short_score_83_opens_virtual_short(self):
-        paper._apply_short_market_data({'assets': [self.short_asset(83)]}, True)
+    def test_short_score_65_opens_virtual_short(self):
+        paper._apply_short_market_data({'assets': [self.short_asset(65)]}, True)
         with paper._connect() as db:
             rows = db.execute('SELECT * FROM paper_short_positions').fetchall()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['symbol'], 'ETHUSDT')
 
-    def test_short_score_below_83_does_not_open(self):
-        paper._apply_short_market_data({'assets': [self.short_asset(82)]}, True)
+    def test_short_score_64_does_not_open(self):
+        paper._apply_short_market_data({'assets': [self.short_asset(64)]}, True)
         with paper._connect() as db:
             rows = db.execute('SELECT * FROM paper_short_positions').fetchall()
         self.assertEqual(len(rows), 0)
