@@ -9,7 +9,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 
 from app.crypto import scan_crypto
 from app.bybit import scan_bybit
@@ -619,4 +619,36 @@ async def disable_paper_trading():
             "UPDATE paper_account SET enabled=FALSE, updated_at=? WHERE id=1",
             (_now(),),
         )
+    return _account_snapshot()
+
+@router.post("/sell")
+async def sell_paper_position(payload: dict[str, Any] = Body(...)):
+    """Manually close one server-side virtual LONG or SHORT position."""
+    exchange = str(payload.get("exchange") or "").strip()
+    symbol = str(payload.get("symbol") or "").strip()
+    requested_side = str(payload.get("side") or "").strip().upper()
+
+    if not exchange or not symbol:
+        raise HTTPException(status_code=422, detail="exchange and symbol are required")
+    if requested_side not in ("LONG", "SHORT"):
+        raise HTTPException(status_code=422, detail="side must be LONG or SHORT")
+
+    async with _cycle_lock:
+        _init_db()
+        with _connect() as db:
+            position = db.execute(
+                "SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
+                (exchange, symbol),
+            ).fetchone()
+            if position is None:
+                raise HTTPException(status_code=404, detail="Open paper position not found")
+            actual_side = str(
+                position["direction"] if "direction" in position.keys() else "LONG"
+            ).upper()
+            if actual_side != requested_side:
+                raise HTTPException(status_code=409, detail="Position direction does not match")
+            price = float(position["last_price"])
+            if price <= 0:
+                raise HTTPException(status_code=409, detail="No valid latest price for this position")
+            _close_position(db, position, price, "MANUAL_CLOSE")
     return _account_snapshot()
