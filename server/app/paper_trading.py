@@ -164,27 +164,51 @@ def _account_snapshot() -> dict[str, Any]:
         trades = db.execute(
             "SELECT * FROM paper_trades ORDER BY id DESC LIMIT 30"
         ).fetchall()
+        # Totals use the complete ledger; the UI history remains capped at 30 rows.
+        realized_rows = db.execute(
+            "SELECT pnl_usdt FROM paper_trades WHERE pnl_usdt IS NOT NULL"
+        ).fetchall()
 
     cash = float(account["cash"])
     holdings = 0.0
-    unrealized_pnl = 0.0
-    for p in positions:
-        quantity = float(p["quantity"])
-        entry = float(p["entry_price"])
-        price = float(p["last_price"])
-        cost = float(p["cost_usdt"])
-        direction = str(p["direction"] if "direction" in p.keys() else "LONG").upper()
+    realized_profit = sum(max(0.0, float(row["pnl_usdt"])) for row in realized_rows)
+    realized_loss = sum(max(0.0, -float(row["pnl_usdt"])) for row in realized_rows)
+    unrealized_profit = 0.0
+    unrealized_loss = 0.0
+    open_position_items = []
+
+    for position in positions:
+        quantity = float(position["quantity"])
+        entry = float(position["entry_price"])
+        price = float(position["last_price"])
+        cost = float(position["cost_usdt"])
+        direction = str(position["direction"] if "direction" in position.keys() else "LONG").upper()
+
         if direction == "SHORT":
-            # Cash already excludes the short collateral. Add collateral back
-            # and mark the short to market, including estimated closing fee.
-            holdings += cost + (entry - price) * quantity - price * quantity * _FEE_RATE
-            unrealized_pnl += (entry - price) * quantity - (cost - entry * quantity) - price * quantity * _FEE_RATE
+            # Reserve is returned as collateral, then mark-to-market the short
+            # and deduct both the opening fee already paid and estimated close fee.
+            opening_fee = max(0.0, cost - entry * quantity)
+            closing_fee = price * quantity * _FEE_RATE
+            market_value = cost + (entry - price) * quantity - opening_fee - closing_fee
+            unrealized = (entry - price) * quantity - opening_fee - closing_fee
         else:
-            holdings += price * quantity
-            unrealized_pnl += price * quantity * (1.0 - _FEE_RATE) - cost
+            market_value = price * quantity
+            unrealized = market_value * (1.0 - _FEE_RATE) - cost
+
+        holdings += market_value
+        unrealized_profit += max(0.0, unrealized)
+        unrealized_loss += max(0.0, -unrealized)
+        item = dict(position)
+        item["side"] = direction
+        item["market_value_usdt"] = market_value
+        item["unrealized_pnl_usdt"] = unrealized
+        open_position_items.append(item)
+
     equity = cash + holdings
-    realized_pnl = sum(float(t["pnl_usdt"] or 0.0) for t in trades if t["side"] in ("SELL", "SHORT_COVER"))
-    total_pnl = equity - float(account["initial_cash"])
+    net_pnl = equity - float(account["initial_cash"])
+    profit = realized_profit + unrealized_profit
+    loss = realized_loss + unrealized_loss
+
     return {
         "mode": "PAPER",
         "enabled": bool(account["enabled"]),
@@ -192,12 +216,17 @@ def _account_snapshot() -> dict[str, Any]:
         "cash_usdt": cash,
         "holdings_value_usdt": holdings,
         "equity_usdt": equity,
-        "realized_pnl_usdt": realized_pnl,
-        "unrealized_pnl_usdt": unrealized_pnl,
-        "total_pnl_usdt": total_pnl,
-        "profit_usdt": max(0.0, total_pnl),
-        "loss_usdt": min(0.0, total_pnl),
-        "open_positions": [dict(p) for p in positions],
+        "profit_usdt": profit,
+        "loss_usdt": loss,
+        "net_pnl_usdt": net_pnl,
+        "realized_profit_usdt": realized_profit,
+        "realized_loss_usdt": realized_loss,
+        "unrealized_profit_usdt": unrealized_profit,
+        "unrealized_loss_usdt": unrealized_loss,
+        "realized_pnl_usdt": realized_profit - realized_loss,
+        "unrealized_pnl_usdt": unrealized_profit - unrealized_loss,
+        "total_pnl_usdt": net_pnl,
+        "open_positions": open_position_items,
         "history": [dict(t) for t in trades],
         "last_scan_at": account["last_scan_at"],
         "last_error": account["last_error"],
@@ -216,8 +245,6 @@ def _account_snapshot() -> dict[str, Any]:
             "Бесплатный Render может засыпать; круглосуточная работа не гарантируется."
         ),
     }
-
-
 def _close_position(db, position,
                     price: float, reason: str) -> None:
     quantity = float(position["quantity"])
