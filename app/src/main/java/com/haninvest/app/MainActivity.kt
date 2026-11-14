@@ -447,10 +447,34 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        header.addView(label("HAN", 30f, Color.WHITE, true))
-        header.addView(label(" INVEST", 30f, purple, true))
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val brandLine = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        brandLine.addView(label("◢", 27f, purple, true))
+        brandLine.addView(label(" HAN", 29f, Color.WHITE, true))
+        brandLine.addView(label(" INVEST", 29f, purple, true))
+        brand.addView(brandLine)
+        brand.addView(label("Международная инвестиционная аналитика", 12f, muted))
+        header.addView(brand)
+        val notification = TextView(this).apply {
+            text = "♧"
+            textSize = 25f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(5), dp(8), dp(5))
+        }
+        val settings = TextView(this).apply {
+            text = "⚙"
+            textSize = 25f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(5), dp(4), dp(5))
+        }
+        header.addView(notification)
+        header.addView(settings)
         root.addView(header)
-        root.addView(label("Международная инвестиционная аналитика", 13f, muted))
         root.addView(space(14))
 
         val banner = LinearLayout(this).apply {
