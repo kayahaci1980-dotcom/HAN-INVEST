@@ -77,7 +77,7 @@ class CryptoScanner(private val context: Context) {
         val panel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded(Color.rgb(17, 25, 52))
+            background = rounded(Color.rgb(13, 21, 46))
             elevation = dp(2).toFloat()
         }
         panel.addView(label("РАСЧЁТ РАЗМЕРА ПОЗИЦИИ", 13f, muted, true))
@@ -104,7 +104,8 @@ class CryptoScanner(private val context: Context) {
 
         val tabs = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(12), 0, dp(8))
+            gravity = android.view.Gravity.CENTER
+            setPadding(0, dp(14), 0, dp(10))
         }
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -195,10 +196,17 @@ class CryptoScanner(private val context: Context) {
 
         fun addTab(title: String, key: String, color: Int) {
             val b = Button(context).apply {
-                text = title
-                textSize = 12f
-                buttonStyle(this, if (selectedTab == key) color else muted)
-                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+                text = when (key) {
+                    "HOME" -> "⌂\\n$title"
+                    "MARKET" -> "▥\\n$title"
+                    "ANALYSIS" -> "◎\\n$title"
+                    "PAPER" -> "▣\\n$title"
+                    else -> "◷\\n$title"
+                }
+                textSize = 11f
+                setTypeface(null, Typeface.BOLD)
+                buttonStyle(this, if (selectedTab == key) color else Color.rgb(28, 38, 69))
+                layoutParams = LinearLayout.LayoutParams(0, dp(62), 1f).apply {
                     marginEnd = dp(5)
                 }
                 setOnClickListener {
@@ -243,19 +251,37 @@ class CryptoScanner(private val context: Context) {
                 "Оценка: $score/100   |   Сигнал: $signalText",
                 13f, if (buyAllowed) Color.rgb(20, 145, 90) else muted, true
             ))
+            val change24 = coin.optString("change_24h_pct", coin.optString("price_change_percent_24h", coin.optString("change_24h", "—")))
+            val rsi = coin.optString("rsi_14", coin.optString("rsi", "—"))
+            val atrValue = coin.optString("atr_14", coin.optString("atr", "—"))
+            val ema20 = coin.optString("ema20", coin.optString("ema_20", coin.optString("ma20", "—")))
             card.addView(label(
-                "Цена: ${if (price.isNaN()) "—" else formatNumber(price, 8)} USDT",
+                "Цена: ${if (price.isNaN()) "—" else formatNumber(price, 8)} USDT   •   24 ч.: $change24%",
                 13f, dark
             ))
+            val metrics = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(8), 0, dp(8))
+            }
+            listOf("RSI" to rsi, "ATR" to atrValue, "EMA20" to ema20).forEach { (name, value) ->
+                val metric = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(8), dp(7), dp(8), dp(7))
+                    background = rounded(Color.rgb(10, 17, 39), 9)
+                    layoutParams = LinearLayout.LayoutParams(0, dp(54), 1f).apply { marginEnd = dp(5) }
+                }
+                metric.addView(label(name, 10f, muted, true))
+                metric.addView(label(value, 12f, dark, true))
+                metrics.addView(metric)
+            }
+            card.addView(metrics)
             card.addView(label(
-                "MA20: ${coin.optString("ma20", "—")}   |   MA50: ${coin.optString("ma50", "—")}",
-                13f, dark
+                "MA20: ${coin.optString("ma20", "—")}   |   MA50: ${coin.optString("ma50", "—")}   |   ATR(14): ${coin.optString("atr_14_1d", coin.optString("atr_14", "—"))}",
+                11f, muted
             ))
-            card.addView(label("ATR(14) дневной (1D): ${coin.optString("atr_14_1d", coin.optString("atr_14", "—"))}", 13f, dark))
-            card.addView(label("Сила против BTC за 24 ч.: ${coin.optString("relative_strength_vs_btc_24h_pct", "—")}%", 13f, dark))
             card.addView(label(
-                "Объём к среднему: ${coin.optString("volume_ratio", "—")}x   |   Подтверждён: ${if (coin.optBoolean("volume_confirmed")) "ДА" else "НЕТ"}",
-                13f, dark
+                "Сила против BTC: ${coin.optString("relative_strength_vs_btc_24h_pct", "—")}%   •   Объём к среднему: ${coin.optString("volume_ratio", "—")}x",
+                11f, muted
             ))
             if (buyAllowed) {
                 card.addView(label(
@@ -276,35 +302,6 @@ class CryptoScanner(private val context: Context) {
                     "BUY заблокирован: не все проверки подтверждены или расчёт риска превышает лимит.",
                     12f, Color.rgb(190, 70, 55), true
                 ))
-            }
-            val tradeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-            val amountInput = EditText(context).apply {
-                hint = "Сумма USDT"
-                setText("100")
-                textSize = 13f
-                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-                layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
-            }
-            val buyButton = Button(context).apply {
-                text = "Купить"
-                buttonStyle(this, Color.rgb(20, 145, 90))
-            }
-            buyButton.setOnClickListener {
-                val amount = amountInput.text.toString().replace(",", ".").toDoubleOrNull()
-                if (amount == null || amount <= 0.0) status.text = "Введите сумму в USDT."
-                else paperTrade(exchange, symbol, price, amount, false)
-            }
-            tradeRow.addView(amountInput)
-            tradeRow.addView(buyButton)
-            card.addView(tradeRow)
-            val ownedQty = paperPositions.optJSONObject(exchange + ":" + symbol)?.optDouble("quantity", 0.0) ?: 0.0
-            if (ownedQty > 0.0) {
-                val sellButton = Button(context).apply {
-                    text = "Продать всю позицию"
-                    buttonStyle(this, orange)
-                }
-                sellButton.setOnClickListener { paperTrade(exchange, symbol, price, null, true) }
-                card.addView(sellButton)
             }
             content.addView(card)
             content.addView(View(context).apply {
