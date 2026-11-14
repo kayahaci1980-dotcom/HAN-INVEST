@@ -29,7 +29,8 @@ _STORAGE_PERSISTENT = bool(_DATABASE_URL or os.getenv("PAPER_DB_PATH"))
 _INITIAL_CASH = 1000.0
 _FEE_RATE = 0.001
 _RISK_PCT = 1.0
-_MAX_POSITIONS = 3
+_MAX_POSITIONS = 10
+_SHORT_MIN_SCORE = 65
 _LOSS_COOLDOWN_SECONDS = 8 * 60 * 60
 _SCAN_INTERVAL_SECONDS = max(60, int(os.getenv("PAPER_SCAN_INTERVAL_SECONDS", "300")))
 _worker_task: asyncio.Task | None = None
@@ -534,8 +535,8 @@ def _apply_short_market_data(payload: dict[str, Any], allow_new_shorts: bool = F
                 blocked = cooldown is not None and float(cooldown['blocked_until']) > _now().timestamp()
                 if allow_new_shorts and not blocked and _open_short_position(db, 'Bybit', asset, 'AUTO_SHORT_REOPEN_AFTER_10_PERCENT'):
                     logger.info('Paper re-opened SHORT %s after 10%% favorable move', position['symbol'])
-            elif score < 83:
-                _close_short_position(db, position, price, 'SHORT_SCORE_BELOW_83')
+            elif score < _SHORT_MIN_SCORE:
+                _close_short_position(db, position, price, 'SHORT_SCORE_BELOW_65')
             elif favorable <= -2.0:
                 _close_short_position(db, position, price, 'SHORT_STOP_LOSS_2_PERCENT')
         if not allow_new_shorts:
@@ -552,7 +553,7 @@ def _apply_short_market_data(payload: dict[str, Any], allow_new_shorts: bool = F
                 score = float(asset.get('short_score') or 0)
             except (TypeError, ValueError):
                 continue
-            if score < 83 or asset.get('short_ready') is not True or not asset.get('symbol'):
+            if score < _SHORT_MIN_SCORE or asset.get('short_ready') is not True or not asset.get('symbol'):
                 continue
             cooldown = db.execute('SELECT blocked_until FROM paper_loss_cooldowns WHERE exchange=? AND symbol=?',
                                   ('Bybit', str(asset['symbol']))).fetchone()
