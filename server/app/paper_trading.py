@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import os
 import sqlite3
 
@@ -14,7 +15,7 @@ from psycopg.rows import dict_row
 from fastapi import APIRouter, HTTPException
 
 from app.crypto import scan_crypto
-from app.bybit import scan_bybit
+from app.bybit import scan_bybit, scan_bybit_short
 from app.exchange_scanners import scan_coinbase, scan_okx
 from app.market_breadth import get_market_breadth
 
@@ -29,7 +30,7 @@ _INITIAL_CASH = 1000.0
 _FEE_RATE = 0.001
 _RISK_PCT = 1.0
 _MAX_POSITIONS = 3
-_LOSS_COOLDOWN_SECONDS = 3 * 60 * 60
+_LOSS_COOLDOWN_SECONDS = 8 * 60 * 60
 _SCAN_INTERVAL_SECONDS = max(60, int(os.getenv("PAPER_SCAN_INTERVAL_SECONDS", "300")))
 _worker_task: asyncio.Task | None = None
 _scan_requested = asyncio.Event()
@@ -89,6 +90,16 @@ def _init_db() -> None:
                 (_INITIAL_CASH, _INITIAL_CASH, _now()),
             )
             db.execute(
+                """CREATE TABLE IF NOT EXISTS paper_short_positions (
+                    exchange TEXT NOT NULL, symbol TEXT NOT NULL,
+                    quantity DOUBLE PRECISION NOT NULL, margin_usdt DOUBLE PRECISION NOT NULL,
+                    entry_fee_usdt DOUBLE PRECISION NOT NULL, entry_price DOUBLE PRECISION NOT NULL,
+                    stop_loss DOUBLE PRECISION NOT NULL, take_profit DOUBLE PRECISION NOT NULL,
+                    last_price DOUBLE PRECISION NOT NULL, opened_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (exchange, symbol)
+                )"""
+            )
+            db.execute(
                 """CREATE TABLE IF NOT EXISTS paper_loss_cooldowns (
                     exchange TEXT NOT NULL,
                     symbol TEXT NOT NULL,
@@ -121,6 +132,14 @@ def _init_db() -> None:
             take_profit REAL NOT NULL,
             last_price REAL NOT NULL,
             opened_at TEXT NOT NULL,
+            PRIMARY KEY (exchange, symbol)
+        );
+        CREATE TABLE IF NOT EXISTS paper_short_positions (
+            exchange TEXT NOT NULL, symbol TEXT NOT NULL,
+            quantity REAL NOT NULL, margin_usdt REAL NOT NULL,
+            entry_fee_usdt REAL NOT NULL, entry_price REAL NOT NULL,
+            stop_loss REAL NOT NULL, take_profit REAL NOT NULL,
+            last_price REAL NOT NULL, opened_at TEXT NOT NULL,
             PRIMARY KEY (exchange, symbol)
         );
         CREATE TABLE IF NOT EXISTS paper_trades (
@@ -159,11 +178,16 @@ def _account_snapshot() -> dict[str, Any]:
         positions = db.execute(
             "SELECT * FROM paper_positions ORDER BY opened_at DESC"
         ).fetchall()
+        shorts = db.execute(
+            "SELECT * FROM paper_short_positions ORDER BY opened_at DESC"
+        ).fetchall()
         trades = db.execute(
             "SELECT * FROM paper_trades ORDER BY id DESC LIMIT 30"
         ).fetchall()
 
     holdings = sum(float(p["quantity"]) * float(p["last_price"]) for p in positions)
+    holdings += sum(float(p["margin_usdt"]) + float(p["quantity"]) *
+                    (float(p["entry_price"]) - float(p["last_price"])) for p in shorts)
     cash = float(account["cash"])
     return {
         "mode": "PAPER",
@@ -172,7 +196,10 @@ def _account_snapshot() -> dict[str, Any]:
         "cash_usdt": cash,
         "holdings_value_usdt": holdings,
         "equity_usdt": cash + holdings,
-        "open_positions": [dict(p) for p in positions],
+        "open_positions": ([dict(p, side="LONG") for p in positions] +
+                           [dict(p, side="SHORT",
+                                 cost_usdt=float(p["margin_usdt"]) + float(p["entry_fee_usdt"]))
+                            for p in shorts]),
         "history": [dict(t) for t in trades],
         "last_scan_at": account["last_scan_at"],
         "last_error": account["last_error"],
