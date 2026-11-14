@@ -185,16 +185,14 @@ def _account_snapshot() -> dict[str, Any]:
         trades = db.execute(
             "SELECT * FROM paper_trades ORDER BY id DESC LIMIT 30"
         ).fetchall()
+        # Aggregate every closed trade in the same database snapshot.
+        realized_rows = db.execute(
+            "SELECT pnl_usdt FROM paper_trades WHERE pnl_usdt IS NOT NULL"
+        ).fetchall()
 
     cash = float(account["cash"])
     fee_rate = float(_FEE_RATE)
 
-    # Closed-trade P/L is aggregated over the full ledger, not only the
-    # latest 30 rows returned to the UI.
-    with _connect() as db:
-        realized_rows = db.execute(
-            "SELECT pnl_usdt FROM paper_trades WHERE pnl_usdt IS NOT NULL"
-        ).fetchall()
 
     realized_profit = sum(max(0.0, float(row["pnl_usdt"])) for row in realized_rows)
     realized_loss = sum(max(0.0, -float(row["pnl_usdt"])) for row in realized_rows)
