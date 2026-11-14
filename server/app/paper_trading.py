@@ -303,8 +303,8 @@ def _apply_market_data(
             )
             change_pct = (price / entry - 1.0) * 100.0
 
-            # +10% has highest priority: sell and immediately re-buy the same asset,
-            # even when its score is below 83. The next scan applies the normal exit rules.
+            # +10% has highest priority: always take profit; re-buy only when the
+            # market-breadth gate allows new entries. The next scan applies normal exits.
             if change_pct >= 10.0:
                 _close_position(db, position, price, "TAKE_PROFIT_10_REBUY")
                 if allow_new_entries and _open_position(db, exchange, asset, "AUTO_REBUY_AFTER_10_PERCENT"):
