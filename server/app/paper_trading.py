@@ -86,6 +86,7 @@ def _init_db() -> None:
                    ON CONFLICT (id) DO NOTHING""",
                 (_INITIAL_CASH, _INITIAL_CASH, _now()),
             )
+            db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS direction TEXT NOT NULL DEFAULT 'LONG'")
             db.execute(
                 """CREATE TABLE IF NOT EXISTS paper_loss_cooldowns (
                     exchange TEXT NOT NULL,
@@ -142,6 +143,9 @@ def _init_db() -> None:
             PRIMARY KEY (exchange, symbol)
         );
         """)
+        position_columns = {row[1] for row in db.execute("PRAGMA table_info(paper_positions)").fetchall()}
+        if "direction" not in position_columns:
+            db.execute("ALTER TABLE paper_positions ADD COLUMN direction TEXT NOT NULL DEFAULT 'LONG'")
         db.execute(
             """INSERT OR IGNORE INTO paper_account
                (id, initial_cash, cash, enabled, updated_at)
@@ -196,8 +200,18 @@ def _close_position(db, position,
     quantity = float(position["quantity"])
     gross = quantity * price
     fee = gross * _FEE_RATE
-    net = gross - fee
-    pnl = net - float(position["cost_usdt"])
+    direction = str(position["direction"] if "direction" in position.keys() else "LONG").upper()
+    entry = float(position["entry_price"])
+    if direction == "SHORT":
+        opening_fee = float(position["cost_usdt"]) - entry * quantity
+        pnl = (entry - price) * quantity - opening_fee - fee
+        cash_release = entry * quantity + (entry - price) * quantity - fee
+        trade_side = "SHORT_COVER"
+    else:
+        net = gross - fee
+        pnl = net - float(position["cost_usdt"])
+        cash_release = net
+        trade_side = "SELL"
     cost_basis = float(position["cost_usdt"])
     loss_pct = (pnl / cost_basis * 100.0) if cost_basis > 0 else 0.0
     if loss_pct <= -2.0:
@@ -218,13 +232,13 @@ def _close_position(db, position,
     account = db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()
     db.execute(
         "UPDATE paper_account SET cash=?, updated_at=? WHERE id=1",
-        (float(account["cash"]) + net, _now()),
+        (float(account["cash"]) + cash_release, _now()),
     )
     db.execute(
         """INSERT INTO paper_trades
            (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
-           VALUES (?, ?, ?, 'SELL', ?, ?, ?, ?, ?, ?)""",
-        (_now(), position["exchange"], position["symbol"], price,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (_now(), position["exchange"], position["symbol"], trade_side, price,
          quantity, gross, fee, pnl, reason),
     )
     db.execute(
@@ -296,6 +310,45 @@ def _open_position(db, exchange: str,
     return True
 
 
+def _open_short_position(db, exchange: str, asset: dict[str, Any], reason: str) -> bool:
+    symbol = str(asset.get("symbol") or "")
+    try:
+        price = float(asset.get("price") or 0)
+        atr = float(asset.get("atr_14") or asset.get("atr_14_1d") or 0)
+    except (TypeError, ValueError):
+        return False
+    if not symbol or price <= 0 or atr <= 0:
+        return False
+    if db.execute("SELECT 1 FROM paper_positions WHERE exchange=? AND symbol=?",
+                  (exchange, symbol)).fetchone():
+        return False
+    cash = float(db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()["cash"])
+    stop, target = price * 1.02, price * 0.90
+    risk_per_coin = (stop - price) + (price + stop) * _FEE_RATE
+    if cash <= 0 or risk_per_coin <= 0:
+        return False
+    qty = min(cash * _RISK_PCT / 100.0 / risk_per_coin,
+              cash / (price * (1 + _FEE_RATE)))
+    if qty <= 0:
+        return False
+    gross, fee = qty * price, qty * price * _FEE_RATE
+    reserve = gross + fee
+    if reserve > cash + 1e-8:
+        return False
+    db.execute("""INSERT INTO paper_positions
+        (exchange, symbol, quantity, cost_usdt, entry_price, stop_loss,
+         take_profit, last_price, opened_at, direction)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SHORT')""",
+        (exchange, symbol, qty, reserve, price, stop, target, price, _now()))
+    db.execute("UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1",
+               (reserve, _now()))
+    db.execute("""INSERT INTO paper_trades
+        (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
+        VALUES (?, ?, ?, 'SHORT_OPEN', ?, ?, ?, ?, NULL, ?)""",
+        (_now(), exchange, symbol, price, qty, gross, fee, reason))
+    return True
+
+
 def _apply_market_data(
     exchange: str, payload: dict[str, Any], allow_new_entries: bool = False
 ) -> None:
@@ -335,71 +388,52 @@ def _apply_market_data(
                    WHERE exchange=? AND symbol=?""",
                 (price, exchange, position["symbol"]),
             )
-            change_pct = (price / entry - 1.0) * 100.0
-
-            # +10% has highest priority: always take profit; re-buy only when the
-            # market-breadth gate allows new entries. The next scan applies normal exits.
-            if change_pct >= 10.0:
-                _close_position(db, position, price, "TAKE_PROFIT_10_REBUY")
-                cooldown = db.execute(
-                    """SELECT blocked_until FROM paper_loss_cooldowns
-                       WHERE exchange=? AND symbol=?""",
-                    (exchange, position["symbol"]),
-                ).fetchone()
-                cooldown_active = (
-                    cooldown is not None
-                    and float(cooldown["blocked_until"]) > _now().timestamp()
-                )
-                if (
-                    allow_new_entries
-                    and not cooldown_active
-                    and score >= 83
-                    and asset.get("trade_ready") is True
-                    and _open_position(db, exchange, asset, "AUTO_REBUY_AFTER_10_PERCENT")
-                ):
-                    logger.info("Paper re-bought %s on %s after +10%%", position["symbol"], exchange)
-            elif score <= 82:
-                _close_position(db, position, price, "SCORE_AT_OR_BELOW_82")
-            elif change_pct <= -2.0:
-                _close_position(db, position, price, "DRAWDOWN_2_PERCENT")
+            direction = str(position["direction"] if "direction" in position.keys() else "LONG").upper()
+            change_pct = ((entry / price - 1.0) if direction == "SHORT" else (price / entry - 1.0)) * 100.0
+            if direction == "SHORT":
+                if change_pct >= 10.0:
+                    _close_position(db, position, price, "SHORT_TAKE_PROFIT_10")
+                elif change_pct <= -2.0:
+                    _close_position(db, position, price, "SHORT_STOP_LOSS_2")
+            else:
+                if change_pct >= 10.0:
+                    _close_position(db, position, price, "TAKE_PROFIT_10_REBUY")
+                elif score <= 82:
+                    _close_position(db, position, price, "SCORE_AT_OR_BELOW_82")
+                elif change_pct <= -2.0:
+                    _close_position(db, position, price, "DRAWDOWN_2_PERCENT")
 
         # Market breadth blocks only new entries. Position exits above always run.
         if not allow_new_entries:
             return
 
-        # Automatic entries require a score of at least 83; no BUY signal or bullish BTC filter is required.
-        current_positions = db.execute(
-            "SELECT COUNT(*) AS n FROM paper_positions"
-        ).fetchone()["n"]
+        current_positions = db.execute("SELECT COUNT(*) AS n FROM paper_positions").fetchone()["n"]
         if current_positions >= _MAX_POSITIONS:
             return
-
-        candidates = sorted(
-            (asset for asset in assets if isinstance(asset, dict)),
-            key=lambda item: float(item.get("score") or 0),
-            reverse=True,
-        )
+        candidates = sorted((x for x in assets if isinstance(x, dict)),
+                            key=lambda x: float(x.get("score") or 0), reverse=True)
         for asset in candidates:
             if current_positions >= _MAX_POSITIONS:
                 break
             try:
                 score = float(asset.get("score") or 0)
+                price = float(asset.get("price") or 0)
+                ma20 = float(asset.get("ma20") or asset.get("ema20") or 0)
+                ma50 = float(asset.get("ma50") or 0)
             except (TypeError, ValueError):
                 continue
-            if (
-                score < 83
-                or asset.get("trade_ready") is not True
-                or not asset.get("symbol")
-            ):
+            if asset.get("trade_ready") is not True or not asset.get("symbol"):
                 continue
-            cooldown = db.execute(
-                """SELECT blocked_until FROM paper_loss_cooldowns
-                   WHERE exchange=? AND symbol=?""",
-                (exchange, str(asset["symbol"])),
-            ).fetchone()
+            cooldown = db.execute("SELECT blocked_until FROM paper_loss_cooldowns WHERE exchange=? AND symbol=?",
+                                  (exchange, str(asset["symbol"]))).fetchone()
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
                 continue
-            if _open_position(db, exchange, asset, "AUTO_SCORE_83_PLUS"):
+            opened = False
+            if score >= 83:
+                opened = _open_position(db, exchange, asset, "AUTO_LONG_SCORE_83_PLUS")
+            elif score <= 65 and price > 0 and ma20 > 0 and ma50 > 0 and price < ma20 <= ma50:
+                opened = _open_short_position(db, exchange, asset, "AUTO_SHORT_BEARISH_SCORE_65_OR_BELOW")
+            if opened:
                 current_positions += 1
 
 
