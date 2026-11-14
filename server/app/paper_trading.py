@@ -241,7 +241,7 @@ def _close_position(db, position,
             (position["exchange"], position["symbol"], blocked_until, loss_pct),
         )
         logger.info(
-            "Loss cooldown started for %s on %s: %.2f%%; 3 hours",
+            "Loss cooldown started for %s on %s: %.2f%%; 8 hours",
             position["symbol"], position["exchange"], loss_pct,
         )
     account = db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()
@@ -278,7 +278,11 @@ def _open_position(db, exchange: str,
         "SELECT 1 FROM paper_positions WHERE exchange=? AND symbol=?",
         (exchange, symbol),
     ).fetchone()
-    if exists:
+    short_exists = db.execute(
+        "SELECT 1 FROM paper_short_positions WHERE exchange=? AND symbol=?",
+        (exchange, symbol),
+    ).fetchone()
+    if exists or short_exists:
         return False
 
     account = db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()
@@ -398,7 +402,7 @@ def _apply_market_data(
 
         # Automatic entries require a score of at least 83; no BUY signal or bullish BTC filter is required.
         current_positions = db.execute(
-            "SELECT COUNT(*) AS n FROM paper_positions"
+            "SELECT (SELECT COUNT(*) FROM paper_positions) + (SELECT COUNT(*) FROM paper_short_positions) AS n"
         ).fetchone()["n"]
         if current_positions >= _MAX_POSITIONS:
             return
