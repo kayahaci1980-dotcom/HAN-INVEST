@@ -65,6 +65,8 @@ def summarize_market_breadth(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "available": total > 0,
         "source": "CoinPaprika global tickers (USD, 24h)",
+        "attribution": "Powered by CoinPaprika",
+        "license_note": "Free API access is for personal use; commercial use requires an appropriate paid plan.",
         "deduplication": "unique_asset_id",
         "coverage": "CoinPaprika free API: up to 2,000 active assets",
         "full_catalogue_coverage": False,
