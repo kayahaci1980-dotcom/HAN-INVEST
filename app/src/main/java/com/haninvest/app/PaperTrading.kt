@@ -109,10 +109,14 @@ class PaperTrading(private val context: Context) {
         return score.coerceIn(0, 100)
     }
 
+    private fun hitTwoPercentLoss(entry: Double, price: Double, side: String): Boolean {
+        if (entry <= 0.0 || price <= 0.0 || !entry.isFinite() || !price.isFinite()) return false
+        val adverseMove = if (side == "SHORT") (price - entry) / entry else (entry - price) / entry
+        return adverseMove >= 0.02
+    }
+
     private fun blockAssetAfterLoss(exchange: String, symbol: String, entry: Double, exit: Double, side: String = "LONG"): Boolean {
-        if (entry <= 0.0 || exit <= 0.0) return false
-        val move = if (side == "SHORT") (entry - exit) / entry else (exit - entry) / entry
-        if ((move - 2.0 * paperFeeRate) * 100.0 > -2.0) return false
+        if (!hitTwoPercentLoss(entry, exit, side)) return false
         val blocks = readLossBlocks()
         blocks.put(assetBlockKey(exchange, symbol), System.currentTimeMillis() + lossBlockDurationMs)
         prefs.edit().putString("paper_loss_blocked_until", blocks.toString()).apply()
@@ -222,10 +226,12 @@ class PaperTrading(private val context: Context) {
             val target = position.optDouble("target")
             val side = direction(position)
             val profitGiveback = shouldCloseAfterProfitGiveback(position, price)
+            val hitTwoPercentLoss = hitTwoPercentLoss(entry, price, side)
             val hitStop = stop > 0.0 && if (side == "SHORT") price >= stop else price <= stop
             val hitTarget = target > 0.0 && if (side == "SHORT") price <= target else price >= target
             val reason = when {
                 isTradingPaused() -> ""
+                hitTwoPercentLoss -> "ЗАЩИТА УБЫТКА: ПОРОГ -2%"
                 profitGiveback -> "ЗАЩИТА ПРИБЫЛИ: ОТДАТЬ 50% ОТ МАКСИМУМА"
                 hitStop -> "STOP LOSS"
                 hitTarget -> "TAKE PROFIT"
@@ -289,9 +295,11 @@ class PaperTrading(private val context: Context) {
             val take = p.optDouble("target")
             val side = direction(p)
             val profitGiveback = !price.isNaN() && shouldCloseAfterProfitGiveback(p, price)
+            val hitTwoPercentLoss = !price.isNaN() && hitTwoPercentLoss(entry, price, side)
             val hitStop = !price.isNaN() && stop > 0.0 && if (side == "SHORT") price >= stop else price <= stop
             val hitTarget = !price.isNaN() && take > 0.0 && if (side == "SHORT") price <= take else price >= take
             val reason = when {
+                hitTwoPercentLoss -> "ЗАЩИТА УБЫТКА: ПОРОГ -2%"
                 profitGiveback -> "ЗАЩИТА ПРИБЫЛИ: ОТДАТЬ 50% ОТ МАКСИМУМА"
                 hitStop -> "STOP LOSS"
                 hitTarget -> "TAKE PROFIT"
@@ -758,99 +766,3 @@ class PaperTrading(private val context: Context) {
         box.addView(shortScan)
 
         val emergency = Button(context).apply {
-            text = if (isTradingPaused()) "ВОЗОБНОВИТЬ PAPER-ТОРГОВЛЮ" else "ЭКСТРЕННЫЙ СТОП — ОСТАНОВИТЬ"
-            setTextColor(Color.WHITE)
-            setBackgroundColor(if (isTradingPaused()) green else red)
-            setOnClickListener {
-                val paused = !isTradingPaused()
-                setTradingPaused(paused)
-                text = if (paused) "ВОЗОБНОВИТЬ PAPER-ТОРГОВЛЮ" else "ЭКСТРЕННЫЙ СТОП — ОСТАНОВИТЬ"
-                setBackgroundColor(if (paused) green else red)
-                status.text = if (paused) "Автоматические покупки и продажи остановлены. Позиции сохранены. Ручная продажа доступна." else "Автоматическая PAPER-торговля возобновлена."
-                render(details)
-                showSellActions()
-            }
-        }
-        box.addView(emergency)
-        val refreshQuotes = Button(context).apply {
-            text = "ОБНОВИТЬ ЦЕНЫ PAPER С BINANCE + BYBIT"
-            setOnClickListener {
-                isEnabled = false
-                status.text = "Получаем актуальные котировки напрямую с бирж..."
-                Thread {
-                    val message = try {
-                        refreshOpenPositionsFromExchanges()
-                    } catch (e: Exception) {
-                        "Не удалось обновить котировки: ${e.message}"
-                    }
-                    (context as? android.app.Activity)?.runOnUiThread {
-                        status.text = message
-                        isEnabled = true
-                        render(details)
-                        showSellActions()
-                    }
-                }.start()
-            }
-        }
-        box.addView(refreshQuotes)
-        val reset = Button(context).apply {
-            text = "СБРОСИТЬ СЧЁТ ДО \\$1 000"
-            setOnClickListener {
-                saveBalance(1000.0)
-                prefs.edit().putString("positions", "[]")
-                    .putString("history", "[]").putLong("last_scan", 0L).apply()
-                status.text = "Виртуальный счёт сброшен до $1 000."
-                render(details)
-                showSellActions()
-            }
-        }
-        box.addView(reset)
-        if (!prefs.contains("cash_usdt") && !prefs.contains("cash")) saveBalance(1000.0)
-        render(details)
-        showSellActions()
-
-        // LIVE-обновление только открытых PAPER-позиций каждые 5 секунд.
-        // Цены берутся с публичного Bybit Spot API; сделки автоматически
-        // не открываются, а существующие Stop/Take и защита прибыли сохраняются.
-        val liveHandler = Handler(Looper.getMainLooper())
-        val liveBusy = java.util.concurrent.atomic.AtomicBoolean(false)
-        val liveRefresh = object : Runnable {
-            override fun run() {
-                if (!box.isAttachedToWindow) return
-                if (positions().length() == 0) {
-                    liveHandler.postDelayed(this, 5000L)
-                    return
-                }
-                if (!liveBusy.compareAndSet(false, true)) {
-                    liveHandler.postDelayed(this, 5000L)
-                    return
-                }
-                Thread {
-                    val message = try {
-                        refreshOpenPositionsFromExchanges()
-                    } catch (e: Exception) {
-                        "LIVE: котировки временно недоступны."
-                    }
-                    liveBusy.set(false)
-                    (context as? android.app.Activity)?.runOnUiThread {
-                        if (box.isAttachedToWindow) {
-                            render(details)
-                            status.text = message + " Следующее обновление через 5 секунд."
-                        }
-                    }
-                    liveHandler.postDelayed(this, 5000L)
-                }.start()
-            }
-        }
-        box.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
-            override fun onViewAttachedToWindow(v: View) {
-                liveHandler.removeCallbacks(liveRefresh)
-                liveHandler.postDelayed(liveRefresh, 5000L)
-            }
-            override fun onViewDetachedFromWindow(v: View) {
-                liveHandler.removeCallbacks(liveRefresh)
-            }
-        })
-        return box
-    }
-}
