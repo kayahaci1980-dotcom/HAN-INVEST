@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from app.crypto import scan_crypto
 from app.bybit import scan_bybit
 from app.exchange_scanners import scan_coinbase, scan_okx
+from app.market_breadth import get_market_breadth
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/paper", tags=["paper-trading"])
@@ -257,7 +258,9 @@ def _open_position(db, exchange: str,
     return True
 
 
-def _apply_market_data(exchange: str, payload: dict[str, Any]) -> None:
+def _apply_market_data(
+    exchange: str, payload: dict[str, Any], allow_new_entries: bool = False
+) -> None:
     assets = payload.get("assets") or []
     if not isinstance(assets, list):
         return
@@ -300,12 +303,16 @@ def _apply_market_data(exchange: str, payload: dict[str, Any]) -> None:
             # even when its score is below 83. The next scan applies the normal exit rules.
             if change_pct >= 10.0:
                 _close_position(db, position, price, "TAKE_PROFIT_10_REBUY")
-                if _open_position(db, exchange, asset, "AUTO_REBUY_AFTER_10_PERCENT"):
+                if allow_new_entries and _open_position(db, exchange, asset, "AUTO_REBUY_AFTER_10_PERCENT"):
                     logger.info("Paper re-bought %s on %s after +10%%", position["symbol"], exchange)
             elif score < 83:
                 _close_position(db, position, price, "SCORE_BELOW_83")
             elif change_pct <= -2.0:
                 _close_position(db, position, price, "DRAWDOWN_2_PERCENT")
+
+        # Market breadth blocks only new entries. Position exits above always run.
+        if not allow_new_entries:
+            return
 
         # Automatic entries use score >= 83; no BUY signal or bullish BTC filter is required.
         current_positions = db.execute(
@@ -340,7 +347,8 @@ async def _scan_cycle() -> None:
     async with _cycle_lock:
         try:
             # Each exchange is scanned independently. All requests are public market data only.
-            results = await asyncio.gather(
+            gathered = await asyncio.gather(
+                get_market_breadth(),
                 scan_crypto(limit=50, universe_limit=200, min_volume=1_000_000,
                             capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
                             fee_rate=_FEE_RATE),
@@ -351,7 +359,20 @@ async def _scan_cycle() -> None:
                 scan_okx(limit=50, min_volume=1_000_000),
                 return_exceptions=True,
             )
+            breadth_result, *results = gathered
             errors = []
+            if isinstance(breadth_result, BaseException) or not isinstance(breadth_result, dict):
+                allow_new_entries = False
+                errors.append("Market breadth: unavailable; new entries blocked")
+                logger.warning("Market breadth unavailable; fail-closed entry filter active")
+            else:
+                allow_new_entries = breadth_result.get("allow_new_entries") is True
+                logger.info(
+                    "Market breadth %s: rising=%s falling=%s total=%s; new entries=%s",
+                    breadth_result.get("status"), breadth_result.get("rising_coins"),
+                    breadth_result.get("falling_coins"), breadth_result.get("total_coins"),
+                    "allowed" if allow_new_entries else "blocked",
+                )
             successes = 0
             for exchange, payload in zip(("Binance", "Bybit", "Coinbase Exchange", "OKX"), results):
                 if isinstance(payload, BaseException):
@@ -360,7 +381,7 @@ async def _scan_cycle() -> None:
                 if not isinstance(payload, dict):
                     errors.append(exchange + ": invalid response")
                     continue
-                _apply_market_data(exchange, payload)
+                _apply_market_data(exchange, payload, allow_new_entries=allow_new_entries)
                 successes += 1
             with _connect() as db:
                 db.execute(
