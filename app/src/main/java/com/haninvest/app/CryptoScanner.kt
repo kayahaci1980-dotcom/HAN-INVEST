@@ -690,17 +690,19 @@ class CryptoScanner(private val context: Context) {
                 }
                 if (selectedTab == "HOME") {
                     val remote = serverPaperState
-                    val totalBalance = remote?.optDouble("equity_usdt", 1000.0) ?: 1000.0
-                    val availableCash = remote?.optDouble("cash_usdt", 1000.0) ?: 1000.0
-                    val profit = remote?.optDouble("profit_usdt", 0.0) ?: 0.0
-                    val loss = remote?.optDouble("loss_usdt", 0.0) ?: 0.0
-                    val holdings = remote?.optJSONArray("open_positions")?.length() ?: 0
+                    val totalBalance = remote?.optDouble("equity_usdt", Double.NaN) ?: Double.NaN
+                    val availableCash = remote?.optDouble("cash_usdt", Double.NaN) ?: Double.NaN
+                    val profit = remote?.optDouble("profit_usdt", Double.NaN) ?: Double.NaN
+                    val loss = remote?.optDouble("loss_usdt", Double.NaN) ?: Double.NaN
+                    val holdings = remote?.optJSONArray("open_positions")?.length()
+                    fun accountAmount(value: Double): String =
+                        if (value.isFinite()) "$" + formatNumber(value, 2) else "—"
                     val rows = listOf(
-                        listOf("ОБЩИЙ БАЛАНС" to "$" + formatNumber(totalBalance, 2),
-                            "ОСТАТОК СРЕДСТВ" to "$" + formatNumber(availableCash, 2)),
-                        listOf("ПРИБЫЛЬ" to "+$" + formatNumber(profit, 2),
-                            "УБЫТОК" to "-$" + formatNumber(kotlin.math.abs(loss), 2)),
-                        listOf("ОТКРЫТЫХ ПОЗИЦИЙ" to "$holdings / 10")
+                        listOf("ОБЩИЙ БАЛАНС" to accountAmount(totalBalance),
+                            "ОСТАТОК СРЕДСТВ" to accountAmount(availableCash)),
+                        listOf("ПРИБЫЛЬ" to (if (profit.isFinite()) "+$" + formatNumber(profit, 2) else "—"),
+                            "УБЫТОК" to (if (loss.isFinite()) "-$" + formatNumber(kotlin.math.abs(loss), 2) else "—")),
+                        listOf("ОТКРЫТЫХ ПОЗИЦИЙ" to (holdings?.let { "$it / 10" } ?: "—"))
                     )
                     rows.forEach { rowItems ->
                         val stats = LinearLayout(context).apply {
