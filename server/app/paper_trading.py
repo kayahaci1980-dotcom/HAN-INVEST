@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,7 @@ _INITIAL_CASH = 1000.0
 _FEE_RATE = 0.001
 _RISK_PCT = 1.0
 _MAX_POSITIONS = 3
+_LOSS_COOLDOWN_SECONDS = 3 * 60 * 60
 _SCAN_INTERVAL_SECONDS = max(60, int(os.getenv("PAPER_SCAN_INTERVAL_SECONDS", "300")))
 _worker_task: asyncio.Task | None = None
 _scan_requested = asyncio.Event()
@@ -85,6 +86,15 @@ def _init_db() -> None:
                    ON CONFLICT (id) DO NOTHING""",
                 (_INITIAL_CASH, _INITIAL_CASH, _now()),
             )
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS paper_loss_cooldowns (
+                    exchange TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    blocked_until DOUBLE PRECISION NOT NULL,
+                    loss_pct DOUBLE PRECISION NOT NULL,
+                    PRIMARY KEY (exchange, symbol)
+                )"""
+            )
         return
 
     # Local/test fallback; never treated as durable on Render unless PAPER_DB_PATH is set.
@@ -123,6 +133,13 @@ def _init_db() -> None:
             fee_usdt REAL NOT NULL,
             pnl_usdt REAL,
             reason TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS paper_loss_cooldowns (
+            exchange TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            blocked_until REAL NOT NULL,
+            loss_pct REAL NOT NULL,
+            PRIMARY KEY (exchange, symbol)
         );
         """)
         db.execute(
@@ -181,6 +198,23 @@ def _close_position(db, position,
     fee = gross * _FEE_RATE
     net = gross - fee
     pnl = net - float(position["cost_usdt"])
+    cost_basis = float(position["cost_usdt"])
+    loss_pct = (pnl / cost_basis * 100.0) if cost_basis > 0 else 0.0
+    if loss_pct <= -2.0:
+        blocked_until = _now().timestamp() + _LOSS_COOLDOWN_SECONDS
+        db.execute(
+            """INSERT INTO paper_loss_cooldowns
+               (exchange, symbol, blocked_until, loss_pct)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT (exchange, symbol) DO UPDATE SET
+                   blocked_until=excluded.blocked_until,
+                   loss_pct=excluded.loss_pct""",
+            (position["exchange"], position["symbol"], blocked_until, loss_pct),
+        )
+        logger.info(
+            "Loss cooldown started for %s on %s: %.2f%%; 3 hours",
+            position["symbol"], position["exchange"], loss_pct,
+        )
     account = db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()
     db.execute(
         "UPDATE paper_account SET cash=?, updated_at=? WHERE id=1",
@@ -347,6 +381,13 @@ def _apply_market_data(
                 or asset.get("trade_ready") is not True
                 or not asset.get("symbol")
             ):
+                continue
+            cooldown = db.execute(
+                """SELECT blocked_until FROM paper_loss_cooldowns
+                   WHERE exchange=? AND symbol=?""",
+                (exchange, str(asset["symbol"])),
+            ).fetchone()
+            if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
                 continue
             if _open_position(db, exchange, asset, "AUTO_SCORE_83_PLUS"):
                 current_positions += 1
