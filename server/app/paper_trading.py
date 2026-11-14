@@ -192,8 +192,9 @@ def _account_snapshot() -> dict[str, Any]:
             market_value = cost + (entry - price) * quantity - opening_fee - closing_fee
             unrealized = (entry - price) * quantity - opening_fee - closing_fee
         else:
-            market_value = price * quantity
-            unrealized = market_value * (1.0 - _FEE_RATE) - cost
+            # Equity uses estimated liquidation value, including the closing fee.
+            market_value = price * quantity * (1.0 - _FEE_RATE)
+            unrealized = market_value - cost
 
         holdings += market_value
         unrealized_profit += max(0.0, unrealized)
