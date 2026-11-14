@@ -370,12 +370,60 @@ class CryptoScanner(private val context: Context) {
                     val remotePositions = remote.optJSONArray("open_positions") ?: JSONArray()
                     for (i in 0 until remotePositions.length()) {
                         val p = remotePositions.optJSONObject(i) ?: continue
+                        val symbol = p.optString("symbol")
+                        val exchange = p.optString("exchange")
                         content.addView(label(
-                            p.optString("symbol") + " • " + p.optString("exchange") +
-                                " • SL " + formatNumber(p.optDouble("stop_loss"), 6) +
-                                " • TP " + formatNumber(p.optDouble("take_profit"), 6),
+                            symbol + " • " + exchange +
+                                " • Вход " + formatNumber(p.optDouble("entry_price"), 8) +
+                                " • Сейчас " + formatNumber(p.optDouble("last_price"), 8),
+                            12f, dark, true
+                        ))
+                        content.addView(label(
+                            "Количество: " + formatNumber(p.optDouble("quantity"), 8) +
+                                " • Стоимость: " + formatNumber(p.optDouble("quantity") * p.optDouble("last_price"), 2) + " USDT",
                             11f, muted
                         ))
+                        val manualSell = Button(context).apply {
+                            text = "Продать эту виртуальную позицию"
+                            buttonStyle(this, orange)
+                            isEnabled = !serverPaperLoading
+                            setOnClickListener {
+                                isEnabled = false
+                                Thread {
+                                    var error: String? = null
+                                    var updated: JSONObject? = null
+                                    try {
+                                        val connection = URL("https://han-invest-api-test.onrender.com/api/v1/paper/sell")
+                                            .openConnection() as HttpURLConnection
+                                        try {
+                                            connection.requestMethod = "POST"
+                                            connection.doOutput = true
+                                            connection.connectTimeout = 15000
+                                            connection.readTimeout = 20000
+                                            connection.setRequestProperty("Content-Type", "application/json")
+                                            connection.setRequestProperty("Accept", "application/json")
+                                            val body = JSONObject().put("exchange", exchange).put("symbol", symbol).toString()
+                                            connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                                            val code = connection.responseCode
+                                            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                                            val raw = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                                            if (code !in 200..299) throw Exception("HTTP $code: $raw")
+                                            updated = JSONObject(raw)
+                                        } finally { connection.disconnect() }
+                                    } catch (e: Exception) { error = e.message ?: "Ошибка продажи" }
+                                    Handler(Looper.getMainLooper()).post {
+                                        if (updated != null) {
+                                            serverPaperState = updated
+                                            serverPaperError = null
+                                        } else {
+                                            serverPaperError = error
+                                        }
+                                        refreshPaperServer()
+                                    }
+                                }.start()
+                            }
+                        }
+                        content.addView(manualSell)
                     }
                     val lastScan = remote.optString("last_scan_at", "")
                     if (lastScan.isNotBlank() && lastScan != "null") {
@@ -401,8 +449,8 @@ class CryptoScanner(private val context: Context) {
                 val remoteEnabled = remote?.optBoolean("enabled", false) ?: false
                 val storageReady = remote?.optBoolean("storage_persistent_configured", false) ?: false
                 val serverToggle = Button(context).apply {
-                    text = if (remoteEnabled) "Остановить авто" else "Запустить авто"
-                    buttonStyle(this, if (remoteEnabled) orange else Color.rgb(20, 145, 90))
+                    text = if (remoteEnabled) "ЭКСТРЕННЫЙ СТОП" else "Запустить авто"
+                    buttonStyle(this, if (remoteEnabled) Color.rgb(200, 35, 45) else Color.rgb(20, 145, 90))
                     isEnabled = !serverPaperLoading && remote != null && (remoteEnabled || storageReady)
                     setOnClickListener { togglePaperServer(!remoteEnabled) }
                     layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f)
