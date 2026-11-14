@@ -436,10 +436,10 @@ class MainActivity : Activity() {
         window.navigationBarColor = page
         window.decorView.systemUiVisibility = 0
 
-        val scroll = ScrollView(this)
+        val scroll = ScrollView(this).apply { isFillViewport = true }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(20), dp(18), dp(28))
+            setPadding(dp(16), dp(18), dp(16), dp(24))
             setBackgroundColor(page)
         }
 
@@ -447,260 +447,27 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        header.addView(label("HAN", 28f, blue, true))
-        header.addView(label(" INVEST", 28f, purple, true))
+        header.addView(label("HAN", 30f, Color.WHITE, true))
+        header.addView(label(" INVEST", 30f, purple, true))
         root.addView(header)
-
-        root.addView(
-            label(
-                "Международная инвестиционная аналитика",
-                13f, muted
-            )
-        )
-        root.addView(space(18))
+        root.addView(label("Международная инвестиционная аналитика", 13f, muted))
+        root.addView(space(14))
 
         val banner = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(23), dp(20), dp(23))
+            setPadding(dp(18), dp(20), dp(18), dp(20))
             background = GradientDrawable(
                 GradientDrawable.Orientation.LEFT_RIGHT,
-                intArrayOf(blue, purple)
-            ).apply { cornerRadius = dp(22).toFloat() }
+                intArrayOf(Color.rgb(54, 39, 140), Color.rgb(94, 42, 190), Color.rgb(10, 95, 160))
+            ).apply { cornerRadius = dp(20).toFloat() }
         }
-        banner.addView(label("HAN INVEST", 13f, Color.WHITE, true))
-        banner.addView(space(8))
-        banner.addView(
-            label("Инвестируйте\nосознанно.", 29f, Color.WHITE, true)
-        )
-        banner.addView(space(8))
-        banner.addView(
-            label(
-                "Сравнивайте рынки, доходность и риски.",
-                14f, Color.WHITE
-            )
-        )
+        banner.addView(label("Инвестируйте\nосознанно.", 27f, Color.WHITE, true))
+        banner.addView(space(6))
+        banner.addView(label("Анализ рынков • Сигналы • Виртуальная торговля", 13f, Color.WHITE))
         root.addView(banner)
-        root.addView(space(12))
+        root.addView(space(14))
 
-        // ГЛАВНЫЙ РЫНОК HAN INVEST — КРИПТОВАЛЮТЫ
         root.addView(CryptoScanner(this).createView())
-        root.addView(space(22))
-
-        root.addView(
-            label("Мой инвестиционный портфель", 20f, dark, true)
-        )
-        root.addView(space(9))
-
-        val portfolio = card()
-        portfolio.addView(label("ОБЩИЙ КАПИТАЛ", 12f, muted, true))
-        portfolio.addView(space(5))
-        portfolio.addView(label("$0.00", 34f, dark, true))
-        portfolio.addView(
-            label(
-                "Портфель пока не подключён к брокерскому счёту.",
-                12f, muted
-            )
-        )
-        root.addView(portfolio)
-        root.addView(space(22))
-
-        root.addView(label("Международные рынки", 22f, dark, true))
-        root.addView(space(12))
-
-        addMarketCard(
-            root, "💱 Валюты",
-            "Курсы основных мировых валют к доллару.",
-            ::loadCurrencies
-        )
-        addMarketCard(
-            root, "🥇 Золото",
-            "Цена золота на мировом рынке.",
-            ::loadGold
-        )
-        addMarketCard(
-            root, "🥈 Серебро",
-            "Цена серебра на мировом рынке.",
-            ::loadSilver
-        )
-        addMarketCard(
-            root, "🛢 Нефть Brent и WTI",
-            "Мировые цены на нефть за баррель.",
-            ::loadOil
-        )
-        addMarketCard(
-            root, "📈 Биржевые индексы",
-            "Опубликованные значения доступных индексов.",
-            ::loadIndices
-        )
-        addMarketCard(
-            root, "🏦 Облигации США",
-            "Доходность казначейских облигаций от 1 месяца до 30 лет.",
-            ::loadTreasury
-        )
-
-        // СКАНЕР АКЦИЙ И ETF
-        root.addView(StockScanner(this).createView())
-        root.addView(space(18))
-
-        // ИСТОРИЧЕСКОЕ ТЕСТИРОВАНИЕ 2.3
-        root.addView(BacktestEngine(this).createView())
-        root.addView(space(18))
-
-        root.addView(
-            label("🏠 Недвижимость и бизнес", 20f, dark, true)
-        )
-        root.addView(space(8))
-        val business = card()
-        business.addView(
-            label(
-                "Сравнение объектов и проектов по цене, расходам, " +
-                "денежному потоку и ожидаемой доходности.\n\n" +
-                "Для расчёта нужны данные конкретного объекта.",
-                14f, dark
-            )
-        )
-        root.addView(business)
-        root.addView(space(20))
-
-        root.addView(label("Калькулятор доходности", 22f, dark, true))
-        root.addView(space(10))
-
-        val calc = card()
-        val money = input(
-            "Сумма инвестиций, USD",
-            InputType.TYPE_CLASS_NUMBER or
-                InputType.TYPE_NUMBER_FLAG_DECIMAL
-        )
-        val percent = input(
-            "Предполагаемая годовая доходность, %",
-            InputType.TYPE_CLASS_NUMBER or
-                InputType.TYPE_NUMBER_FLAG_DECIMAL or
-                InputType.TYPE_NUMBER_FLAG_SIGNED
-        )
-        val years = input(
-            "Срок инвестирования, лет",
-            InputType.TYPE_CLASS_NUMBER
-        )
-
-        calc.addView(money)
-        calc.addView(space(9))
-        calc.addView(percent)
-        calc.addView(space(9))
-        calc.addView(years)
-        calc.addView(space(12))
-
-        val result = label(
-            "Введите сумму, доходность и срок.",
-            15f, dark, true
-        )
-
-        val calculate = Button(this).apply {
-            text = "РАССЧИТАТЬ"
-            setTextColor(Color.WHITE)
-            background = bg(blue, 13)
-            setOnClickListener {
-                try {
-                    val capital = money.text.toString().toDouble()
-                    val rate = percent.text.toString().toDouble()
-                    val period = years.text.toString().toInt()
-
-                    require(
-                        capital > 0 && rate > -100 &&
-                        period > 0 && period <= 100
-                    )
-
-                    val total = capital * Math.pow(
-                        1 + rate / 100, period.toDouble()
-                    )
-                    val profit = total - capital
-
-                    result.text = String.format(
-                        Locale.US,
-                        "Итоговая сумма: $%,.2f\n" +
-                        "Расчётная прибыль: $%,.2f\n" +
-                        "Начальный капитал: $%,.2f\n\n" +
-                        "Это сценарий расчёта, не гарантия дохода.",
-                        total, profit, capital
-                    )
-                } catch (e: Exception) {
-                    result.text =
-                        "Проверьте сумму, процент и срок."
-                }
-            }
-        }
-
-        calc.addView(calculate)
-        calc.addView(space(12))
-        calc.addView(result)
-        root.addView(calc)
-        root.addView(space(20))
-
-        root.addView(
-            label("Анализ и управление рисками", 20f, dark, true)
-        )
-        root.addView(space(8))
-
-        val risk = card()
-        risk.addView(
-            label(
-                "Функции HAN INVEST:\n\n" +
-                "• История цен и динамика рынка\n" +
-                "• Волатильность и риск потерь\n" +
-                "• Сравнение активов\n" +
-                "• Краткосрочные и долгосрочные сценарии\n" +
-                "• Поиск инвестиционных возможностей\n\n" +
-                "Результаты сканера основаны на исторических " +
-                "данных и не являются гарантированным прогнозом.",
-                14f, dark
-            )
-        )
-        root.addView(risk)
-        root.addView(space(20))
-
-        root.addView(label("HAN INVEST", 22f, blue, true))
-        root.addView(
-            label(
-                "Данные могут иметь задержку. Прогнозы не гарантируют " +
-                "прибыль. Инвестиции связаны с риском потери капитала.",
-                12f, muted
-            )
-        )
-
-        // РАСКРЫВАЮЩИЙСЯ РАЗДЕЛ ИСТОЧНИКОВ ДАННЫХ
-        val sourcesToggle = Button(this).apply {
-            text = "О ПРИЛОЖЕНИИ И ИСТОЧНИКАХ ДАННЫХ"
-            setTextColor(blue)
-            background = bg(Color.WHITE, 13)
-        }
-
-        val sourcesInfo = label(
-            "Источники рыночных данных:\n" +
-            "• Валюты — Frankfurter API\n" +
-            "• Золото, серебро, нефть и индексы — SnapData\n" +
-            "• Криптовалюты — CoinGecko\n" +
-            "• Облигации США — Министерство финансов США\n" +
-            "• Акции и ETF — Alpha Vantage\n\n" +
-            "Методология: приложение показывает опубликованные котировки " +
-            "и рассчитывает показатели на основе исторических данных. " +
-            "Данные могут иметь задержку. Анализ не гарантирует доходность.",
-            12f, muted
-        )
-
-        sourcesInfo.visibility = View.GONE
-
-        sourcesToggle.setOnClickListener {
-            sourcesInfo.visibility =
-                if (sourcesInfo.visibility == View.VISIBLE)
-                    View.GONE
-                else
-                    View.VISIBLE
-        }
-
-        root.addView(space(10))
-        root.addView(sourcesToggle)
-        root.addView(space(6))
-        root.addView(sourcesInfo)
-
         scroll.addView(root)
         setContentView(scroll)
 
