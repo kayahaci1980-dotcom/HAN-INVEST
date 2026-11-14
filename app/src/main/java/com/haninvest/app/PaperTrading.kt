@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.view.View
+import android.os.Handler
+import android.os.Looper
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -806,6 +808,49 @@ class PaperTrading(private val context: Context) {
         if (!prefs.contains("cash_usdt") && !prefs.contains("cash")) saveBalance(1000.0)
         render(details)
         showSellActions()
+
+        // LIVE-обновление только открытых PAPER-позиций каждые 5 секунд.
+        // Цены берутся с публичного Bybit Spot API; сделки автоматически
+        // не открываются, а существующие Stop/Take и защита прибыли сохраняются.
+        val liveHandler = Handler(Looper.getMainLooper())
+        val liveBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+        val liveRefresh = object : Runnable {
+            override fun run() {
+                if (!box.isAttachedToWindow) return
+                if (positions().length() == 0) {
+                    liveHandler.postDelayed(this, 5000L)
+                    return
+                }
+                if (!liveBusy.compareAndSet(false, true)) {
+                    liveHandler.postDelayed(this, 5000L)
+                    return
+                }
+                Thread {
+                    val message = try {
+                        refreshOpenPositionsFromExchanges()
+                    } catch (e: Exception) {
+                        "LIVE: котировки временно недоступны."
+                    }
+                    liveBusy.set(false)
+                    (context as? android.app.Activity)?.runOnUiThread {
+                        if (box.isAttachedToWindow) {
+                            render(details)
+                            status.text = message + " Следующее обновление через 5 секунд."
+                        }
+                    }
+                    liveHandler.postDelayed(this, 5000L)
+                }.start()
+            }
+        }
+        box.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {
+                liveHandler.removeCallbacks(liveRefresh)
+                liveHandler.postDelayed(liveRefresh, 5000L)
+            }
+            override fun onViewDetachedFromWindow(v: View) {
+                liveHandler.removeCallbacks(liveRefresh)
+            }
+        })
         return box
     }
 }
