@@ -432,6 +432,125 @@ def _apply_market_data(
                 current_positions += 1
 
 
+def _close_short_position(db, position, price: float, reason: str) -> None:
+    qty = float(position['quantity'])
+    margin = float(position['margin_usdt'])
+    entry = float(position['entry_price'])
+    entry_fee = float(position['entry_fee_usdt'])
+    gross_pnl = qty * (entry - price)
+    exit_fee = qty * price * _FEE_RATE
+    pnl = gross_pnl - entry_fee - exit_fee
+    loss_pct = pnl / margin * 100.0 if margin > 0 else 0.0
+    if loss_pct <= -2.0:
+        db.execute('''INSERT INTO paper_loss_cooldowns (exchange, symbol, blocked_until, loss_pct)
+                      VALUES (?, ?, ?, ?) ON CONFLICT (exchange, symbol) DO UPDATE SET
+                      blocked_until=excluded.blocked_until, loss_pct=excluded.loss_pct''',
+                   (position['exchange'], position['symbol'], _now().timestamp() + _LOSS_COOLDOWN_SECONDS, loss_pct))
+    account = db.execute('SELECT cash FROM paper_account WHERE id=1').fetchone()
+    db.execute('UPDATE paper_account SET cash=?, updated_at=? WHERE id=1',
+               (float(account['cash']) + margin + gross_pnl - exit_fee, _now()))
+    db.execute('''INSERT INTO paper_trades
+                 (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
+                 VALUES (?, ?, ?, 'SHORT_CLOSE', ?, ?, ?, ?, ?, ?)''',
+               (_now(), position['exchange'], position['symbol'], price, qty, qty * price, exit_fee, pnl, reason))
+    db.execute('DELETE FROM paper_short_positions WHERE exchange=? AND symbol=?',
+               (position['exchange'], position['symbol']))
+
+
+def _open_short_position(db, exchange: str, asset: dict[str, Any], reason: str) -> bool:
+    symbol = str(asset.get('symbol') or '')
+    try:
+        price = float(asset.get('price') or 0)
+    except (TypeError, ValueError):
+        return False
+    if not symbol or price <= 0 or asset.get('short_ready') is not True:
+        return False
+    if db.execute('SELECT 1 FROM paper_positions WHERE exchange=? AND symbol=?', (exchange, symbol)).fetchone():
+        return False
+    if db.execute('SELECT 1 FROM paper_short_positions WHERE exchange=? AND symbol=?', (exchange, symbol)).fetchone():
+        return False
+    cash = float(db.execute('SELECT cash FROM paper_account WHERE id=1').fetchone()['cash'])
+    risk_budget = cash * _RISK_PCT / 100.0
+    risk_per_coin = price * 0.02 + price * 1.98 * _FEE_RATE
+    if cash <= 0 or risk_per_coin <= 0:
+        return False
+    qty = min(risk_budget / risk_per_coin, cash / (price * (1 + _FEE_RATE)))
+    margin = qty * price
+    entry_fee = margin * _FEE_RATE
+    if qty <= 0 or margin + entry_fee > cash:
+        return False
+    db.execute('''INSERT INTO paper_short_positions
+                 (exchange, symbol, quantity, margin_usdt, entry_fee_usdt, entry_price,
+                  stop_loss, take_profit, last_price, opened_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+               (exchange, symbol, qty, margin, entry_fee, price, price * 1.02, price * 0.90, price, _now()))
+    db.execute('UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1', (margin + entry_fee, _now()))
+    db.execute('''INSERT INTO paper_trades
+                 (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
+                 VALUES (?, ?, ?, 'SHORT_OPEN', ?, ?, ?, ?, NULL, ?)''',
+               (_now(), exchange, symbol, price, qty, margin, entry_fee, reason))
+    return True
+
+
+def _apply_short_market_data(payload: dict[str, Any], allow_new_shorts: bool = False) -> None:
+    assets = payload.get('assets') or []
+    if not isinstance(assets, list):
+        return
+    by_symbol = {str(a.get('symbol')): a for a in assets if isinstance(a, dict) and a.get('symbol')}
+    with _connect() as db:
+        account = db.execute('SELECT * FROM paper_account WHERE id=1').fetchone()
+        if not account or not account['enabled']:
+            return
+        positions = db.execute("SELECT * FROM paper_short_positions WHERE exchange='Bybit'").fetchall()
+        for position in positions:
+            asset = by_symbol.get(position['symbol'])
+            if not asset:
+                continue
+            try:
+                price = float(asset.get('price') or 0)
+                score = float(asset.get('short_score') or 0)
+                entry = float(position['entry_price'])
+            except (TypeError, ValueError):
+                continue
+            if price <= 0 or entry <= 0:
+                continue
+            db.execute("UPDATE paper_short_positions SET last_price=? WHERE exchange='Bybit' AND symbol=?",
+                       (price, position['symbol']))
+            favorable = (entry / price - 1.0) * 100.0
+            if favorable >= 10.0:
+                _close_short_position(db, position, price, 'SHORT_TAKE_PROFIT_10')
+                cooldown = db.execute('SELECT blocked_until FROM paper_loss_cooldowns WHERE exchange=? AND symbol=?',
+                                      ('Bybit', position['symbol'])).fetchone()
+                blocked = cooldown is not None and float(cooldown['blocked_until']) > _now().timestamp()
+                if allow_new_shorts and not blocked and _open_short_position(db, 'Bybit', asset, 'AUTO_SHORT_REOPEN_AFTER_10_PERCENT'):
+                    logger.info('Paper re-opened SHORT %s after 10%% favorable move', position['symbol'])
+            elif score < 83:
+                _close_short_position(db, position, price, 'SHORT_SCORE_BELOW_83')
+            elif favorable <= -2.0:
+                _close_short_position(db, position, price, 'SHORT_STOP_LOSS_2_PERCENT')
+        if not allow_new_shorts:
+            return
+        count = db.execute('SELECT (SELECT COUNT(*) FROM paper_positions) + (SELECT COUNT(*) FROM paper_short_positions) AS n').fetchone()['n']
+        if count >= _MAX_POSITIONS:
+            return
+        candidates = sorted((a for a in assets if isinstance(a, dict)),
+                            key=lambda a: float(a.get('short_score') or 0), reverse=True)
+        for asset in candidates:
+            if count >= _MAX_POSITIONS:
+                break
+            try:
+                score = float(asset.get('short_score') or 0)
+            except (TypeError, ValueError):
+                continue
+            if score < 83 or asset.get('short_ready') is not True or not asset.get('symbol'):
+                continue
+            cooldown = db.execute('SELECT blocked_until FROM paper_loss_cooldowns WHERE exchange=? AND symbol=?',
+                                  ('Bybit', str(asset['symbol']))).fetchone()
+            if cooldown and float(cooldown['blocked_until']) > _now().timestamp():
+                continue
+            if _open_short_position(db, 'Bybit', asset, 'AUTO_SHORT_SCORE_83_PLUS'):
+                count += 1
+
 async def _scan_cycle() -> None:
     global _last_market_breadth
     async with _cycle_lock:
