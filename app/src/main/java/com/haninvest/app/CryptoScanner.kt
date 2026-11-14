@@ -653,10 +653,9 @@ class CryptoScanner(private val context: Context) {
                     compareByDescending<Pair<JSONObject, ExchangeResult>> { it.first.optInt("score", 0) }
                         .thenByDescending { it.first.optDouble("volume_ratio", 0.0) }
                 )
-                // Combined view: one best-scoring listing per base coin, at most 2000 unique coins.
-                val ranked = rankedAll.groupBy { baseAssetKey(it.first) }
-                    .values.mapNotNull { matches -> matches.firstOrNull() }
-                    .take(2000)
+                // Market view counts exchange trading pairs separately (e.g. BTC/USDT on each exchange).
+                // Keep up to 2000 pair listings across Bybit and Coinbase.
+                val ranked = rankedAll.take(2000)
                 fun moveValue(coin: JSONObject): Double {
                     return coin.optDouble("change_24h_pct",
                         coin.optDouble("price_change_percent_24h", coin.optDouble("change_24h", 0.0)))
@@ -997,7 +996,7 @@ class CryptoScanner(private val context: Context) {
             status.text = "Загружаем Bybit и Coinbase Exchange независимо..."
             render()
             fetchExchange("Bybit",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=1000&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk") {
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=1000&min_volume=100000&capital_usdt=$capital&risk_pct=$risk") {
                 bybit = it
                 loadingCount--
                 status.text = if (loadingCount == 0) "Данные Bybit и Coinbase Exchange обновлены."
@@ -1005,7 +1004,7 @@ class CryptoScanner(private val context: Context) {
                 render()
             }
             fetchExchange("Coinbase Exchange",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=1000&min_volume=1000000") {
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=1000&min_volume=100000") {
                 coinbase = it
                 loadingCount--
                 status.text = if (loadingCount == 0) "Данные Bybit и Coinbase Exchange обновлены."
