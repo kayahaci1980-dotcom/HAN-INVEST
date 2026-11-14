@@ -110,5 +110,34 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.assertEqual(len(self.positions()), 0)
 
 
+    def test_account_snapshot_unifies_realized_and_unrealized_profit_loss(self):
+        self.seed_position()
+        with paper._connect() as db:
+            db.execute("UPDATE paper_positions SET last_price=102.0 WHERE exchange='Bybit' AND symbol='BTCUSDT'")
+            # A closed winner (+3) and loser (-2) have already changed cash by net +1.
+            db.execute("UPDATE paper_account SET cash=cash+1.0 WHERE id=1")
+            for symbol, side, pnl in (("WINUSDT", "SELL", 3.0), ("LOSSUSDT", "SHORT_CLOSE", -2.0)):
+                db.execute(
+                    """INSERT INTO paper_trades
+                       (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
+                       VALUES (?, 'Bybit', ?, ?, 100.0, 1.0, 100.0, 0.1, ?, 'TEST')""",
+                    (paper._now(), symbol, side, pnl),
+                )
+
+        state = paper._account_snapshot()
+        self.assertAlmostEqual(state["realized_profit_usdt"], 3.0, places=6)
+        self.assertAlmostEqual(state["realized_loss_usdt"], 2.0, places=6)
+        self.assertGreater(state["unrealized_profit_usdt"], 0.0)
+        self.assertAlmostEqual(
+            state["profit_usdt"] - state["loss_usdt"],
+            state["equity_usdt"] - state["initial_cash_usdt"],
+            places=6,
+        )
+        self.assertAlmostEqual(
+            state["net_pnl_usdt"],
+            state["profit_usdt"] - state["loss_usdt"],
+            places=6,
+        )
+
 if __name__ == "__main__":
     unittest.main()

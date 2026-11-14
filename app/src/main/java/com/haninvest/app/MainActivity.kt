@@ -491,62 +491,7 @@ class MainActivity : Activity() {
         root.addView(banner)
         root.addView(space(10))
 
-        // Серверная сводка виртуального счёта: баланс и общий результат.
-        val accountSummary = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(13), dp(12), dp(13), dp(12))
-            background = bg(Color.rgb(17, 25, 52), 16)
-        }
-        fun summaryMetric(caption: String, initial: String, color: Int): LinearLayout {
-            val metric = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            metric.addView(label(caption, 10f, muted, true))
-            metric.addView(label(initial, 15f, color, true))
-            return metric
-        }
-        val balanceMetric = summaryMetric("ОБЩИЙ БАЛАНС", "Загрузка…", Color.WHITE)
-        val profitMetric = summaryMetric("ПРИБЫЛЬ", "— USDT", Color.rgb(24, 220, 130))
-        val lossMetric = summaryMetric("УБЫТОК", "— USDT", Color.rgb(255, 105, 105))
-        accountSummary.addView(balanceMetric)
-        accountSummary.addView(profitMetric)
-        accountSummary.addView(lossMetric)
-        root.addView(accountSummary)
-        root.addView(space(14))
-        Thread {
-            try {
-                val connection = URL("https://han-invest-api-test.onrender.com/api/v1/paper/state")
-                    .openConnection() as HttpURLConnection
-                val state = try {
-                    connection.requestMethod = "GET"
-                    connection.connectTimeout = 15000
-                    connection.readTimeout = 20000
-                    connection.setRequestProperty("Accept", "application/json")
-                    if (connection.responseCode !in 200..299) throw Exception("HTTP ${connection.responseCode}")
-                    JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-                } finally {
-                    connection.disconnect()
-                }
-                val equity = state.optDouble("equity_usdt", Double.NaN)
-                val profit = state.optDouble("profit_usdt", 0.0)
-                val loss = kotlin.math.abs(state.optDouble("loss_usdt", 0.0))
-                runOnUiThread {
-                    balanceMetric.getChildAt(1).let { (it as TextView).text =
-                        if (equity.isNaN()) "— USDT" else String.format(Locale.US, "%.2f USDT", equity) }
-                    (profitMetric.getChildAt(1) as TextView).text = String.format(Locale.US, "+%.2f USDT", profit)
-                    (lossMetric.getChildAt(1) as TextView).text = String.format(Locale.US, "-%.2f USDT", loss)
-                }
-            } catch (_: Exception) {
-                runOnUiThread {
-                    (balanceMetric.getChildAt(1) as TextView).text = "Нет связи"
-                    (profitMetric.getChildAt(1) as TextView).text = "— USDT"
-                    (lossMetric.getChildAt(1) as TextView).text = "— USDT"
-                }
-            }
-        }.start()
-
+        // Единая сводка PAPER отображается внутри CryptoScanner и обновляется одним серверным снимком.
         root.addView(CryptoScanner(this).createView())
         scroll.addView(root)
         setContentView(scroll)

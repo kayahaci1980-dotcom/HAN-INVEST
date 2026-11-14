@@ -441,13 +441,24 @@ class CryptoScanner(private val context: Context) {
                         14f, if (serverEnabled) Color.rgb(20, 145, 90) else muted, true
                     ))
                     content.addView(label(
-                        "Серверный баланс: " + formatNumber(remote.optDouble("cash_usdt"), 2) + " USDT",
-                        16f, dark, true
+                        "ОСТАТОК СРЕДСТВ: " + formatNumber(remote.optDouble("cash_usdt"), 2) + " USDT",
+                        15f, dark, true
                     ))
                     content.addView(label(
-                        "Открытые позиции: " + formatNumber(remote.optDouble("holdings_value_usdt"), 2) +
-                            " USDT • Всего: " + formatNumber(remote.optDouble("equity_usdt"), 2) + " USDT",
+                        "В ОТКРЫТЫХ ПОЗИЦИЯХ: " + formatNumber(remote.optDouble("holdings_value_usdt"), 2) +
+                            " USDT • ОБЩИЙ БАЛАНС: " + formatNumber(remote.optDouble("equity_usdt"), 2) + " USDT",
                         13f, dark
+                    ))
+                    content.addView(label(
+                        "ПРИБЫЛЬ: +" + formatNumber(remote.optDouble("profit_usdt"), 2) +
+                            " USDT • УБЫТОК: -" + formatNumber(remote.optDouble("loss_usdt"), 2) + " USDT",
+                        13f, Color.rgb(20, 145, 90), true
+                    ))
+                    content.addView(label(
+                        "ИТОГОВЫЙ РЕЗУЛЬТАТ: " +
+                            (if (remote.optDouble("net_pnl_usdt") >= 0) "+" else "") +
+                            formatNumber(remote.optDouble("net_pnl_usdt"), 2) + " USDT",
+                        13f, if (remote.optDouble("net_pnl_usdt") >= 0) Color.rgb(20, 145, 90) else Color.RED, true
                     ))
                     content.addView(label(
                         if (persistent) "Хранилище: постоянный диск подключён"
@@ -469,15 +480,8 @@ class CryptoScanner(private val context: Context) {
                         val quantity = p.optDouble("quantity")
                         val entryPrice = p.optDouble("entry_price")
                         val lastPrice = p.optDouble("last_price")
-                        val cost = p.optDouble("cost_usdt")
-                        val feeRate = remote.optDouble("fee_rate_per_side", 0.001)
-                        val estimatedPnl = if (side == "SHORT") {
-                            (entryPrice - lastPrice) * quantity -
-                                (cost - entryPrice * quantity) -
-                                (lastPrice * quantity * feeRate)
-                        } else {
-                            lastPrice * quantity * (1.0 - feeRate) - cost
-                        }
+                        // Use the same server-calculated unrealized P/L as the account totals.
+                        val estimatedPnl = p.optDouble("unrealized_pnl_usdt", 0.0)
                         content.addView(label(
                             "Количество: " + formatNumber(quantity, 8) +
                                 " • Вход: " + formatNumber(entryPrice * quantity, 2) + " USDT",
@@ -690,17 +694,19 @@ class CryptoScanner(private val context: Context) {
                 }
                 if (selectedTab == "HOME") {
                     val remote = serverPaperState
-                    val totalBalance = remote?.optDouble("equity_usdt", 1000.0) ?: 1000.0
-                    val availableCash = remote?.optDouble("cash_usdt", 1000.0) ?: 1000.0
-                    val profit = remote?.optDouble("profit_usdt", 0.0) ?: 0.0
-                    val loss = remote?.optDouble("loss_usdt", 0.0) ?: 0.0
-                    val holdings = remote?.optJSONArray("open_positions")?.length() ?: 0
+                    val totalBalance = remote?.optDouble("equity_usdt", Double.NaN) ?: Double.NaN
+                    val availableCash = remote?.optDouble("cash_usdt", Double.NaN) ?: Double.NaN
+                    val profit = remote?.optDouble("profit_usdt", Double.NaN) ?: Double.NaN
+                    val loss = remote?.optDouble("loss_usdt", Double.NaN) ?: Double.NaN
+                    val holdings = remote?.optJSONArray("open_positions")?.length()
+                    fun accountAmount(value: Double): String =
+                        if (value.isFinite()) "$" + formatNumber(value, 2) else "—"
                     val rows = listOf(
-                        listOf("ОБЩИЙ БАЛАНС" to "$" + formatNumber(totalBalance, 2),
-                            "ОСТАТОК СРЕДСТВ" to "$" + formatNumber(availableCash, 2)),
-                        listOf("ПРИБЫЛЬ" to "+$" + formatNumber(profit, 2),
-                            "УБЫТОК" to "-$" + formatNumber(kotlin.math.abs(loss), 2)),
-                        listOf("ОТКРЫТЫХ ПОЗИЦИЙ" to "$holdings / 10")
+                        listOf("ОБЩИЙ БАЛАНС" to accountAmount(totalBalance),
+                            "ОСТАТОК СРЕДСТВ" to accountAmount(availableCash)),
+                        listOf("ПРИБЫЛЬ" to (if (profit.isFinite()) "+$" + formatNumber(profit, 2) else "—"),
+                            "УБЫТОК" to (if (loss.isFinite()) "-$" + formatNumber(kotlin.math.abs(loss), 2) else "—")),
+                        listOf("ОТКРЫТЫХ ПОЗИЦИЙ" to (holdings?.let { "$it / 10" } ?: "—"))
                     )
                     rows.forEach { rowItems ->
                         val stats = LinearLayout(context).apply {
@@ -1076,6 +1082,7 @@ class CryptoScanner(private val context: Context) {
             }
         })
         loadAll()
+        refreshPaperServer()
         return section
     }
 }
