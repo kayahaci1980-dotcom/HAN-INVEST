@@ -480,7 +480,6 @@ class CryptoScanner(private val context: Context) {
                         val quantity = p.optDouble("quantity")
                         val entryPrice = p.optDouble("entry_price")
                         val lastPrice = p.optDouble("last_price")
-                        val cost = p.optDouble("cost_usdt")
                         // Use the same server-calculated unrealized P/L as the account totals.
                         val estimatedPnl = p.optDouble("unrealized_pnl_usdt", 0.0)
                         content.addView(label(
