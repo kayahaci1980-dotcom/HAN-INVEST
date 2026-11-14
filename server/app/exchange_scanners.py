@@ -315,7 +315,7 @@ async def _cached_scan(exchange: str, limit: int, min_volume: float):
 
 @router.get("/api/v1/crypto/coinbase/scan")
 async def scan_coinbase(
-    limit: int = Query(50, ge=1, le=500),
+    limit: int = Query(50, ge=1, le=1000),
     min_volume: float = Query(1_000_000, ge=0),
 ):
     return await _cached_scan("coinbase", limit, min_volume)
