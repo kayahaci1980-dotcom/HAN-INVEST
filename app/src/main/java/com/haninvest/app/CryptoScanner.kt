@@ -448,8 +448,9 @@ class CryptoScanner(private val context: Context) {
                         val p = remotePositions.optJSONObject(i) ?: continue
                         val symbol = p.optString("symbol")
                         val exchange = p.optString("exchange")
+                        val side = p.optString("side", "LONG").uppercase()
                         content.addView(label(
-                            symbol + " • " + exchange +
+                            symbol + " • " + side + " • " + exchange +
                                 " • Вход " + formatNumber(p.optDouble("entry_price"), 8) +
                                 " • Сейчас " + formatNumber(p.optDouble("last_price"), 8),
                             12f, dark, true
@@ -460,7 +461,7 @@ class CryptoScanner(private val context: Context) {
                             11f, muted
                         ))
                         val manualSell = Button(context).apply {
-                            text = "Продать эту виртуальную позицию"
+                            text = if (side == "SHORT") "Закрыть виртуальный SHORT" else "Продать виртуальную LONG"
                             buttonStyle(this, orange)
                             isEnabled = !serverPaperLoading
                             setOnClickListener {
@@ -478,7 +479,7 @@ class CryptoScanner(private val context: Context) {
                                             connection.readTimeout = 20000
                                             connection.setRequestProperty("Content-Type", "application/json")
                                             connection.setRequestProperty("Accept", "application/json")
-                                            val body = JSONObject().put("exchange", exchange).put("symbol", symbol).toString()
+                                            val body = JSONObject().put("exchange", exchange).put("symbol", symbol).put("side", side).toString()
                                             connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
                                             val code = connection.responseCode
                                             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
