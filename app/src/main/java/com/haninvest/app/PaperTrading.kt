@@ -1,6 +1,7 @@
 package com.haninvest.app
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.view.View
@@ -418,6 +419,54 @@ class PaperTrading(private val context: Context) {
         return total
     }
 
+    // Формируем локальный отчёт для передачи пользователем. Ключи бирж и секреты не читаются.
+    private fun buildShareReport(): String {
+        val open = positions()
+        val log = history()
+        val cash = balance()
+        val invested = remainingValue(open)
+        val equity = cash + invested
+        val pnl = logPnl(log) + openPnl(open)
+        val out = StringBuilder()
+        out.append("HAN INVEST — PAPER TRADING\\n")
+        out.append("Режим: виртуальный счёт, реальные ордера не отправляются\\n")
+        out.append("Время отчёта: ").append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(java.util.Date())).append(" (Asia/Bishkek)\\n")
+        out.append("Свободный баланс: ").append(money(cash)).append("\\n")
+        out.append("Стоимость открытых позиций: ").append(money(invested)).append("\\n")
+        out.append("Общий капитал: ").append(money(equity)).append("\\n")
+        out.append("Общий P/L: ").append(if (pnl >= 0) "+" else "").append(money(pnl)).append("\\n")
+        out.append("Открытых позиций: ").append(open.length()).append("\\n\\n")
+        out.append("ОТКРЫТЫЕ ПОЗИЦИИ\\n")
+        for (i in 0 until open.length()) {
+            val p = open.optJSONObject(i) ?: continue
+            val qty = p.optDouble("quantity")
+            val entry = p.optDouble("entry")
+            val price = p.optDouble("last_price", entry)
+            val positionPnl = qty * price * (1.0 - paperFeeRate) - p.optDouble("cost", qty * entry)
+            out.append(p.optString("exchange", "Bybit Spot")).append(" ").append(p.optString("symbol"))
+                .append(" | вход ").append(money(entry))
+                .append(" | цена ").append(money(price))
+                .append(" | P/L ").append(money(positionPnl))
+                .append(" | оценка ").append(p.optInt("score")).append("/100\\n")
+        }
+        out.append("\\nПОСЛЕДНИЕ СДЕЛКИ (до 30)\\n")
+        val start = maxOf(0, log.length() - 30)
+        for (i in log.length() - 1 downTo start) {
+            val t = log.optJSONObject(i) ?: continue
+            out.append(t.optString("type")).append(" ").append(t.optString("exchange", "Bybit Spot"))
+                .append(" ").append(t.optString("symbol"))
+                .append(" | цена ").append(money(t.optDouble("price")))
+                .append(" | комиссия ").append(money(t.optDouble("fee")))
+            if (t.optString("type") == "SELL") {
+                out.append(" | P/L ").append(money(t.optDouble("pnl")))
+                    .append(" | причина ").append(t.optString("reason"))
+            }
+            out.append("\\n")
+        }
+        out.append("\\nКомиссия в модели: 0.1% на сторону. Данные сформированы локально приложением.")
+        return out.toString()
+    }
+
     fun createView(): View {
         val box = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -583,6 +632,18 @@ class PaperTrading(private val context: Context) {
             }
         }
         box.addView(refreshQuotes)
+        val shareReport = Button(context).apply {
+            text = "ОТПРАВИТЬ ОТЧЁТ PAPER TRADING"
+            setOnClickListener {
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "HAN INVEST — отчёт PAPER TRADING")
+                    putExtra(Intent.EXTRA_TEXT, buildShareReport())
+                }
+                context.startActivity(Intent.createChooser(send, "Поделиться отчётом"))
+            }
+        }
+        box.addView(shareReport)
         val reset = Button(context).apply {
             text = "СБРОСИТЬ СЧЁТ ДО \\$1 000"
             setOnClickListener {
