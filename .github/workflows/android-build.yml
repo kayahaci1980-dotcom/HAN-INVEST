@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - crypto-v0.6.0
+      - fix/unified-paper-accounting-api
     paths:
       - "app/**"
       - "server/**"
@@ -36,6 +37,11 @@ jobs:
 
       - name: Backend import and database smoke test
         run: PYTHONPATH=server python -c "from app.main import app; from app.paper_trading import _init_db; _init_db(); print('HAN INVEST backend ready', len(app.routes))"
+      - name: Install pytest
+        run: python -m pip install pytest
+
+      - name: Run PAPER account snapshot tests
+        run: PYTHONPATH=server pytest -q server/tests/test_paper_account_snapshot.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
