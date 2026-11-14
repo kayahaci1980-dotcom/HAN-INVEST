@@ -192,6 +192,8 @@ class CryptoScanner(private val context: Context) {
         var coinbase: ExchangeResult? = null
         var okx: ExchangeResult? = null
         var marketContext: JSONObject? = null
+        var marketExchangeFilter = "ALL"
+        var marketMoveFilter = "ALL"
         var loadingCount = 0
 
         fun addTab(title: String, key: String, color: Int) {
@@ -573,7 +575,66 @@ class CryptoScanner(private val context: Context) {
                     compareByDescending<Pair<JSONObject, ExchangeResult>> { it.first.optInt("score", 0) }
                         .thenByDescending { it.first.optDouble("volume_ratio", 0.0) }
                 )
-                val shown = when (selectedTab) { "HOME" -> ranked.take(3); "ANALYSIS" -> ranked.take(30); else -> ranked }
+                fun moveValue(coin: JSONObject): Double {
+                    return coin.optDouble("change_24h_pct",
+                        coin.optDouble("price_change_percent_24h", coin.optDouble("change_24h", 0.0)))
+                }
+                if (selectedTab == "HOME") {
+                    val stats = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                    val remote = serverPaperState
+                    val balance = remote?.optDouble("equity_usdt", 1000.0) ?: 1000.0
+                    val holdings = remote?.optJSONArray("open_positions")?.length() ?: 0
+                    listOf("ВИРТУАЛЬНЫЙ СЧЁТ" to "$" + formatNumber(balance, 2),
+                        "ОТКРЫТЫХ ПОЗИЦИЙ" to "$holdings / 3").forEach { item ->
+                        val tile = LinearLayout(context).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setPadding(dp(10), dp(12), dp(10), dp(12))
+                            background = rounded(Color.rgb(24, 34, 68), 13)
+                            layoutParams = LinearLayout.LayoutParams(0, dp(72), 1f).apply { marginEnd = dp(7) }
+                        }
+                        tile.addView(label(item.first, 9f, muted, true))
+                        tile.addView(label(item.second, 17f, dark, true))
+                        stats.addView(tile)
+                    }
+                    content.addView(stats)
+                    content.addView(label("ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА", 16f, dark, true))
+                }
+                if (selectedTab == "MARKET") {
+                    val exchangeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                    listOf("ALL" to "Все", "Binance" to "Binance", "Bybit" to "Bybit",
+                        "Coinbase Exchange" to "Coinbase", "OKX" to "OKX").forEach { (key, title) ->
+                        val filter = Button(context).apply {
+                            text = title
+                            textSize = 10f
+                            buttonStyle(this, if (marketExchangeFilter == key) purple else Color.rgb(28, 38, 69))
+                            layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(3) }
+                            setOnClickListener { marketExchangeFilter = key; render() }
+                        }
+                        exchangeRow.addView(filter)
+                    }
+                    content.addView(exchangeRow)
+                    val moveRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                    listOf("ALL" to "Все", "UP" to "Рост ↑", "DOWN" to "Падение ↓").forEach { (key, title) ->
+                        val filter = Button(context).apply {
+                            text = title
+                            textSize = 11f
+                            buttonStyle(this, if (marketMoveFilter == key) blue else Color.rgb(28, 38, 69))
+                            layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(4) }
+                            setOnClickListener { marketMoveFilter = key; render() }
+                        }
+                        moveRow.addView(filter)
+                    }
+                    content.addView(moveRow)
+                    content.addView(label("ПАРА / БИРЖА        ЦЕНА          24 Ч.       ОЦЕНКА", 10f, muted, true))
+                }
+                var shown = when (selectedTab) { "HOME" -> ranked.take(3); "ANALYSIS" -> ranked.take(30); else -> ranked }
+                if (selectedTab == "MARKET") {
+                    shown = shown.filter { (_, ex) ->
+                        marketExchangeFilter == "ALL" || ex.exchange.equals(marketExchangeFilter, true)
+                    }.filter { (coin, _) ->
+                        when (marketMoveFilter) { "UP" -> moveValue(coin) > 0; "DOWN" -> moveValue(coin) < 0; else -> true }
+                    }.sortedByDescending { (coin, _) -> if (marketMoveFilter == "DOWN") -moveValue(coin) else moveValue(coin) }
+                }
                 if (shown.isEmpty()) content.addView(label("Нет доступных результатов. Проверьте соединение.", 14f, muted))
                 shown.forEach { (coin, exchange) -> coinCard(coin, exchange.exchange, exchange, maxRisk) }
                 content.addView(label(
