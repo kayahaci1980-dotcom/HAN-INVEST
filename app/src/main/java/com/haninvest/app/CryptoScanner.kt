@@ -611,14 +611,40 @@ class CryptoScanner(private val context: Context) {
                         12f, if (persistent) Color.rgb(20, 145, 90) else Color.rgb(190, 90, 45)
                     ))
                     val remotePositions = remote.optJSONArray("open_positions") ?: JSONArray()
+                    content.addView(label("ДЕТАЛИ ОТКРЫТЫХ ПОЗИЦИЙ", 14f, dark, true))
                     for (i in 0 until remotePositions.length()) {
                         val p = remotePositions.optJSONObject(i) ?: continue
-                        content.addView(label(
-                            p.optString("symbol") + " • " + p.optString("exchange") +
-                                " • SL " + formatNumber(p.optDouble("stop_loss"), 6) +
-                                " • TP " + formatNumber(p.optDouble("take_profit"), 6),
-                            11f, muted
+                        val symbol = p.optString("symbol", "—")
+                        val exchange = p.optString("exchange", "—")
+                        val direction = p.optString("side", p.optString("direction", "LONG")).uppercase()
+                        val entry = p.optDouble("entry_price", 0.0)
+                        val current = p.optDouble("last_price", 0.0)
+                        val stop = p.optDouble("stop_loss", 0.0)
+                        val target = p.optDouble("take_profit", 0.0)
+                        val quantity = p.optDouble("quantity", 0.0)
+                        val pnl = p.optDouble("unrealized_pnl_usdt", 0.0)
+                        val card = LinearLayout(context).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setPadding(dp(10), dp(9), dp(10), dp(9))
+                            background = rounded(page, 10)
+                        }
+                        card.addView(label("$symbol • $exchange • $direction", 14f, dark, true))
+                        card.addView(label("Цена входа: " + formatNumber(entry, 8) + " USDT", 12f, muted))
+                        card.addView(label("Текущая цена: " + formatNumber(current, 8) + " USDT", 12f, dark))
+                        card.addView(label("Количество: " + formatNumber(quantity, 8), 12f, muted))
+                        card.addView(label("Stop Loss: " + formatNumber(stop, 8) + " USDT", 12f, orange, true))
+                        card.addView(label("Take Profit: " + if (target > 0.0) formatNumber(target, 8) + " USDT" else "не установлен", 12f, muted))
+                        card.addView(label(
+                            "Нереализованный результат: " + (if (pnl >= 0) "+" else "") + formatNumber(pnl, 4) + " USDT",
+                            12f, if (pnl >= 0) Color.rgb(20, 145, 90) else Color.RED, true
                         ))
+                        content.addView(card)
+                        content.addView(View(context).apply {
+                            layoutParams = LinearLayout.LayoutParams(1, dp(7))
+                        })
+                    }
+                    if (remotePositions.length() == 0) {
+                        content.addView(label("Открытых позиций сейчас нет.", 12f, muted))
                     }
                     val lastScan = remote.optString("last_scan_at", "")
                     if (lastScan.isNotBlank() && lastScan != "null") {
