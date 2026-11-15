@@ -166,6 +166,53 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.assertEqual(len(lots), 3)
         self.assertAlmostEqual(float(lots[1]["cost_usdt"]), float(lots[0]["cost_usdt"]), places=5)
 
+    def test_short_accounting_uses_each_lot_entry_for_unrealized_and_realized_pnl(self):
+        asset = self.asset(0, 100.0)
+        asset["ma20"] = 101.0
+        asset["ma50"] = 102.0
+        with paper._connect() as db:
+            self.assertTrue(paper._open_short_position(db, "Bybit", asset, "TEST_SHORT"))
+            db.execute("UPDATE paper_account SET cash=5000 WHERE id=1")
+            position = db.execute("SELECT * FROM paper_positions").fetchone()
+            self.assertTrue(paper._add_scale_lot(db, position, 99.0))
+            db.execute("UPDATE paper_positions SET last_price=98.0 WHERE exchange='Bybit' AND symbol='BTCUSDT'")
+            lots = db.execute("SELECT * FROM paper_position_lots ORDER BY lot_index").fetchall()
+        expected_gross = sum((float(x["entry_price"]) - 98.0) * float(x["quantity"]) for x in lots)
+        expected_open_fee = sum(float(x["cost_usdt"]) - float(x["entry_price"]) * float(x["quantity"]) for x in lots)
+        snapshot = paper._account_snapshot()
+        self.assertAlmostEqual(snapshot["open_positions"][0]["unrealized_pnl_usdt"],
+                               expected_gross - expected_open_fee -
+                               sum(float(x["quantity"]) for x in lots) * 98.0 * paper._FEE_RATE,
+                               places=6)
+        with paper._connect() as db:
+            position = db.execute("SELECT * FROM paper_positions").fetchone()
+            paper._close_position(db, position, 98.0, "TEST_CLOSE")
+            trade = db.execute("SELECT * FROM paper_trades WHERE side='SHORT_COVER' ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertAlmostEqual(float(trade["pnl_usdt"]),
+                               expected_gross - expected_open_fee -
+                               sum(float(x["quantity"]) for x in lots) * 98.0 * paper._FEE_RATE,
+                               places=6)
+
+    def test_atr_take_profit_closes_long_at_two_to_one_target(self):
+        self.seed_position()
+        paper._apply_market_data("Bybit", {"assets": [self.asset(1, 103.0)]}, False)
+        self.assertEqual(len(self.positions()), 0)
+        with paper._connect() as db:
+            trade = db.execute("SELECT * FROM paper_trades WHERE pnl_usdt IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(trade["reason"], "ATR_TAKE_PROFIT_RR_1_2")
+
+    def test_atr_take_profit_closes_short_at_two_to_one_target(self):
+        asset = self.asset(0, 100.0)
+        asset["ma20"] = 101.0
+        asset["ma50"] = 102.0
+        with paper._connect() as db:
+            self.assertTrue(paper._open_short_position(db, "Bybit", asset, "TEST_SHORT"))
+        paper._apply_market_data("Bybit", {"assets": [self.asset(0, 97.0)]}, False, True)
+        self.assertEqual(len(self.positions()), 0)
+        with paper._connect() as db:
+            trade = db.execute("SELECT * FROM paper_trades WHERE side='SHORT_COVER' ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(trade["reason"], "ATR_TAKE_PROFIT_RR_1_2")
+
     def test_volume_must_be_strictly_above_fifty_million(self):
         asset = self.asset(1, 100.0)
         asset["quote_volume_24h"] = 50_000_000
