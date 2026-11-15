@@ -338,6 +338,36 @@ class CryptoScanner(private val context: Context) {
             })
         }
 
+        fun loadGlobalMarket() {
+            globalAssets = null
+            globalMarketError = null
+            render()
+            Thread {
+                var loaded: List<JSONObject>? = null
+                var error: String? = null
+                try {
+                    val connection = URL("https://han-invest-api-test.onrender.com/api/v1/crypto/market-assets?limit=2000")
+                        .openConnection() as HttpURLConnection
+                    try {
+                        connection.requestMethod = "GET"
+                        connection.connectTimeout = 15000
+                        connection.readTimeout = 30000
+                        connection.setRequestProperty("Accept", "application/json")
+                        if (connection.responseCode !in 200..299) throw Exception("HTTP ${connection.responseCode}")
+                        val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+                        val array = json.optJSONArray("assets") ?: JSONArray()
+                        loaded = (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+                    } finally { connection.disconnect() }
+                } catch (e: Exception) { error = e.message ?: "Ошибка загрузки" }
+                Handler(Looper.getMainLooper()).post {
+                    globalAssets = loaded
+                    globalMarketError = error
+                    globalPage = 0
+                    render()
+                }
+            }.start()
+        }
+
         render = {
             tabs.removeAllViews()
             addTab("Главная · TOP 3", "HOME", blue)
@@ -810,36 +840,6 @@ class CryptoScanner(private val context: Context) {
                     }
                 }.start()
             }
-        }
-
-        fun loadGlobalMarket() {
-            globalAssets = null
-            globalMarketError = null
-            render()
-            Thread {
-                var loaded: List<JSONObject>? = null
-                var error: String? = null
-                try {
-                    val connection = URL("https://han-invest-api-test.onrender.com/api/v1/crypto/market-assets?limit=2000")
-                        .openConnection() as HttpURLConnection
-                    try {
-                        connection.requestMethod = "GET"
-                        connection.connectTimeout = 15000
-                        connection.readTimeout = 30000
-                        connection.setRequestProperty("Accept", "application/json")
-                        if (connection.responseCode !in 200..299) throw Exception("HTTP ${connection.responseCode}")
-                        val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-                        val array = json.optJSONArray("assets") ?: JSONArray()
-                        loaded = (0 until array.length()).mapNotNull { array.optJSONObject(it) }
-                    } finally { connection.disconnect() }
-                } catch (e: Exception) { error = e.message ?: "Ошибка загрузки" }
-                Handler(Looper.getMainLooper()).post {
-                    globalAssets = loaded
-                    globalMarketError = error
-                    globalPage = 0
-                    render()
-                }
-            }.start()
         }
 
         fun loadAll() {
