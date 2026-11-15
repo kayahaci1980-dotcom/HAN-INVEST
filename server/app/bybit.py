@@ -127,7 +127,9 @@ async def analyze(
         daily_result = await get_json(client, "/v5/market/kline", {
             "category": "spot", "symbol": symbol, "interval": "D", "limit": "20"
         })
-        daily_rows = list(reversed(daily_result.get("list", [])))[:-1]
+        daily_all_rows = list(reversed(daily_result.get("list", [])))
+        daily_open = float(daily_all_rows[-1][1]) if daily_all_rows else 0.0
+        daily_rows = daily_all_rows[:-1]
         daily_closes = [float(row[4]) for row in daily_rows]
         daily_highs = [float(row[2]) for row in daily_rows]
         daily_lows = [float(row[3]) for row in daily_rows]
@@ -182,7 +184,7 @@ async def analyze(
             "quote_volume_24h": round(quote_volume, 2),
             "volume_ratio": round(volume_ratio, 2), "volume_confirmed": volume_confirmed,
             "ma20": round(ma20, 8), "ma50": round(ma50, 8), "atr_14": round(atr, 8),
-            "atr_14_1d": round(atr, 8), "atr_14_1h": round(atr_14_1h, 8),
+            "atr_14_1d": round(atr, 8), "atr_14_1h": round(atr_14_1h, 8), "daily_open": daily_open,
             "atr_timeframe": "1D",
             "hourly_volatility_pct": round(hourly_volatility, 3),
             "entry_price": round(entry, 8) if entry is not None else None,
