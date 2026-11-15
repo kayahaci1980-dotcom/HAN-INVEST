@@ -646,7 +646,6 @@ def _apply_market_data(
                 continue
             try:
                 price = float(asset.get("price") or 0)
-                score = float(asset.get("score") or 0)
                 entry = float(position["entry_price"])
             except (TypeError, ValueError):
                 continue
@@ -712,10 +711,10 @@ def _apply_market_data(
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
                 continue
             opened = False
-            if allow_new_entries and score >= 83:
-                opened = _open_position(db, exchange, asset, "AUTO_LONG_SCORE_83_PLUS")
-            elif allow_short_entries and score <= 65 and price > 0 and ma20 > 0 and ma50 > 0 and price < ma20 <= ma50:
-                opened = _open_short_position(db, exchange, asset, "AUTO_SHORT_BEARISH_SCORE_65_OR_BELOW")
+            if allow_new_entries and price > 0 and ma20 > 0 and price > ma20:
+                opened = _open_position(db, exchange, asset, "AUTO_LONG_ATR_PRO_CANDIDATE")
+            elif allow_short_entries and price > 0 and ma20 > 0 and ma50 > 0 and price < ma20 <= ma50:
+                opened = _open_short_position(db, exchange, asset, "AUTO_SHORT_ATR_PRO_CANDIDATE")
             if opened:
                 current_positions += 1
 
@@ -727,7 +726,7 @@ async def _scan_cycle() -> None:
             # Each exchange is scanned independently. All requests are public market data only.
             gathered = await asyncio.gather(
                 get_market_breadth(),
-                scan_crypto(limit=50, universe_limit=200, min_volume=1_000_000,
+                scan_crypto(limit=50, universe_limit=200, min_volume=50_000_000,
                             capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
                             fee_rate=_FEE_RATE),
                 scan_bybit(limit=50, min_volume=1_000_000,
