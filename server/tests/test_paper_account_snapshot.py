@@ -62,3 +62,32 @@ def test_short_snapshot_includes_both_fees(paper_db):
         snapshot["equity_usdt"] - snapshot["initial_cash_usdt"]
     )
     assert snapshot["open_positions"][0]["side"] == "SHORT"
+
+def test_scaled_short_displays_weighted_average_entry_consistent_with_pnl(paper_db):
+    with paper_db._connect() as db:
+        db.execute("UPDATE paper_account SET cash=719.72 WHERE id=1")
+        db.execute(
+            """INSERT INTO paper_positions
+               (exchange, symbol, quantity, cost_usdt, entry_price, stop_loss,
+                take_profit, last_price, opened_at, direction)
+               VALUES ('Bybit', 'TESTUSDT', 3, 280.28, 100, 102, 0, 95,
+                       '2026-01-01T00:00:00Z', 'SHORT')"""
+        )
+        db.execute(
+            """INSERT INTO paper_position_lots
+               (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
+               VALUES ('Bybit', 'TESTUSDT', 0, 1, 100.1, 100, '2026-01-01T00:00:00Z')"""
+        )
+        db.execute(
+            """INSERT INTO paper_position_lots
+               (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
+               VALUES ('Bybit', 'TESTUSDT', 1, 2, 180.18, 90, '2026-01-01T01:00:00Z')"""
+        )
+
+    snapshot = paper_db._account_snapshot()
+    position = snapshot["open_positions"][0]
+    assert position["base_entry_price"] == pytest.approx(100.0)
+    assert position["average_entry_price"] == pytest.approx(280.0 / 3.0)
+    assert position["entry_price"] == pytest.approx(280.0 / 3.0)
+    assert position["unrealized_pnl_usdt"] == pytest.approx(-5.565)
+    assert snapshot["equity_usdt"] - snapshot["initial_cash_usdt"] == pytest.approx(-5.565)
