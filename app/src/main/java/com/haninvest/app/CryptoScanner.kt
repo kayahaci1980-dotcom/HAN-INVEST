@@ -377,7 +377,7 @@ class CryptoScanner(private val context: Context) {
                             setPadding(dp(9), dp(7), dp(9), dp(7))
                             background = rounded(page, 9)
                         }
-                        row.addView(label("${start + i - start + 1 + globalPage * globalPageSize}. $name ($symbol)", 13f, dark, true))
+                        row.addView(label("${i + 1}. $name ($symbol)", 13f, dark, true))
                         row.addView(label("Цена: ${if (price.isFinite()) formatNumber(price, 8) + " USD" else "—"}  •  24ч: ${change?.let { formatNumber(it, 2) + "%" } ?: "нет данных"}", 11f, muted))
                         row.addView(label("Ранг: ${coin.optString("rank", "—")}  •  Объём 24ч: ${formatNumber(coin.optDouble("volume_24h_usd", 0.0), 0)} USD", 10f, muted))
                         content.addView(row)
