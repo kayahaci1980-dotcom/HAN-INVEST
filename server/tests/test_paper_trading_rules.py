@@ -45,6 +45,8 @@ class PaperTradingRuleTests(unittest.TestCase):
 
     def seed_position(self):
         with paper._connect() as db:
+            # Leave enough virtual cash for several add-on tranches.
+            db.execute("UPDATE paper_account SET cash=5000 WHERE id=1")
             self.assertTrue(
                 paper._open_position(db, "Bybit", self.asset(), "TEST_SEED")
             )
