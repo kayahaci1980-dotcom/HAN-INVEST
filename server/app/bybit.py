@@ -158,19 +158,41 @@ async def analyze(
 
         volume_confirmed = volume_ratio >= 1.2
         strong_uptrend = price > ma20 > ma50
+        strong_downtrend = price < ma20 < ma50
         pair_verified = instrument.get("status") == "Trading" and instrument.get("quoteCoin") == "USDT"
-        setup = (
-            pair_verified and score >= 80 and strong_uptrend and change6 >= 1.0
-            and volume_confirmed and quote_volume >= 1_000_000
-            and (change24 - btc_change_24h_pct) > 0
-            and atr > 0 and math.isfinite(atr)
+        liquid_enough = quote_volume > 50_000_000
+        long_setup = (
+            pair_verified and liquid_enough and strong_uptrend and change6 > 0
+            and volume_confirmed and (change24 - btc_change_24h_pct) > 0
+            and atr_14_1h > 0 and math.isfinite(atr_14_1h)
         )
-        signal = "BUY" if setup and btc_state == "BULLISH" else "WATCH" if score >= 55 else "HOLD"
-        early = "EARLY BUY" if setup and btc_state == "SIDEWAYS" else None
+        short_setup = (
+            pair_verified and liquid_enough and strong_downtrend and change6 < 0
+            and volume_confirmed and (change24 - btc_change_24h_pct) < 0
+            and atr_14_1h > 0 and math.isfinite(atr_14_1h)
+        )
+        signal = (
+            "BUY" if long_setup and btc_state == "BULLISH"
+            else "SHORT" if short_setup and btc_state == "BEARISH"
+            else "WATCH" if strong_uptrend or strong_downtrend else "HOLD"
+        )
+        early = (
+            "EARLY BUY" if long_setup and btc_state == "SIDEWAYS"
+            else "EARLY SHORT" if short_setup and btc_state == "SIDEWAYS"
+            else None
+        )
 
-        entry = price if signal == "BUY" else None
-        stop = price - 1.5 * atr if signal == "BUY" else None
-        target = price + 3.0 * atr if signal == "BUY" else None
+        entry = price if signal in ("BUY", "SHORT") else None
+        stop = (
+            price - 1.5 * atr_14_1h if signal == "BUY"
+            else price + 1.5 * atr_14_1h if signal == "SHORT"
+            else None
+        )
+        target = (
+            price + 3.0 * atr_14_1h if signal == "BUY"
+            else price - 3.0 * atr_14_1h if signal == "SHORT"
+            else None
+        )
         sizing = (
             calculate_position_sizing(entry, stop, target, capital_usdt, risk_pct, fee_rate)
             if signal == "BUY" and capital_usdt is not None else None
@@ -183,7 +205,7 @@ async def analyze(
             "relative_strength_vs_btc_24h_pct": round(change24 - btc_change_24h_pct, 2),
             "quote_volume_24h": round(quote_volume, 2),
             "volume_ratio": round(volume_ratio, 2), "volume_confirmed": volume_confirmed,
-            "ma20": round(ma20, 8), "ma50": round(ma50, 8), "atr_14": round(atr, 8),
+            "ma20": round(ma20, 8), "ma50": round(ma50, 8), "atr_14": round(atr_14_1h, 8),
             "atr_14_1d": round(atr, 8), "atr_14_1h": round(atr_14_1h, 8),
             "atr_candle_time": str(rows[-1][0]),
             "candle_high_1h": float(rows[-1][2]), "candle_low_1h": float(rows[-1][3]),
@@ -193,7 +215,7 @@ async def analyze(
             "entry_price": round(entry, 8) if entry is not None else None,
             "stop_loss": round(stop, 8) if stop is not None else None,
             "take_profit": round(target, 8) if target is not None else None,
-            "risk_reward": "1:2" if signal == "BUY" else None,
+            "risk_reward": "1:2" if signal in ("BUY", "SHORT") else None,
             "position_sizing": sizing,
             "score": score, "signal": signal, "early_signal": early,
             "trade_ready": pair_verified, "pair_status": instrument.get("status"),
