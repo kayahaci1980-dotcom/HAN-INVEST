@@ -20,12 +20,12 @@ import java.net.URL
 import java.util.Locale
 
 class CryptoScanner(private val context: Context) {
-    private val blue = Color.rgb(55, 105, 245)
-    private val orange = Color.rgb(230, 135, 25)
-    private val purple = Color.rgb(125, 75, 235)
-    private val dark = Color.rgb(30, 42, 65)
-    private val muted = Color.rgb(125, 137, 158)
-    private val page = Color.rgb(246, 248, 253)
+    private val blue = Color.rgb(76, 67, 245)
+    private val orange = Color.rgb(255, 157, 45)
+    private val purple = Color.rgb(177, 66, 255)
+    private val dark = Color.rgb(242, 244, 255)
+    private val muted = Color.rgb(158, 169, 197)
+    private val page = Color.rgb(8, 12, 30)
 
     private data class ExchangeResult(
         val exchange: String,
@@ -45,26 +45,6 @@ class CryptoScanner(private val context: Context) {
         if (value.isNaN() || value.isInfinite()) "—"
         else String.format(Locale.US, "%,.${digits}f", value)
 
-    private fun formatBishkekTime(value: String?): String {
-        if (value.isNullOrBlank() || value == "null") return "—"
-        val patterns = listOf(
-            "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
-            "yyyy-MM-dd'T'HH:mm:ssXXX",
-            "yyyy-MM-dd HH:mm:ss"
-        )
-        for (pattern in patterns) {
-            try {
-                val parser = java.text.SimpleDateFormat(pattern, Locale.US)
-                parser.timeZone = java.util.TimeZone.getTimeZone("UTC")
-                val date = parser.parse(value) ?: continue
-                val formatter = java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", Locale("ru", "RU"))
-                formatter.timeZone = java.util.TimeZone.getTimeZone("Asia/Bishkek")
-                return formatter.format(date)
-            } catch (_: Exception) { }
-        }
-        return value
-    }
-
     private fun rounded(color: Int, radius: Int = 14) = GradientDrawable().apply {
         setColor(color)
         cornerRadius = dp(radius).toFloat()
@@ -80,7 +60,7 @@ class CryptoScanner(private val context: Context) {
 
     private fun buttonStyle(button: Button, color: Int) {
         button.setTextColor(Color.WHITE)
-        button.background = rounded(color, 12)
+        button.background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(color, purple)).apply { cornerRadius = dp(12).toFloat() }
         button.isAllCaps = false
     }
 
@@ -90,14 +70,14 @@ class CryptoScanner(private val context: Context) {
         }
         section.addView(label("₿ Криптосканер HAN INVEST", 21f, dark, true))
         section.addView(label(
-            "Четыре биржи анализируются отдельно: Binance, Bybit, Coinbase Exchange и OKX.",
+            "В разделе Рынок LIVE анализируются только Bybit и Coinbase Exchange.",
             13f, muted
         ))
 
         val panel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded(Color.WHITE)
+            background = rounded(Color.rgb(13, 21, 46))
             elevation = dp(2).toFloat()
         }
         panel.addView(label("РАСЧЁТ РАЗМЕРА ПОЗИЦИИ", 13f, muted, true))
@@ -124,27 +104,29 @@ class CryptoScanner(private val context: Context) {
 
         val tabs = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(12), 0, dp(8))
+            gravity = android.view.Gravity.CENTER
+            setPadding(0, dp(14), 0, dp(10))
         }
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            background = rounded(Color.WHITE)
+            background = rounded(Color.rgb(17, 25, 52))
         }
         val scroll = ScrollView(context).apply {
             isFillViewport = true
             addView(content)
         }
-        val status = label("Загрузка данных четырёх криптобирж...", 14f, dark)
+        val status = label("Загрузка данных Bybit и Coinbase Exchange...", 14f, dark)
         val refresh = Button(context).apply {
             text = "Обновить обе биржи"
             buttonStyle(this, blue)
         }
         panel.addView(status)
         panel.addView(refresh)
-        section.addView(panel)
+        panel.visibility = View.GONE
         section.addView(tabs)
         section.addView(scroll)
+        section.addView(panel)
 
         var selectedTab = "HOME"
         lateinit var render: () -> Unit
@@ -211,20 +193,29 @@ class CryptoScanner(private val context: Context) {
         var coinbase: ExchangeResult? = null
         var okx: ExchangeResult? = null
         var marketContext: JSONObject? = null
+        var marketExchangeFilter = "ALL"
+        var marketMoveFilter = "ALL"
         var loadingCount = 0
 
         fun addTab(title: String, key: String, color: Int) {
             val b = Button(context).apply {
-                text = title
-                textSize = 12f
-                buttonStyle(this, if (selectedTab == key) color else muted)
-                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+                text = when (key) {
+                    "HOME" -> "⌂\n$title"
+                    "MARKET" -> "▥\n$title"
+                    "ANALYSIS" -> "◎\n$title"
+                    "PAPER" -> "▣\n$title"
+                    else -> "◷\n$title"
+                }
+                textSize = 11f
+                setTypeface(null, Typeface.BOLD)
+                buttonStyle(this, if (selectedTab == key) color else Color.rgb(28, 38, 69))
+                layoutParams = LinearLayout.LayoutParams(0, dp(62), 1f).apply {
                     marginEnd = dp(5)
                 }
                 setOnClickListener {
                     selectedTab = key
                     render()
-                    if (key == "PAPER") refreshPaperServer()
+                    if (key == "PAPER" || key == "HISTORY") refreshPaperServer()
                 }
             }
             tabs.addView(b)
@@ -254,7 +245,7 @@ class CryptoScanner(private val context: Context) {
             val card = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(11), dp(12), dp(11))
-                background = rounded(page, 12)
+                background = rounded(Color.rgb(20, 29, 59), 12)
             }
             val signalText = if (buyAllowed) "АВТОПОКУПКА: оценка 83+"
                 else if (early) "EARLY BUY — наблюдение" else "WATCH — наблюдение"
@@ -263,68 +254,125 @@ class CryptoScanner(private val context: Context) {
                 "Оценка: $score/100   |   Сигнал: $signalText",
                 13f, if (buyAllowed) Color.rgb(20, 145, 90) else muted, true
             ))
+            val change24 = coin.optString("change_24h_pct", coin.optString("price_change_percent_24h", coin.optString("change_24h", "—")))
+            val rsi = coin.optString("rsi_14", coin.optString("rsi", "—"))
+            val atrValue = coin.optString("atr_14", coin.optString("atr", "—"))
+            val ema20 = coin.optString("ema20", coin.optString("ema_20", coin.optString("ma20", "—")))
             card.addView(label(
-                "Цена: ${if (price.isNaN()) "—" else formatNumber(price, 8)} USDT",
+                "Цена: ${if (price.isNaN()) "—" else formatNumber(price, 8)} USDT   •   24 ч.: $change24%",
                 13f, dark
             ))
+            val metrics = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(8), 0, dp(8))
+            }
+            listOf("RSI" to rsi, "ATR" to atrValue, "EMA20" to ema20).forEach { (name, value) ->
+                val metric = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(8), dp(7), dp(8), dp(7))
+                    background = rounded(Color.rgb(10, 17, 39), 9)
+                    layoutParams = LinearLayout.LayoutParams(0, dp(54), 1f).apply { marginEnd = dp(5) }
+                }
+                metric.addView(label(name, 10f, muted, true))
+                metric.addView(label(value, 12f, dark, true))
+                metrics.addView(metric)
+            }
+            card.addView(metrics)
+            val detailsButton = Button(context).apply {
+                text = "ⓘ  Подробнее об активе"
+                textSize = 11f
+                buttonStyle(this, blue)
+                setOnClickListener {
+                    val dialogContent = LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(18), dp(10), dp(18), dp(16))
+                        background = rounded(Color.rgb(10, 17, 39), 18)
+                    }
+                    val dialogHeader = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = android.view.Gravity.CENTER_VERTICAL
+                    }
+                    dialogHeader.addView(label("$coinName ($shortSymbol)", 19f, Color.WHITE, true),
+                        LinearLayout.LayoutParams(0, -2, 1f))
+                    val close = TextView(context).apply {
+                        text = "✕"
+                        textSize = 23f
+                        setTextColor(Color.WHITE)
+                        gravity = android.view.Gravity.CENTER
+                        setPadding(dp(12), dp(5), dp(5), dp(5))
+                    }
+                    dialogHeader.addView(close)
+                    dialogContent.addView(dialogHeader)
+                    dialogContent.addView(label("Биржа: $exchange", 13f, muted))
+                    dialogContent.addView(label("Оценка: $score / 100", 16f, purple, true))
+                    dialogContent.addView(label("Сигнал: $signalText", 13f, dark, true))
+                    dialogContent.addView(label("Цена: ${if (price.isNaN()) "—" else formatNumber(price, 8)} USDT", 14f, dark))
+                    dialogContent.addView(label("Изменение за 24 часа: $change24%", 14f, dark))
+                    dialogContent.addView(label("RSI (14): $rsi", 14f, dark))
+                    dialogContent.addView(label("ATR (14): $atrValue", 14f, dark))
+                    dialogContent.addView(label("EMA20: $ema20", 14f, dark))
+                    dialogContent.addView(label("MA20: ${coin.optString("ma20", "—")}", 14f, dark))
+                    dialogContent.addView(label("MA50: ${coin.optString("ma50", "—")}", 14f, dark))
+                    dialogContent.addView(label("ATR дневной: ${coin.optString("atr_14_1d", "—")}", 14f, dark))
+                    dialogContent.addView(label("Сила против BTC: ${coin.optString("relative_strength_vs_btc_24h_pct", "—")}%", 14f, dark))
+                    dialogContent.addView(label("Объём к среднему: ${coin.optString("volume_ratio", "—")}x", 14f, dark))
+                    if (buyAllowed) {
+                        val sizing = coin.optJSONObject("position_sizing")
+                        dialogContent.addView(label("Вход: ${coin.optString("entry_price", "—")}", 14f, dark))
+                        dialogContent.addView(label("Stop Loss: ${coin.optString("stop_loss", "—")}", 14f, dark))
+                        dialogContent.addView(label("Take Profit: ${coin.optString("take_profit", "—")}", 14f, dark))
+                        dialogContent.addView(label("Количество: ${sizing?.optString("quantity", "—")}", 14f, dark))
+                        dialogContent.addView(label("Размер позиции: ${sizing?.optString("position_value_usdt", "—")} USDT", 14f, dark))
+                        dialogContent.addView(label("Риск при Stop Loss: ${sizing?.optString("potential_loss_at_stop_usdt", "—")} USDT", 14f, dark))
+                    }
+                    val detailDialog = android.app.AlertDialog.Builder(context)
+                        .setView(dialogContent)
+                        .create()
+                    close.setOnClickListener { detailDialog.dismiss() }
+                    detailDialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+                    detailDialog.show()
+                    detailDialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+                    detailDialog.window?.setLayout(
+                        (resources.displayMetrics.widthPixels * 0.92).toInt(),
+                        android.view.WindowManager.LayoutParams.WRAP_CONTENT
+                    )
+                }
+            }
+            card.addView(detailsButton)
             card.addView(label(
-                "MA20: ${coin.optString("ma20", "—")}   |   MA50: ${coin.optString("ma50", "—")}",
-                13f, dark
+                "MA20: ${coin.optString("ma20", "—")}   |   MA50: ${coin.optString("ma50", "—")}   |   ATR(14): ${coin.optString("atr_14_1d", coin.optString("atr_14", "—"))}",
+                11f, muted
             ))
-            card.addView(label("ATR(14) дневной (1D): ${coin.optString("atr_14_1d", coin.optString("atr_14", "—"))}", 13f, dark))
-            card.addView(label("Сила против BTC за 24 ч.: ${coin.optString("relative_strength_vs_btc_24h_pct", "—")}%", 13f, dark))
             card.addView(label(
-                "Объём к среднему: ${coin.optString("volume_ratio", "—")}x   |   Подтверждён: ${if (coin.optBoolean("volume_confirmed")) "ДА" else "НЕТ"}",
-                13f, dark
+                "Сила против BTC: ${coin.optString("relative_strength_vs_btc_24h_pct", "—")}%   •   Объём к среднему: ${coin.optString("volume_ratio", "—")}x",
+                11f, muted
             ))
             if (buyAllowed) {
                 card.addView(label(
                     "Вход: ${coin.optString("entry_price", "—")}   |   Stop Loss: ${coin.optString("stop_loss", "—")}   |   Take Profit: ${coin.optString("take_profit", "—")}",
                     13f, dark
                 ))
-                val sizing = coin.optJSONObject("position_sizing")!!
-                card.addView(label(
-                    "Количество: ${sizing.optString("quantity", "—")}   |   Позиция: ${sizing.optString("position_value_usdt", "—")} USDT",
-                    13f, dark
-                ))
-                card.addView(label(
-                    "Риск при Stop Loss: ${sizing.optString("potential_loss_at_stop_usdt", "—")} USDT (лимит ${formatNumber(maxRisk, 2)} USDT)",
-                    13f, dark, true
-                ))
+                val sizing = coin.optJSONObject("position_sizing")
+                if (sizing != null) {
+                    card.addView(label(
+                        "Количество: ${sizing.optString("quantity", "—")}   |   Позиция: ${sizing.optString("position_value_usdt", "—")} USDT",
+                        13f, dark
+                    ))
+                    card.addView(label(
+                        "Риск при Stop Loss: ${sizing.optString("potential_loss_at_stop_usdt", "—")} USDT (лимит ${formatNumber(maxRisk, 2)} USDT)",
+                        13f, dark, true
+                    ))
+                } else {
+                    card.addView(label(
+                        "Расчёт размера позиции пока недоступен; автоматическая покупка заблокирована.",
+                        12f, Color.rgb(190, 90, 45), true
+                    ))
+                }
             } else if (serverSignal == "BUY") {
                 card.addView(label(
                     "BUY заблокирован: не все проверки подтверждены или расчёт риска превышает лимит.",
                     12f, Color.rgb(190, 70, 55), true
                 ))
-            }
-            val tradeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-            val amountInput = EditText(context).apply {
-                hint = "Сумма USDT"
-                setText("100")
-                textSize = 13f
-                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-                layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
-            }
-            val buyButton = Button(context).apply {
-                text = "Купить"
-                buttonStyle(this, Color.rgb(20, 145, 90))
-            }
-            buyButton.setOnClickListener {
-                val amount = amountInput.text.toString().replace(",", ".").toDoubleOrNull()
-                if (amount == null || amount <= 0.0) status.text = "Введите сумму в USDT."
-                else paperTrade(exchange, symbol, price, amount, false)
-            }
-            tradeRow.addView(amountInput)
-            tradeRow.addView(buyButton)
-            card.addView(tradeRow)
-            val ownedQty = paperPositions.optJSONObject(exchange + ":" + symbol)?.optDouble("quantity", 0.0) ?: 0.0
-            if (ownedQty > 0.0) {
-                val sellButton = Button(context).apply {
-                    text = "Продать всю позицию"
-                    buttonStyle(this, orange)
-                }
-                sellButton.setOnClickListener { paperTrade(exchange, symbol, price, null, true) }
-                card.addView(sellButton)
             }
             content.addView(card)
             content.addView(View(context).apply {
@@ -334,24 +382,43 @@ class CryptoScanner(private val context: Context) {
 
         render = {
             tabs.removeAllViews()
-            addTab("Главная · TOP 3", "HOME", blue)
-            addTab("Binance", "BINANCE", blue)
-            addTab("Bybit", "BYBIT", orange)
-            addTab("Coinbase", "COINBASE", blue)
-            addTab("OKX", "OKX", purple)
-            addTab("Вирт. счёт", "PAPER", Color.rgb(20, 145, 90))
+            addTab("Главная", "HOME", purple)
+            addTab("Рынок LIVE", "MARKET", blue)
+            addTab("Анализ", "ANALYSIS", blue)
+            addTab("PAPER", "PAPER", Color.rgb(20, 145, 90))
+            addTab("История", "HISTORY", purple)
             content.removeAllViews()
             content.addView(label(
                 when (selectedTab) {
-                    "BINANCE" -> "🟡 BINANCE SPOT — отдельные данные биржи"
-                    "BYBIT" -> "🟠 BYBIT SPOT — отдельные данные биржи"
-                    "COINBASE" -> "🔵 COINBASE EXCHANGE — отдельные данные биржи"
-                    "OKX" -> "⚫ OKX SPOT — отдельные данные биржи"
-                    "PAPER" -> "ВИРТУАЛЬНЫЙ СЧЁТ — PAPER TRADING"
-                    else -> "ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА"
+                    "MARKET" -> "РЫНОК LIVE — BYBIT • COINBASE EXCHANGE"
+                    "ANALYSIS" -> "АНАЛИЗ — ТЕХНИЧЕСКИЕ ПОКАЗАТЕЛИ"
+                    "PAPER" -> "PAPER TRADING — ВИРТУАЛЬНЫЙ СЧЁТ"
+                    "HISTORY" -> "ИСТОРИЯ СДЕЛОК"
+                    else -> "HAN INVEST — ГЛАВНАЯ"
                 }, 17f, dark, true
             ))
-            if (selectedTab == "PAPER") {
+            if (selectedTab == "HISTORY") {
+                val remoteHistory = serverPaperState?.optJSONArray("history") ?: JSONArray()
+                if (remoteHistory.length() == 0) content.addView(label("История серверных сделок пока пуста или ещё загружается.", 13f, muted))
+                for (i in remoteHistory.length() - 1 downTo maxOf(0, remoteHistory.length() - 100)) {
+                    val trade = remoteHistory.optJSONObject(i) ?: continue
+                    val tradeSide = trade.optString("side")
+                    val sideLabel = when (tradeSide) {
+                        "SHORT_OPEN" -> "ОТКРЫТИЕ SHORT"
+                        "SHORT_COVER" -> "ЗАКРЫТИЕ SHORT"
+                        "BUY" -> "ОТКРЫТИЕ LONG"
+                        "SELL" -> "ЗАКРЫТИЕ LONG"
+                        else -> tradeSide
+                    }
+                    content.addView(label(sideLabel + " • " + trade.optString("symbol") + " • " + trade.optString("exchange"), 14f, dark, true))
+                    val pnlText = if (trade.isNull("pnl_usdt")) "Открыта позиция" else
+                        "Результат: " + (if (trade.optDouble("pnl_usdt") >= 0) "+" else "") +
+                            formatNumber(trade.optDouble("pnl_usdt"), 3) + " USDT"
+                    content.addView(label("Цена: " + formatNumber(trade.optDouble("price"), 8) + " • " + pnlText, 12f, muted))
+                }
+                val reloadHistory = Button(context).apply { text = "Обновить историю"; buttonStyle(this, blue); setOnClickListener { refreshPaperServer() } }
+                content.addView(reloadHistory)
+            } else if (selectedTab == "PAPER") {
                 content.addView(label("ПРАВИЛА АВТОМАТИЧЕСКОЙ ТОРГОВЛИ", 13f, dark, true))
                 content.addView(label(
                     "Покупка: оценка 83+ без ожидания BUY.\\n" +
@@ -374,13 +441,24 @@ class CryptoScanner(private val context: Context) {
                         14f, if (serverEnabled) Color.rgb(20, 145, 90) else muted, true
                     ))
                     content.addView(label(
-                        "Серверный баланс: " + formatNumber(remote.optDouble("cash_usdt"), 2) + " USDT",
-                        16f, dark, true
+                        "ОСТАТОК СРЕДСТВ: " + formatNumber(remote.optDouble("cash_usdt"), 2) + " USDT",
+                        15f, dark, true
                     ))
                     content.addView(label(
-                        "Открытые позиции: " + formatNumber(remote.optDouble("holdings_value_usdt"), 2) +
-                            " USDT • Всего: " + formatNumber(remote.optDouble("equity_usdt"), 2) + " USDT",
+                        "В ОТКРЫТЫХ ПОЗИЦИЯХ: " + formatNumber(remote.optDouble("holdings_value_usdt"), 2) +
+                            " USDT • ОБЩИЙ БАЛАНС: " + formatNumber(remote.optDouble("equity_usdt"), 2) + " USDT",
                         13f, dark
+                    ))
+                    content.addView(label(
+                        "ПРИБЫЛЬ: +" + formatNumber(remote.optDouble("profit_usdt"), 2) +
+                            " USDT • УБЫТОК: -" + formatNumber(remote.optDouble("loss_usdt"), 2) + " USDT",
+                        13f, Color.rgb(20, 145, 90), true
+                    ))
+                    content.addView(label(
+                        "ИТОГОВЫЙ РЕЗУЛЬТАТ: " +
+                            (if (remote.optDouble("net_pnl_usdt") >= 0) "+" else "") +
+                            formatNumber(remote.optDouble("net_pnl_usdt"), 2) + " USDT",
+                        13f, if (remote.optDouble("net_pnl_usdt") >= 0) Color.rgb(20, 145, 90) else Color.RED, true
                     ))
                     content.addView(label(
                         if (persistent) "Хранилище: постоянный диск подключён"
@@ -390,12 +468,71 @@ class CryptoScanner(private val context: Context) {
                     val remotePositions = remote.optJSONArray("open_positions") ?: JSONArray()
                     for (i in 0 until remotePositions.length()) {
                         val p = remotePositions.optJSONObject(i) ?: continue
+                        val symbol = p.optString("symbol")
+                        val exchange = p.optString("exchange")
+                        val side = p.optString("direction", p.optString("side", "LONG")).uppercase()
                         content.addView(label(
-                            p.optString("symbol") + " • " + p.optString("exchange") +
-                                " • SL " + formatNumber(p.optDouble("stop_loss"), 6) +
-                                " • TP " + formatNumber(p.optDouble("take_profit"), 6),
+                            symbol + " • " + side + " • " + exchange +
+                                " • Вход " + formatNumber(p.optDouble("entry_price"), 8) +
+                                " • Сейчас " + formatNumber(p.optDouble("last_price"), 8),
+                            12f, dark, true
+                        ))
+                        val quantity = p.optDouble("quantity")
+                        val entryPrice = p.optDouble("entry_price")
+                        val lastPrice = p.optDouble("last_price")
+                        // Use the same server-calculated unrealized P/L as the account totals.
+                        val estimatedPnl = p.optDouble("unrealized_pnl_usdt", 0.0)
+                        content.addView(label(
+                            "Количество: " + formatNumber(quantity, 8) +
+                                " • Вход: " + formatNumber(entryPrice * quantity, 2) + " USDT",
                             11f, muted
                         ))
+                        content.addView(label(
+                            "Результат сейчас: " + (if (estimatedPnl >= 0) "+" else "") +
+                                formatNumber(estimatedPnl, 3) + " USDT (оценка до закрытия)",
+                            12f, if (estimatedPnl >= 0) Color.rgb(20, 190, 115) else Color.rgb(235, 85, 85), true
+                        ))
+                        val manualSell = Button(context).apply {
+                            text = if (side == "SHORT") "Закрыть виртуальный SHORT" else "Продать виртуальную LONG"
+                            buttonStyle(this, orange)
+                            isEnabled = !serverPaperLoading
+                            setOnClickListener {
+                                isEnabled = false
+                                Thread {
+                                    var error: String? = null
+                                    var updated: JSONObject? = null
+                                    try {
+                                        val connection = URL("https://han-invest-api-test.onrender.com/api/v1/paper/sell")
+                                            .openConnection() as HttpURLConnection
+                                        try {
+                                            connection.requestMethod = "POST"
+                                            connection.doOutput = true
+                                            connection.connectTimeout = 15000
+                                            connection.readTimeout = 20000
+                                            connection.setRequestProperty("Content-Type", "application/json")
+                                            connection.setRequestProperty("Accept", "application/json")
+                                            val body = JSONObject().put("exchange", exchange).put("symbol", symbol).put("side", side).toString()
+                                            connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                                            val code = connection.responseCode
+                                            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                                            val raw = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                                            if (code !in 200..299) throw Exception("HTTP $code: $raw")
+                                            updated = JSONObject(raw)
+                                        } finally { connection.disconnect() }
+                                    } catch (e: Exception) { error = e.message ?: "Ошибка продажи" }
+                                    Handler(Looper.getMainLooper()).post {
+                                        if (updated != null) {
+                                            serverPaperState = updated
+                                            serverPaperError = null
+                                        } else {
+                                            serverPaperError = error
+                                        }
+                                        refreshPaperServer()
+                                    }
+                                }.start()
+                            }
+                        }
+                        content.addView(manualSell)
                     }
                     val lastScan = remote.optString("last_scan_at", "")
                     if (lastScan.isNotBlank() && lastScan != "null") {
@@ -404,52 +541,6 @@ class CryptoScanner(private val context: Context) {
                     val remoteError = remote.optString("last_error", "")
                     if (remoteError.isNotBlank() && remoteError != "null") {
                         content.addView(label("Ошибка сканирования: $remoteError", 11f, Color.RED))
-                    }
-                }
-                if (remote != null) {
-                    content.addView(label("ИСТОРИЯ СЕРВЕРНЫХ СДЕЛОК", 14f, dark, true))
-                    val serverHistory = remote.optJSONArray("history") ?: JSONArray()
-                    if (serverHistory.length() == 0) {
-                        content.addView(label("Пока нет записей о сделках.", 12f, muted))
-                    } else {
-                        for (i in 0 until serverHistory.length()) {
-                            val trade = serverHistory.optJSONObject(i) ?: continue
-                            val side = trade.optString("side", "—")
-                            val symbol = trade.optString("symbol", "—")
-                            val exchange = trade.optString("exchange", "—")
-                            val direction = if (side.startsWith("SHORT")) "SHORT" else "LONG"
-                            val openedAt = formatBishkekTime(trade.optString("opened_at", ""))
-                            val closedAt = formatBishkekTime(trade.optString("closed_at", ""))
-                            val pnl = if (trade.isNull("pnl_usdt")) null else trade.optDouble("pnl_usdt")
-                            val reasonLabel = trade.optString("close_reason_label", "")
-                            val eventTime = formatBishkekTime(trade.optString("time", ""))
-                            val entry = LinearLayout(context).apply {
-                                orientation = LinearLayout.VERTICAL
-                                setPadding(dp(9), dp(8), dp(9), dp(8))
-                                background = rounded(page, 10)
-                            }
-                            entry.addView(label("$symbol • $exchange • $direction", 13f, dark, true))
-                            entry.addView(label("Открытие: $openedAt", 11f, muted))
-                            if (closedAt != "—") {
-                                entry.addView(label("Закрытие: $closedAt", 11f, muted))
-                                val closeReason = if (reasonLabel.isBlank()) trade.optString("reason", "—") else reasonLabel
-                                entry.addView(label("Причина: $closeReason", 11f, dark))
-                            } else if (side == "BUY" || side == "SHORT_OPEN") {
-                                entry.addView(label("Статус события: открытие / добавление позиции", 11f, muted))
-                            } else {
-                                entry.addView(label("Время события: $eventTime • " + trade.optString("reason", "—"), 11f, muted))
-                            }
-                            if (pnl != null) {
-                                entry.addView(label(
-                                    "Результат: " + formatNumber(pnl, 2) + " USDT",
-                                    12f, if (pnl >= 0) Color.rgb(20,145,90) else Color.RED, true
-                                ))
-                            }
-                            content.addView(entry)
-                            content.addView(View(context).apply {
-                                layoutParams = LinearLayout.LayoutParams(1, dp(6))
-                            })
-                        }
                     }
                 }
                 if (serverPaperError != null) {
@@ -467,8 +558,8 @@ class CryptoScanner(private val context: Context) {
                 val remoteEnabled = remote?.optBoolean("enabled", false) ?: false
                 val storageReady = remote?.optBoolean("storage_persistent_configured", false) ?: false
                 val serverToggle = Button(context).apply {
-                    text = if (remoteEnabled) "Остановить авто" else "Запустить авто"
-                    buttonStyle(this, if (remoteEnabled) orange else Color.rgb(20, 145, 90))
+                    text = if (remoteEnabled) "ЭКСТРЕННЫЙ СТОП" else "Запустить авто"
+                    buttonStyle(this, if (remoteEnabled) Color.rgb(200, 35, 45) else Color.rgb(20, 145, 90))
                     isEnabled = !serverPaperLoading && remote != null && (remoteEnabled || storageReady)
                     setOnClickListener { togglePaperServer(!remoteEnabled) }
                     layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f)
@@ -527,15 +618,15 @@ class CryptoScanner(private val context: Context) {
                 }
                 content.addView(reset)
             } else {
-            val b = binance
             val y = bybit
             val c = coinbase
-            val o = okx
-            if (b == null || y == null || c == null || o == null) {
-                content.addView(label("Ожидаем ответы четырёх бирж.\n${status.text}", 14f, muted))
+            if (y == null || c == null) {
+                content.addView(label("Ожидаем ответы Bybit и Coinbase Exchange.\n${status.text}", 14f, muted))
             } else {
+            val b = ExchangeResult("Binance", "Отключена в Рынок LIVE", 0, 0, "—", false, emptyList(), "Биржа отключена в этом разделе")
+            val o = ExchangeResult("OKX", "Отключена в Рынок LIVE", 0, 0, "—", false, emptyList(), "Биржа отключена в этом разделе")
             val maxRisk = capital * risk / 100.0
-            if (selectedTab == "HOME") {
+            if (selectedTab == "HOME" || selectedTab == "MARKET" || selectedTab == "ANALYSIS") {
                 marketContext?.let { context ->
                     val market = context.optJSONObject("market")
                     if (market != null && market.optBoolean("available")) {
@@ -574,7 +665,7 @@ class CryptoScanner(private val context: Context) {
                     }
                 }
                 content.addView(label(
-                    "Сравнение Binance, Bybit, Coinbase Exchange и OKX. В рейтинге учитывается оценка, а не порядок ответа API.",
+                    "Сравнение Bybit и Coinbase Exchange. В рейтинге учитывается оценка, а не порядок ответа API.",
                     12f, muted
                 ))
                 val combined = mutableListOf<Pair<JSONObject, ExchangeResult>>()
@@ -582,16 +673,200 @@ class CryptoScanner(private val context: Context) {
                 if (y.error == null) y.assets.forEach { combined.add(it to y) }
                 if (c.error == null) c.assets.forEach { combined.add(it to c) }
                 if (o.error == null) o.assets.forEach { combined.add(it to o) }
-                val top = combined.sortedWith(
+                fun baseAssetKey(coin: JSONObject): String {
+                    val raw = coin.optString("symbol", "").uppercase().replace("-", "").replace("/", "")
+                    return when {
+                        raw.endsWith("USDT") -> raw.removeSuffix("USDT")
+                        raw.endsWith("USDC") -> raw.removeSuffix("USDC")
+                        else -> raw
+                    }
+                }
+                val rankedAll = combined.sortedWith(
                     compareByDescending<Pair<JSONObject, ExchangeResult>> { it.first.optInt("score", 0) }
                         .thenByDescending { it.first.optDouble("volume_ratio", 0.0) }
-                ).take(3)
-                if (top.isEmpty()) content.addView(label("Нет доступных результатов. Проверьте соединение.", 14f, muted))
-                top.forEach { (coin, exchange) -> coinCard(coin, exchange.exchange, exchange, maxRisk) }
+                )
+                // Market view counts exchange trading pairs separately (e.g. BTC/USDT on each exchange).
+                // Keep up to 2000 pair listings across Bybit and Coinbase.
+                val ranked = rankedAll.take(2000)
+                fun moveValue(coin: JSONObject): Double {
+                    return coin.optDouble("change_24h_pct",
+                        coin.optDouble("price_change_percent_24h", coin.optDouble("change_24h", 0.0)))
+                }
+                if (selectedTab == "HOME") {
+                    val remote = serverPaperState
+                    val totalBalance = remote?.optDouble("equity_usdt", Double.NaN) ?: Double.NaN
+                    val availableCash = remote?.optDouble("cash_usdt", Double.NaN) ?: Double.NaN
+                    val profit = remote?.optDouble("profit_usdt", Double.NaN) ?: Double.NaN
+                    val loss = remote?.optDouble("loss_usdt", Double.NaN) ?: Double.NaN
+                    val holdings = remote?.optJSONArray("open_positions")?.length()
+                    fun accountAmount(value: Double): String =
+                        if (value.isFinite()) "$" + formatNumber(value, 2) else "—"
+                    val rows = listOf(
+                        listOf("ОБЩИЙ БАЛАНС" to accountAmount(totalBalance),
+                            "ОСТАТОК СРЕДСТВ" to accountAmount(availableCash)),
+                        listOf("ПРИБЫЛЬ" to (if (profit.isFinite()) "+$" + formatNumber(profit, 2) else "—"),
+                            "УБЫТОК" to (if (loss.isFinite()) "-$" + formatNumber(kotlin.math.abs(loss), 2) else "—")),
+                        listOf("ОТКРЫТЫХ ПОЗИЦИЙ" to (holdings?.let { "$it / 10" } ?: "—"))
+                    )
+                    rows.forEach { rowItems ->
+                        val stats = LinearLayout(context).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(7) }
+                        }
+                        rowItems.forEach { item ->
+                            val tile = LinearLayout(context).apply {
+                                orientation = LinearLayout.VERTICAL
+                                setPadding(dp(10), dp(10), dp(10), dp(10))
+                                background = rounded(Color.rgb(24, 34, 68), 13)
+                                layoutParams = LinearLayout.LayoutParams(0, dp(66), 1f).apply {
+                                    marginEnd = dp(7)
+                                }
+                            }
+                            tile.addView(label(item.first, 9f, muted, true))
+                            val valueColor = when (item.first) {
+                                "ПРИБЫЛЬ" -> Color.rgb(20, 190, 115)
+                                "УБЫТОК" -> Color.rgb(235, 85, 85)
+                                else -> dark
+                            }
+                            tile.addView(label(item.second, 16f, valueColor, true))
+                            stats.addView(tile)
+                        }
+                        if (rowItems.size == 1) {
+                            val spacer = android.view.View(context)
+                            stats.addView(spacer, LinearLayout.LayoutParams(0, dp(66), 1f))
+                        }
+                        content.addView(stats)
+                    }
+                    content.addView(label("● РЫНОК LIVE", 17f, Color.rgb(20, 220, 110), true))
+                    content.addView(label("ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА", 16f, dark, true))
+                }
+                if (selectedTab == "MARKET") {
+                    if (loadingCount > 0) {
+                        content.addView(label("Обновление рынка… показываем последние полученные данные.", 11f, muted))
+                    }
+                    val allScannedAssets = ranked.map { it.first }
+                    val totalScanned = allScannedAssets.size
+                    val gainers = allScannedAssets.count { moveValue(it) > 0.0 }
+                    val losers = allScannedAssets.count { moveValue(it) < 0.0 }
+                    val breadth = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        setPadding(dp(10), dp(12), dp(10), dp(12))
+                        background = rounded(Color.rgb(20, 30, 62), 13)
+                    }
+                    listOf("Всего" to totalScanned.toString(),
+                        "Рост ↑" to gainers.toString(),
+                        "Падение ↓" to losers.toString()).forEachIndexed { index, item ->
+                        val cell = LinearLayout(context).apply {
+                            orientation = LinearLayout.VERTICAL
+                            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                        }
+                        cell.addView(label(item.first, 11f, muted, true))
+                        cell.addView(label(item.second, 20f,
+                            when (index) { 1 -> Color.rgb(25, 220, 125); 2 -> Color.rgb(245, 75, 95); else -> Color.WHITE }, true))
+                        breadth.addView(cell)
+                    }
+                    content.addView(breadth)
+                    content.addView(label("Автоматическое обновление каждые 60 секунд", 11f, muted))
+                    val exchangeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                    listOf("ALL" to "Все", "Bybit" to "Bybit",
+                        "Coinbase Exchange" to "Coinbase").forEach { (key, title) ->
+                        val filter = Button(context).apply {
+                            text = title
+                            textSize = 10f
+                            buttonStyle(this, if (marketExchangeFilter == key) purple else Color.rgb(28, 38, 69))
+                            layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(3) }
+                            setOnClickListener { marketExchangeFilter = key; render() }
+                        }
+                        exchangeRow.addView(filter)
+                    }
+                    content.addView(exchangeRow)
+                    val moveRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                    listOf("ALL" to "Все", "UP" to "Рост ↑", "DOWN" to "Падение ↓").forEach { (key, title) ->
+                        val filter = Button(context).apply {
+                            text = title
+                            textSize = 11f
+                            buttonStyle(this, if (marketMoveFilter == key) blue else Color.rgb(28, 38, 69))
+                            layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(4) }
+                            setOnClickListener { marketMoveFilter = key; render() }
+                        }
+                        moveRow.addView(filter)
+                    }
+                    content.addView(moveRow)
+                    content.addView(label("ПАРА / БИРЖА        ЦЕНА          24 Ч.       ОЦЕНКА", 10f, muted, true))
+                }
+                var shown = when (selectedTab) { "HOME" -> ranked.take(3); "ANALYSIS" -> ranked.take(30); else -> ranked }
+                if (selectedTab == "MARKET") {
+                    val marketSource = if (marketExchangeFilter == "ALL") ranked else rankedAll
+                    shown = marketSource.filter { (_, ex) ->
+                        marketExchangeFilter == "ALL" || ex.exchange.equals(marketExchangeFilter, true)
+                    }.filter { (coin, _) ->
+                        when (marketMoveFilter) { "UP" -> moveValue(coin) > 0; "DOWN" -> moveValue(coin) < 0; else -> true }
+                    }.sortedByDescending { (coin, _) -> if (marketMoveFilter == "DOWN") -moveValue(coin) else moveValue(coin) }
+                }
+                if (shown.isEmpty()) content.addView(label("Нет доступных результатов. Проверьте соединение.", 14f, muted))
+                shown.forEach { (coin, exchange) -> coinCard(coin, exchange.exchange, exchange, maxRisk) }
+                if (selectedTab == "HOME") {
+                    val remote = serverPaperState
+                    val paper = LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(14), dp(14), dp(14), dp(14))
+                        background = rounded(Color.rgb(13, 25, 55), 16)
+                    }
+                    val paperTitle = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = android.view.Gravity.CENTER_VERTICAL
+                    }
+                    paperTitle.addView(label("▣  PAPER TRADING", 16f, Color.WHITE, true),
+                        LinearLayout.LayoutParams(0, -2, 1f))
+                    val enabled = remote?.optBoolean("enabled", false) ?: false
+                    paperTitle.addView(label(
+                        if (enabled) "● АВТО-ТОРГОВЛЯ: АКТИВНА" else "● АВТО-ТОРГОВЛЯ: ОСТАНОВЛЕНА",
+                        9f, if (enabled) Color.rgb(20, 220, 120) else muted, true
+                    ))
+                    paper.addView(paperTitle)
+                    // Balance, available cash, profit and loss are shown once in the unified HOME summary above.
+                    // Avoid a second independently refreshed snapshot in the PAPER card.
+                    val controls = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                    val scanButton = Button(context).apply {
+                        text = "Сканировать"
+                        textSize = 10f
+                        buttonStyle(this, blue)
+                        layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(5) }
+                        setOnClickListener { refresh.performClick() }
+                    }
+                    val stopButton = Button(context).apply {
+                        text = if (enabled) "Экстренный стоп" else "Запустить авто"
+                        textSize = 10f
+                        buttonStyle(this, if (enabled) Color.rgb(195, 25, 48) else Color.rgb(20, 145, 90))
+                        layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
+                        isEnabled = remote != null && !serverPaperLoading &&
+                            (enabled || remote.optBoolean("storage_persistent_configured", false))
+                        setOnClickListener { togglePaperServer(!enabled) }
+                    }
+                    controls.addView(scanButton)
+                    controls.addView(stopButton)
+                    paper.addView(controls)
+                    val positions = remote?.optJSONArray("open_positions") ?: JSONArray()
+                    for (i in 0 until positions.length()) {
+                        val p = positions.optJSONObject(i) ?: continue
+                        paper.addView(label(
+                            p.optString("symbol") + " • " + p.optString("exchange") +
+                                " • P/L " + formatNumber(p.optDouble("unrealized_pnl_usdt"), 2) + " USDT",
+                            11f, dark, true
+                        ))
+                    }
+                    content.addView(paper)
+                }
                 content.addView(label(
-                    "Binance: ${b.assets.size} • Bybit: ${y.assets.size} • Coinbase: ${c.assets.size} • OKX: ${o.assets.size}",
+                    "Bybit: ${if (y.error == null) y.assets.size.toString() else "ошибка"} • Coinbase: ${if (c.error == null) c.assets.size.toString() else "ошибка"}",
                     12f, muted
                 ))
+                listOf(y, c).filter { it.error != null }.forEach { failed ->
+                    content.addView(label("${failed.exchange}: ${failed.error}", 11f, Color.rgb(245, 95, 95)))
+                }
+                listOf(y, c).filter { it.error == null && it.assets.isEmpty() }.forEach { empty ->
+                    content.addView(label("${empty.exchange}: сервер ответил, но список assets пуст.", 11f, Color.rgb(230, 170, 65)))
+                }
             } else {
                 val result = when (selectedTab) { "BINANCE" -> b; "BYBIT" -> y; "COINBASE" -> c; else -> o }
                 content.addView(label(
@@ -757,53 +1032,33 @@ class CryptoScanner(private val context: Context) {
                 riskInput.error = "Допустимый риск: от 0,1% до 5%"
                 return
             }
-            binance = null
-            bybit = null
-            coinbase = null
-            okx = null
+            // Keep the last successful snapshot visible while the next refresh is running.
             marketContext = null
             fetchMarketContext()
-            loadingCount = 4
-            status.text = "Загружаем Binance, Bybit, Coinbase Exchange и OKX независимо..."
+            loadingCount = 2
+            status.text = "Загружаем Bybit и Coinbase Exchange независимо..."
             render()
-            val query = "limit=30&universe_limit=100&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk"
-            fetchExchange("Binance",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?$query") {
-                binance = it
-                loadingCount--
-                status.text = if (loadingCount == 0) "Данные всех четырёх бирж обновлены."
-                    else "Binance получен. Остальные биржи загружаются..."
-                render()
-            }
             fetchExchange("Bybit",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=30&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk") {
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=1000&min_volume=100000&capital_usdt=$capital&risk_pct=$risk") {
                 bybit = it
                 loadingCount--
-                status.text = if (loadingCount == 0) "Данные всех четырёх бирж обновлены."
-                    else "Bybit получен. Остальные биржи загружаются..."
+                status.text = if (loadingCount == 0) "Данные Bybit и Coinbase Exchange обновлены."
+                    else "Bybit получен. Загружается Coinbase Exchange..."
                 render()
             }
             fetchExchange("Coinbase Exchange",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=30&min_volume=1000000") {
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=1000&min_volume=100000") {
                 coinbase = it
                 loadingCount--
-                status.text = if (loadingCount == 0) "Данные всех четырёх бирж обновлены."
-                    else "Coinbase Exchange получен. Остальные биржи загружаются..."
-                render()
-            }
-            fetchExchange("OKX",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/okx/scan?limit=30&min_volume=1000000") {
-                okx = it
-                loadingCount--
-                status.text = if (loadingCount == 0) "Данные всех четырёх бирж обновлены."
-                    else "OKX получен. Остальные биржи загружаются..."
+                status.text = if (loadingCount == 0) "Данные Bybit и Coinbase Exchange обновлены."
+                    else "Coinbase Exchange загружается..."
                 render()
             }
         }
 
         refresh.setOnClickListener { loadAll() }
         section.addView(label(
-            "Экран обновляет список каждые 15 минут; серверная виртуальная торговля работает независимо от открытого экрана.",
+            "Рынок и PAPER-баланс обновляются каждые 60 секунд; серверная виртуальная торговля работает независимо от открытого экрана.",
             11f, muted
         ))
         val handler = Handler(Looper.getMainLooper())
@@ -811,19 +1066,23 @@ class CryptoScanner(private val context: Context) {
             override fun run() {
                 if (!section.isAttachedToWindow) return
                 loadAll()
-                handler.postDelayed(this, 15L * 60L * 1000L)
+                if (selectedTab == "HOME" || selectedTab == "PAPER" || selectedTab == "HISTORY") {
+                    refreshPaperServer()
+                }
+                handler.postDelayed(this, 60L * 1000L)
             }
         }
         section.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(view: View) {
                 handler.removeCallbacks(task)
-                handler.postDelayed(task, 15L * 60L * 1000L)
+                handler.postDelayed(task, 60L * 1000L)
             }
             override fun onViewDetachedFromWindow(view: View) {
                 handler.removeCallbacks(task)
             }
         })
         loadAll()
+        refreshPaperServer()
         return section
     }
 }
