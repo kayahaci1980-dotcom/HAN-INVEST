@@ -648,29 +648,29 @@ def _apply_market_data(
             )
             direction = str(position["direction"] if "direction" in position.keys() else "LONG").upper()
             change_pct = (((entry - price) / entry) if direction == "SHORT" else (price / entry - 1.0)) * 100.0
+            current = db.execute(
+                "SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
+                (exchange, position["symbol"]),
+            ).fetchone()
+            if current is None:
+                continue
+            quantity = float(current["quantity"])
+            cost = float(current["cost_usdt"])
             if direction == "SHORT":
-                if change_pct >= 10.0:
-                    _close_position(db, position, price, "SHORT_TAKE_PROFIT_10")
-                elif change_pct <= -2.0:
-                    _close_position(db, position, price, "SHORT_STOP_LOSS_2")
+                opening_fee = max(0.0, cost - entry * quantity)
+                net_pnl = (entry - price) * quantity - opening_fee - price * quantity * _FEE_RATE
             else:
-                # The hard portfolio stop has priority over score and scale rules.
-                current = db.execute(
-                    "SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
-                    (exchange, position["symbol"]),
-                ).fetchone()
-                if current is None:
-                    continue
-                quantity = float(current["quantity"])
-                cost = float(current["cost_usdt"])
-                net_liquidation = quantity * price * (1.0 - _FEE_RATE)
-                loss_pct = ((net_liquidation - cost) / cost * 100.0) if cost > 0 else 0.0
-                if loss_pct <= -0.5:
-                    _close_position(db, current, price, "DRAWDOWN_0_5_PERCENT")
-                elif change_pct >= 10.0:
-                    _close_position(db, current, price, "TAKE_PROFIT_10_REBUY")
-                else:
-                    _manage_long_scale(db, current, price)
+                net_pnl = quantity * price * (1.0 - _FEE_RATE) - cost
+            loss_pct = (net_pnl / cost * 100.0) if cost > 0 else 0.0
+            if loss_pct <= -0.5:
+                _close_position(db, current, price, "DRAWDOWN_0_5_PERCENT")
+            elif change_pct >= 10.0:
+                _close_position(db, current, price,
+                                "TAKE_PROFIT_10_REBUY" if direction == "LONG" else "SHORT_TAKE_PROFIT_10")
+            elif direction == "LONG":
+                _manage_long_scale(db, current, price)
+            else:
+                _manage_short_scale(db, current, price)
 
         # Market breadth blocks only new entries. Position exits above always run.
         if not allow_new_entries and not allow_short_entries:
