@@ -132,3 +132,82 @@ async def get_market_breadth() -> dict[str, Any]:
 @router.get("/api/v1/crypto/market-breadth")
 async def market_breadth():
     return await get_market_breadth()
+
+
+_assets_cache: tuple[float, dict[str, Any]] | None = None
+
+
+async def get_global_market_assets(limit: int = 2000) -> dict[str, Any]:
+    """Return a deduplicated read-only global asset catalogue, separate from exchange trading candidates."""
+    global _assets_cache
+    if _assets_cache and time.time() - _assets_cache[0] < CACHE_TTL_SECONDS:
+        cached = _assets_cache[1]
+        return {**cached, "assets": cached["assets"][:limit], "returned_assets": min(limit, len(cached["assets"]))}
+
+    api_key = os.getenv("COINPAPRIKA_API_KEY", "").strip()
+    full_catalogue = bool(api_key)
+    source_url = PAID_SOURCE_URL if full_catalogue else FREE_SOURCE_URL
+    headers = {"User-Agent": "HAN-INVEST/0.7", "Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = api_key
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(25.0), headers=headers) as client:
+            response = await client.get(source_url, params={"quotes": "USD"})
+            response.raise_for_status()
+            rows = response.json()
+            if not isinstance(rows, list):
+                raise ValueError("CoinPaprika returned an unexpected response")
+            by_id: dict[str, dict[str, Any]] = {}
+            for coin in rows:
+                if not isinstance(coin, dict):
+                    continue
+                coin_id = str(coin.get("id") or "").strip()
+                symbol = str(coin.get("symbol") or "").strip().upper()
+                name = str(coin.get("name") or "").strip()
+                if not coin_id or not symbol or symbol in _STABLECOINS or coin_id in by_id:
+                    continue
+                quote = (coin.get("quotes") or {}).get("USD") or {}
+                def finite_number(value):
+                    try:
+                        number = float(value)
+                        return number if math.isfinite(number) else None
+                    except (TypeError, ValueError):
+                        return None
+                by_id[coin_id] = {
+                    "id": coin_id,
+                    "symbol": symbol,
+                    "name": name or symbol,
+                    "rank": coin.get("rank"),
+                    "price_usd": finite_number(quote.get("price")),
+                    "change_24h_pct": finite_number(quote.get("percent_change_24h")),
+                    "volume_24h_usd": finite_number(quote.get("volume_24h")),
+                    "market_cap_usd": finite_number(quote.get("market_cap")),
+                }
+            assets = sorted(by_id.values(), key=lambda item: (
+                item["rank"] is None, item["rank"] if item["rank"] is not None else 10**9
+            ))
+            result = {
+                "available": bool(assets),
+                "source": "CoinPaprika global tickers (USD)",
+                "plan_mode": "paid_all_available" if full_catalogue else "free_up_to_2000",
+                "coverage_note": "До 2 000 активов в бесплатном каталоге; платный API может вернуть больше.",
+                "total_assets_available": len(assets),
+                "returned_assets": min(limit, len(assets)),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "assets": assets,
+            }
+            _assets_cache = (time.time(), result)
+            return {**result, "assets": assets[:limit]}
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Глобальный список криптовалют временно недоступен.",
+        ) from exc
+
+
+@router.get("/api/v1/crypto/market-assets")
+async def market_assets(limit: int = 2000):
+    if limit < 1 or limit > 5000:
+        raise HTTPException(status_code=422, detail="limit должен быть от 1 до 5000")
+    return await get_global_market_assets(limit)
