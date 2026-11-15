@@ -1135,7 +1135,7 @@ class CryptoScanner(private val context: Context) {
 
         refresh.setOnClickListener { loadAll() }
         section.addView(label(
-            "Экран обновляет список каждые 15 минут; серверная виртуальная торговля работает независимо от открытого экрана.",
+            "Market LIVE автоматически обновляет данные каждые 60 секунд, пока экран открыт; PAPER работает на сервере независимо от приложения.",
             11f, muted
         ))
         val handler = Handler(Looper.getMainLooper())
@@ -1143,13 +1143,13 @@ class CryptoScanner(private val context: Context) {
             override fun run() {
                 if (!section.isAttachedToWindow) return
                 loadAll()
-                handler.postDelayed(this, 15L * 60L * 1000L)
+                handler.postDelayed(this, 60L * 1000L)
             }
         }
         section.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(view: View) {
                 handler.removeCallbacks(task)
-                handler.postDelayed(task, 15L * 60L * 1000L)
+                handler.postDelayed(task, 60L * 1000L)
             }
             override fun onViewDetachedFromWindow(view: View) {
                 handler.removeCallbacks(task)
