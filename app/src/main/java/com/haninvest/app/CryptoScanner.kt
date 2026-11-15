@@ -118,7 +118,7 @@ class CryptoScanner(private val context: Context) {
         }
         val status = label("Загрузка данных четырёх бирж...", 14f, dark)
         val refresh = Button(context).apply {
-            text = "Обновить обе биржи"
+            text = "Обновить все 4 биржи"
             buttonStyle(this, blue)
         }
         panel.addView(status)
