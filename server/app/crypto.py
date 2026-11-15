@@ -294,7 +294,7 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "risk": risk,
         }
     except (httpx.HTTPError, ValueError, TypeError, IndexError, KeyError, ZeroDivisionError) as exc:
-        logger.warning("Binance analysis skipped for %s: %s", symbol, type(exc).__name__)
+        logger.warning("Binance analysis skipped for %s: %s (HTTP %s)", symbol, type(exc).__name__, getattr(getattr(exc, "response", None), "status_code", "n/a"))
         return None
 
 
@@ -576,14 +576,14 @@ async def scan_crypto(
             _cache[cache_key] = (time.time(), payload)
             return payload
         except (httpx.HTTPError, ValueError, TypeError) as fallback_exc:
-            logger.warning("CoinGecko fallback failed: %s", type(fallback_exc).__name__)
+            logger.warning("CoinGecko fallback failed: %s (HTTP %s)", type(fallback_exc).__name__, getattr(getattr(fallback_exc, "response", None), "status_code", "n/a"))
             try:
                 async with httpx.AsyncClient(timeout=20) as third_client:
                     payload = await _scan_coinpaprika(third_client, limit, min_volume)
                 _cache[cache_key] = (time.time(), payload)
                 return payload
             except (httpx.HTTPError, ValueError, TypeError) as third_exc:
-                logger.exception("CoinPaprika fallback failed: %s", type(third_exc).__name__)
+                logger.exception("CoinPaprika fallback failed: %s (HTTP %s)", type(third_exc).__name__, getattr(getattr(third_exc, "response", None), "status_code", "n/a"))
                 raise HTTPException(
                     status_code=503,
                     detail=(
