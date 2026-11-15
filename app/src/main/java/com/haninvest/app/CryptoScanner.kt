@@ -402,6 +402,36 @@ class CryptoScanner(private val context: Context) {
                     else -> "ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА"
                 }, 17f, dark, true
             ))
+            if (selectedTab == "HOME") {
+                val totalPnl = (0 until paperHistory.length()).sumOf { i ->
+                    paperHistory.optJSONObject(i)?.optDouble("pnl_usdt", 0.0) ?: 0.0
+                }
+                val dayStart = java.util.Calendar.getInstance().apply {
+                    set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+                    set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+                }.timeInMillis
+                val todayPnl = (0 until paperHistory.length()).sumOf { i ->
+                    val trade = paperHistory.optJSONObject(i) ?: return@sumOf 0.0
+                    if (trade.optLong("time", 0L) >= dayStart) trade.optDouble("pnl_usdt", 0.0) else 0.0
+                }
+                val stats = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                fun stat(title: String, value: String, color: Int) = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(9), dp(10), dp(9), dp(10))
+                    background = rounded(page, 12)
+                    addView(label(title, 11f, muted, true))
+                    addView(label(value, 16f, color, true))
+                    layoutParams = LinearLayout.LayoutParams(0, dp(74), 1f).apply { marginEnd = dp(5) }
+                }
+                stats.addView(stat("Баланс (PAPER)", formatNumber(paperCash, 2) + " USDT", dark))
+                stats.addView(stat("Сегодня (P/L)", (if (todayPnl >= 0) "+" else "") + formatNumber(todayPnl, 2), if (todayPnl >= 0) Color.rgb(0, 220, 105) else Color.RED))
+                stats.addView(stat("Всего (P/L)", (if (totalPnl >= 0) "+" else "") + formatNumber(totalPnl, 2), if (totalPnl >= 0) Color.rgb(0, 220, 105) else Color.RED))
+                content.addView(stats)
+                val modeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                modeRow.addView(label("▱ PAPER", 14f, Color.rgb(0, 220, 105), true), LinearLayout.LayoutParams(0, dp(42), 1f))
+                modeRow.addView(label("Виртуальная торговля", 11f, muted), LinearLayout.LayoutParams(0, dp(42), 1f))
+                content.addView(modeRow)
+            }
             if (selectedTab == "MARKET") {
                 content.addView(label("ГЛОБАЛЬНЫЙ СПИСОК КРИПТОВАЛЮТ", 14f, dark, true))
                 content.addView(label("CoinPaprika • уникальные активы без стейблкоинов • список не является торговым сигналом Bybit", 11f, muted))
@@ -684,7 +714,68 @@ class CryptoScanner(private val context: Context) {
                         .thenByDescending { it.first.optDouble("volume_ratio", 0.0) }
                 ).take(3)
                 if (top.isEmpty()) content.addView(label("Нет доступных результатов. Проверьте соединение.", 14f, muted))
-                top.forEach { (coin, exchange) -> coinCard(coin, exchange.exchange, exchange, maxRisk) }
+                val table = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = rounded(page, 12)
+                    setPadding(dp(7), dp(7), dp(7), dp(7))
+                }
+                fun tableRow(values: List<String>, header: Boolean = false, positive: Boolean = false) {
+                    val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                    val weights = listOf(1.25f, 1.15f, 0.8f, 0.65f, 0.55f, 0.55f, 0.85f)
+                    values.forEachIndexed { index, value ->
+                        val color = if (header) muted else if (index == 2 && positive) Color.rgb(0, 220, 105) else dark
+                        val cell = label(value, if (header) 9f else 10f, color, !header)
+                        cell.gravity = Gravity.CENTER
+                        row.addView(cell, LinearLayout.LayoutParams(0, dp(if (header) 32 else 48), weights[index]))
+                    }
+                    table.addView(row)
+                    table.addView(View(context).apply { setBackgroundColor(border); layoutParams = LinearLayout.LayoutParams(-1, dp(1)) })
+                }
+                tableRow(listOf("Пара", "Цена", "24ч", "Оценка", "RSI", "ATR", "EMA20"), true)
+                top.forEach { (coin, exchange) ->
+                    val symbol = coin.optString("symbol", "—").replace("-USDT", "/USDT")
+                    val change = coin.optDouble("change_24h_pct", coin.optDouble("price_change_24h_pct", 0.0))
+                    tableRow(listOf(
+                        symbol, formatNumber(coin.optDouble("price", 0.0), 4),
+                        (if (change >= 0) "+" else "") + formatNumber(change, 2) + "%",
+                        coin.optInt("score", 0).toString(),
+                        coin.optString("rsi", coin.optString("rsi_14", "—")),
+                        coin.optString("atr_14", "—"),
+                        coin.optString("ema20", coin.optString("ma20", "—"))
+                    ), false, change >= 0)
+                }
+                content.addView(table)
+                if (top.isNotEmpty()) {
+                    val first = top.first()
+                    val coin = first.first
+                    val symbol = coin.optString("symbol", "")
+                    val price = coin.optDouble("price", 0.0)
+                    val tradePanel = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(dp(8), dp(9), dp(8), dp(9))
+                        background = rounded(card, 12)
+                    }
+                    val amount = EditText(context).apply {
+                        setText("100"); hint = "USDT"; textSize = 13f
+                        inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                        setTextColor(dark); setSingleLine(true)
+                        layoutParams = LinearLayout.LayoutParams(dp(72), dp(44))
+                    }
+                    val buy = Button(context).apply { text = "Купить"; buttonStyle(this, Color.rgb(0, 165, 85)) }
+                    buy.setOnClickListener {
+                        val value = amount.text.toString().replace(",", ".").toDoubleOrNull()
+                        if (value == null || value <= 0) status.text = "Введите сумму USDT."
+                        else paperTrade("Bybit", symbol, price, value, false)
+                    }
+                    val sell = Button(context).apply { text = "Продать"; buttonStyle(this, Color.rgb(225, 48, 60)) }
+                    sell.setOnClickListener { paperTrade("Bybit", symbol, price, null, true) }
+                    tradePanel.addView(label("Bybit", 12f, dark, true), LinearLayout.LayoutParams(0, dp(44), 1f))
+                    tradePanel.addView(amount)
+                    tradePanel.addView(buy)
+                    tradePanel.addView(sell)
+                    content.addView(tradePanel)
+                }
                 content.addView(label(
                     "Binance: ${b.assets.size} • Bybit: ${y.assets.size} • Coinbase: ${c.assets.size} • OKX: ${o.assets.size}",
                     12f, muted
