@@ -900,10 +900,12 @@ def _apply_market_data(
                 ma50 = float(asset.get("ma50") or 0)
                 daily_open = float(asset.get("daily_open") or 0)
                 volume = float(asset.get("quote_volume_24h") or 0)
+                score = float(asset.get("score") or 0)
             except (TypeError, ValueError):
                 continue
             if (asset.get("trade_ready") is not True or not asset.get("symbol")
                     or _is_stablecoin_pair(str(asset.get("symbol")))
+                    or score < 60
                     or price <= 0 or atr <= 0 or daily_open <= 0
                     or not (5_000_000 <= volume <= 40_000_000) or str(asset.get("atr_timeframe") or "") != "1H"
                     or not asset.get("atr_candle_time")):

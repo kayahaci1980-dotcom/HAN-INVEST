@@ -64,9 +64,13 @@ class PaperTradingRuleTests(unittest.TestCase):
             self.assertTrue(opened)
             db.execute("UPDATE paper_account SET cash=5000 WHERE id=1")
 
-    def test_low_score_does_not_block_long_entry(self):
-        paper._apply_market_data("Bybit", {"assets": [self.asset(1)]}, True)
+    def test_score_60_allows_long_entry(self):
+        paper._apply_market_data("Bybit", {"assets": [self.asset(60)]}, True)
         self.assertEqual(len(self.positions()), 1)
+
+    def test_score_below_60_blocks_long_entry(self):
+        paper._apply_market_data("Bybit", {"assets": [self.asset(59)]}, True)
+        self.assertEqual(len(self.positions()), 0)
 
     def test_score_change_does_not_close_existing_position(self):
         self.seed_position()
@@ -194,14 +198,20 @@ class PaperTradingRuleTests(unittest.TestCase):
         paper._apply_market_data("Bybit", {"assets": [asset]}, True)
         self.assertEqual(len(self.positions()), 0)
 
-    def test_short_entry_is_score_independent_and_uses_one_hundred_usdt_base(self):
-        asset = self.asset(0, 99.9)
+    def test_score_60_allows_short_entry(self):
+        asset = self.asset(60, 99.9)
         asset["ma20"], asset["ma50"] = 101.0, 102.0
         paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
         positions = self.positions()
         self.assertEqual(len(positions), 1)
         self.assertEqual(positions[0]["direction"], "SHORT")
         self.assertAlmostEqual(float(positions[0]["cost_usdt"]), 100.0, places=5)
+
+    def test_score_below_60_blocks_short_entry(self):
+        asset = self.asset(59, 99.9)
+        asset["ma20"], asset["ma50"] = 101.0, 102.0
+        paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
+        self.assertEqual(len(self.positions()), 0)
 
     def test_adds_equal_initial_tranches_at_each_one_percent_milestone_once(self):
         self.seed_position()
