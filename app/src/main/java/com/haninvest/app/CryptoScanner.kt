@@ -287,7 +287,7 @@ class CryptoScanner(private val context: Context) {
                 setOnClickListener {
                     selectedTab = key
                     render()
-                    if (key == "PAPER") refreshPaperServer()
+                    if (key == "PAPER" || key == "ARCHIVE") refreshPaperServer()
                     if (!floatingDialog.isShowing) floatingDialog.show()
                 }
             }
@@ -444,6 +444,7 @@ class CryptoScanner(private val context: Context) {
             addTab("Coinbase", "COINBASE", blue)
             addTab("OKX", "OKX", purple)
             addTab("PAPER · Вирт. счёт", "PAPER", Color.rgb(0, 190, 105))
+            addTab("Архив сделок", "ARCHIVE", Color.rgb(255, 151, 35))
             content.removeAllViews()
             content.addView(label(
                 when (selectedTab) {
@@ -452,6 +453,7 @@ class CryptoScanner(private val context: Context) {
                     "COINBASE" -> "🔵 COINBASE EXCHANGE — отдельные данные биржи"
                     "OKX" -> "⚫ OKX SPOT — отдельные данные биржи"
                     "PAPER" -> "ВИРТУАЛЬНЫЙ СЧЁТ — PAPER TRADING"
+                    "ARCHIVE" -> "АРХИВ ПОКУПОК И ПРОДАЖ PAPER"
                     else -> "ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА"
                 }, 17f, dark, true
             ))
@@ -605,52 +607,67 @@ class CryptoScanner(private val context: Context) {
                         content.addView(label("Ошибка сканирования: $remoteError", 11f, Color.RED))
                     }
                 }
-                if (remote != null) {
-                    content.addView(label("ИСТОРИЯ СЕРВЕРНЫХ СДЕЛОК", 14f, dark, true))
-                    val serverHistory = remote.optJSONArray("history") ?: JSONArray()
-                    if (serverHistory.length() == 0) {
-                        content.addView(label("Пока нет записей о сделках.", 12f, muted))
-                    } else {
-                        for (i in 0 until serverHistory.length()) {
-                            val trade = serverHistory.optJSONObject(i) ?: continue
-                            val side = trade.optString("side", "—")
-                            val symbol = trade.optString("symbol", "—")
-                            val exchange = trade.optString("exchange", "—")
-                            val direction = if (side.startsWith("SHORT")) "SHORT" else "LONG"
-                            val openedAt = formatBishkekTime(trade.optString("opened_at", ""))
-                            val closedAt = formatBishkekTime(trade.optString("closed_at", ""))
-                            val pnl = if (trade.isNull("pnl_usdt")) null else trade.optDouble("pnl_usdt")
-                            val reasonLabel = trade.optString("close_reason_label", "")
-                            val eventTime = formatBishkekTime(trade.optString("time", ""))
-                            val entry = LinearLayout(context).apply {
-                                orientation = LinearLayout.VERTICAL
-                                setPadding(dp(9), dp(8), dp(9), dp(8))
-                                background = rounded(page, 10)
+            } else if (selectedTab == "ARCHIVE") {
+                val remote = serverPaperState
+                if (remote == null) {
+                    content.addView(label(serverPaperError ?: "Загружаем архив сделок с сервера…", 12f, muted))
+                } else {
+                    if (remote != null) {
+                        content.addView(label("АРХИВ ПОКУПОК И ПРОДАЖ PAPER", 14f, dark, true))
+                        val serverHistory = remote.optJSONArray("history") ?: JSONArray()
+                        if (serverHistory.length() == 0) {
+                            content.addView(label("Пока нет записей о сделках.", 12f, muted))
+                        } else {
+                            for (i in 0 until serverHistory.length()) {
+                                val trade = serverHistory.optJSONObject(i) ?: continue
+                                val side = trade.optString("side", "—")
+                                val symbol = trade.optString("symbol", "—")
+                                val exchange = trade.optString("exchange", "—")
+                                val direction = if (side.startsWith("SHORT")) "SHORT" else "LONG"
+                                val openedAt = formatBishkekTime(trade.optString("opened_at", ""))
+                                val closedAt = formatBishkekTime(trade.optString("closed_at", ""))
+                                val pnl = if (trade.isNull("pnl_usdt")) null else trade.optDouble("pnl_usdt")
+                                val reasonLabel = trade.optString("close_reason_label", "")
+                                val eventTime = formatBishkekTime(trade.optString("time", ""))
+                                val entry = LinearLayout(context).apply {
+                                    orientation = LinearLayout.VERTICAL
+                                    setPadding(dp(9), dp(8), dp(9), dp(8))
+                                    background = rounded(page, 10)
+                                }
+                                entry.addView(label("$symbol • $exchange • $direction", 13f, dark, true))
+                                entry.addView(label("Открытие: $openedAt", 11f, muted))
+                                if (closedAt != "—") {
+                                    entry.addView(label("Закрытие: $closedAt", 11f, muted))
+                                    val closeReason = if (reasonLabel.isBlank()) trade.optString("reason", "—") else reasonLabel
+                                    entry.addView(label("Причина: $closeReason", 11f, dark))
+                                } else if (side == "BUY" || side == "SHORT_OPEN") {
+                                    entry.addView(label("Статус события: открытие / добавление позиции", 11f, muted))
+                                } else {
+                                    entry.addView(label("Время события: $eventTime • " + trade.optString("reason", "—"), 11f, muted))
+                                }
+                                if (pnl != null) {
+                                    entry.addView(label(
+                                        "Результат: " + formatNumber(pnl, 2) + " USDT",
+                                        12f, if (pnl >= 0) Color.rgb(20,145,90) else Color.RED, true
+                                    ))
+                                }
+                                content.addView(entry)
+                                content.addView(View(context).apply {
+                                    layoutParams = LinearLayout.LayoutParams(1, dp(6))
+                                })
                             }
-                            entry.addView(label("$symbol • $exchange • $direction", 13f, dark, true))
-                            entry.addView(label("Открытие: $openedAt", 11f, muted))
-                            if (closedAt != "—") {
-                                entry.addView(label("Закрытие: $closedAt", 11f, muted))
-                                val closeReason = if (reasonLabel.isBlank()) trade.optString("reason", "—") else reasonLabel
-                                entry.addView(label("Причина: $closeReason", 11f, dark))
-                            } else if (side == "BUY" || side == "SHORT_OPEN") {
-                                entry.addView(label("Статус события: открытие / добавление позиции", 11f, muted))
-                            } else {
-                                entry.addView(label("Время события: $eventTime • " + trade.optString("reason", "—"), 11f, muted))
-                            }
-                            if (pnl != null) {
-                                entry.addView(label(
-                                    "Результат: " + formatNumber(pnl, 2) + " USDT",
-                                    12f, if (pnl >= 0) Color.rgb(20,145,90) else Color.RED, true
-                                ))
-                            }
-                            content.addView(entry)
-                            content.addView(View(context).apply {
-                                layoutParams = LinearLayout.LayoutParams(1, dp(6))
-                            })
                         }
                     }
+    
                 }
+                if (serverPaperError != null) content.addView(label("Ошибка загрузки архива: $serverPaperError", 11f, Color.RED))
+                val archiveRefresh = Button(context).apply {
+                    text = if (serverPaperLoading) "Загрузка…" else "Обновить архив"
+                    buttonStyle(this, blue)
+                    isEnabled = !serverPaperLoading
+                    setOnClickListener { refreshPaperServer() }
+                }
+                content.addView(archiveRefresh)
                 if (serverPaperError != null) {
                     content.addView(label("Связь с сервером: $serverPaperError", 11f, Color.RED))
                 }
