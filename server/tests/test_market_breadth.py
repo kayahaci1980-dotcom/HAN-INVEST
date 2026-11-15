@@ -31,11 +31,15 @@ def test_exact_half_or_neutral_market_waits():
     assert result["allow_new_entries"] is False
 
 
-def test_missing_and_non_finite_data_is_ignored():
+def test_missing_and_non_finite_changes_do_not_remove_assets_from_total():
     rows = [coin("btc", "BTC", None), coin("eth", "ETH", float("nan")),
             coin("sol", "SOL", 2)]
     result = summarize_market_breadth(rows)
-    assert result["total_coins"] == 1
+    assert result["total_coins"] == 3
+    assert result["measured_coins"] == 1
+    assert result["missing_change_coins"] == 2
+    assert result["rising_coins"] == 1
+    assert result["falling_coins"] == 0
     assert result["allow_new_entries"] is True
 
 
@@ -47,7 +51,6 @@ def test_duplicate_id_is_counted_once_even_if_duplicate_value_differs():
     assert result["falling_coins"] == 0
     assert result["unchanged_coins"] == 1
     assert result["status"] == "WAIT"
-
 
 
 def test_paid_plan_reports_full_catalogue_mode():
