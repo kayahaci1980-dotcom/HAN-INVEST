@@ -168,7 +168,14 @@ class CryptoScanner(private val context: Context) {
         }
         floatingHeader.addView(closeFloating, LinearLayout.LayoutParams(dp(46), dp(42)))
         floatingRoot.addView(floatingHeader)
-        floatingRoot.addView(tabs)
+        val tabScroller = HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            fillViewport = false
+            addView(tabs, ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        floatingRoot.addView(tabScroller, LinearLayout.LayoutParams(-1, dp(52)))
         floatingRoot.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         floatingDialog.setContentView(floatingRoot)
         floatingDialog.setOnShowListener {
@@ -436,7 +443,7 @@ class CryptoScanner(private val context: Context) {
             addTab("Bybit", "BYBIT", orange)
             addTab("Coinbase", "COINBASE", blue)
             addTab("OKX", "OKX", purple)
-            addTab("Вирт. счёт", "PAPER", Color.rgb(20, 145, 90))
+            addTab("PAPER · Вирт. счёт", "PAPER", Color.rgb(0, 190, 105))
             content.removeAllViews()
             content.addView(label(
                 when (selectedTab) {
