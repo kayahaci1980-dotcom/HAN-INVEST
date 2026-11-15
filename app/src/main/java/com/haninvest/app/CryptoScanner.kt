@@ -15,6 +15,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.text.InputType
 import android.widget.LinearLayout
+import android.widget.HorizontalScrollView
 import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONArray
