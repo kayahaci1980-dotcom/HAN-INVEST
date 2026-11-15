@@ -1,0 +1,33 @@
+name: Paper trading strategy tests
+
+on:
+  push:
+    branches:
+      - feature/paper-scale-in-0-5-stop
+    paths:
+      - "server/app/paper_trading.py"
+      - "server/tests/test_paper_trading_rules.py"
+      - "server/tests/test_paper_account_snapshot.py"
+      - ".github/workflows/paper-trading-tests.yml"
+  pull_request:
+    branches:
+      - auto-paper-rules-coinbase-okx
+    paths:
+      - "server/app/paper_trading.py"
+      - "server/tests/test_paper_trading_rules.py"
+      - "server/tests/test_paper_account_snapshot.py"
+      - ".github/workflows/paper-trading-tests.yml"
+
+jobs:
+  paper-trading-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pytest
+      - run: PYTHONPATH=. pytest -q tests/test_paper_trading_rules.py tests/test_paper_account_snapshot.py
