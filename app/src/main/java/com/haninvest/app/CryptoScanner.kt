@@ -246,14 +246,14 @@ class CryptoScanner(private val context: Context) {
                 quoteVolume >= 1_000_000.0
         }
 
-        fun coinCard(coin: JSONObject, exchange: String, result: ExchangeResult, maxRisk: Double) {
+        fun coinCard(coin: JSONObject, exchange: String, result: ExchangeResult, maxRisk: Double, allowTrading: Boolean = true) {
             val symbol = coin.optString("symbol", "—")
             val shortSymbol = symbol.removeSuffix("-USDT").removeSuffix("USDT")
             val coinName = coin.optString("name").takeIf { it.isNotBlank() } ?: shortSymbol
             val price = coin.optDouble("price", Double.NaN)
             val score = coin.optInt("score", 0)
             val serverSignal = coin.optString("signal", "WATCH")
-            val buyAllowed = score >= 83 && tradeReady(coin, result, maxRisk)
+            val buyAllowed = allowTrading && score >= 83 && tradeReady(coin, result, maxRisk)
             val early = coin.optString("early_signal") == "EARLY BUY"
             val card = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
@@ -301,34 +301,36 @@ class CryptoScanner(private val context: Context) {
                     12f, Color.rgb(190, 70, 55), true
                 ))
             }
-            val tradeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-            val amountInput = EditText(context).apply {
-                hint = "Сумма USDT"
-                setText("100")
-                textSize = 13f
-                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-                layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
-            }
-            val buyButton = Button(context).apply {
-                text = "Купить"
-                buttonStyle(this, Color.rgb(20, 145, 90))
-            }
-            buyButton.setOnClickListener {
-                val amount = amountInput.text.toString().replace(",", ".").toDoubleOrNull()
-                if (amount == null || amount <= 0.0) status.text = "Введите сумму в USDT."
-                else paperTrade(exchange, symbol, price, amount, false)
-            }
-            tradeRow.addView(amountInput)
-            tradeRow.addView(buyButton)
-            card.addView(tradeRow)
-            val ownedQty = paperPositions.optJSONObject(exchange + ":" + symbol)?.optDouble("quantity", 0.0) ?: 0.0
-            if (ownedQty > 0.0) {
-                val sellButton = Button(context).apply {
-                    text = "Продать всю позицию"
-                    buttonStyle(this, orange)
+            if (allowTrading) {
+                val tradeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                val amountInput = EditText(context).apply {
+                    hint = "Сумма USDT"
+                    setText("100")
+                    textSize = 13f
+                    inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                    layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
                 }
-                sellButton.setOnClickListener { paperTrade(exchange, symbol, price, null, true) }
-                card.addView(sellButton)
+                val buyButton = Button(context).apply {
+                    text = "Купить"
+                    buttonStyle(this, Color.rgb(20, 145, 90))
+                }
+                buyButton.setOnClickListener {
+                    val amount = amountInput.text.toString().replace(",", ".").toDoubleOrNull()
+                    if (amount == null || amount <= 0.0) status.text = "Введите сумму в USDT."
+                    else paperTrade(exchange, symbol, price, amount, false)
+                }
+                tradeRow.addView(amountInput)
+                tradeRow.addView(buyButton)
+                card.addView(tradeRow)
+                val ownedQty = paperPositions.optJSONObject(exchange + ":" + symbol)?.optDouble("quantity", 0.0) ?: 0.0
+                if (ownedQty > 0.0) {
+                    val sellButton = Button(context).apply {
+                        text = "Продать всю позицию"
+                        buttonStyle(this, orange)
+                    }
+                    sellButton.setOnClickListener { paperTrade(exchange, symbol, price, null, true) }
+                    card.addView(sellButton)
+                }
             }
             content.addView(card)
             content.addView(View(context).apply {
@@ -668,7 +670,7 @@ class CryptoScanner(private val context: Context) {
                     val uniqueAssets = result.assets.filter { baseSymbol(it) !in excluded }
                     content.addView(label("Уникальных монет этого раздела: ${uniqueAssets.size}. Приоритет: Bybit → Binance → Coinbase → OKX.", 11f, muted))
                     uniqueAssets.sortedByDescending { it.optInt("score", 0) }
-                        .forEach { coinCard(it, result.exchange, result, maxRisk) }
+                        .forEach { coinCard(it, result.exchange, result, maxRisk, allowTrading = selectedTab == "BYBIT") }
                 }
             }
             }
