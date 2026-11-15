@@ -171,7 +171,7 @@ class CryptoScanner(private val context: Context) {
         floatingRoot.addView(floatingHeader)
         val tabScroller = HorizontalScrollView(context).apply {
             isHorizontalScrollBarEnabled = false
-            fillViewport = false
+            isFillViewport = false
             addView(tabs, ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ))
