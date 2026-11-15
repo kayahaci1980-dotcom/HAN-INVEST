@@ -45,11 +45,12 @@ class PaperTradingRuleTests(unittest.TestCase):
 
     def seed_position(self):
         with paper._connect() as db:
-            # Leave enough virtual cash for several add-on tranches.
-            db.execute("UPDATE paper_account SET cash=10000 WHERE id=1")
+            # Open with normal ATR sizing, then top up the isolated test account
+            # so it can exercise multiple equal-sized add-on tranches.
             self.assertTrue(
                 paper._open_position(db, "Bybit", self.asset(), "TEST_SEED")
             )
+            db.execute("UPDATE paper_account SET cash=5000 WHERE id=1")
 
     def test_score_83_opens_position(self):
         paper._apply_market_data("Bybit", {"assets": [self.asset(83)]}, True)
