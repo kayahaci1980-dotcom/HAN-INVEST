@@ -345,37 +345,6 @@ class CryptoScanner(private val context: Context) {
                     12f, Color.rgb(190, 70, 55), true
                 ))
             }
-            if (allowTrading) {
-                val tradeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-                val amountInput = EditText(context).apply {
-                    hint = "Сумма USDT"
-                    setText("100")
-                    textSize = 13f
-                    inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-                    layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
-                }
-                val buyButton = Button(context).apply {
-                    text = "Купить"
-                    buttonStyle(this, Color.rgb(20, 145, 90))
-                }
-                buyButton.setOnClickListener {
-                    val amount = amountInput.text.toString().replace(",", ".").toDoubleOrNull()
-                    if (amount == null || amount <= 0.0) status.text = "Введите сумму в USDT."
-                    else paperTrade(exchange, symbol, price, amount, false)
-                }
-                tradeRow.addView(amountInput)
-                tradeRow.addView(buyButton)
-                card.addView(tradeRow)
-                val ownedQty = paperPositions.optJSONObject(exchange + ":" + symbol)?.optDouble("quantity", 0.0) ?: 0.0
-                if (ownedQty > 0.0) {
-                    val sellButton = Button(context).apply {
-                        text = "Продать всю позицию"
-                        buttonStyle(this, orange)
-                    }
-                    sellButton.setOnClickListener { paperTrade(exchange, symbol, price, null, true) }
-                    card.addView(sellButton)
-                }
-            }
             content.addView(card)
             content.addView(View(context).apply {
                 layoutParams = LinearLayout.LayoutParams(1, dp(9))
@@ -890,37 +859,6 @@ class CryptoScanner(private val context: Context) {
                     ), false, change >= 0)
                 }
                 content.addView(table)
-                if (top.isNotEmpty()) {
-                    val first = top.first()
-                    val coin = first.first
-                    val symbol = coin.optString("symbol", "")
-                    val price = coin.optDouble("price", 0.0)
-                    val tradePanel = LinearLayout(context).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.CENTER_VERTICAL
-                        setPadding(dp(8), dp(9), dp(8), dp(9))
-                        background = rounded(card, 12)
-                    }
-                    val amount = EditText(context).apply {
-                        setText("100"); hint = "USDT"; textSize = 13f
-                        inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-                        setTextColor(dark); setSingleLine(true)
-                        layoutParams = LinearLayout.LayoutParams(dp(72), dp(44))
-                    }
-                    val buy = Button(context).apply { text = "Купить"; buttonStyle(this, Color.rgb(0, 165, 85)) }
-                    buy.setOnClickListener {
-                        val value = amount.text.toString().replace(",", ".").toDoubleOrNull()
-                        if (value == null || value <= 0) status.text = "Введите сумму USDT."
-                        else paperTrade("Bybit", symbol, price, value, false)
-                    }
-                    val sell = Button(context).apply { text = "Продать"; buttonStyle(this, Color.rgb(225, 48, 60)) }
-                    sell.setOnClickListener { paperTrade("Bybit", symbol, price, null, true) }
-                    tradePanel.addView(label("Bybit", 12f, dark, true), LinearLayout.LayoutParams(0, dp(44), 1f))
-                    tradePanel.addView(amount)
-                    tradePanel.addView(buy)
-                    tradePanel.addView(sell)
-                    content.addView(tradePanel)
-                }
                 content.addView(label(
                     "Binance: ${b.assets.size} • Bybit: ${y.assets.size} • Coinbase: ${c.assets.size} • OKX: ${o.assets.size}",
                     12f, muted
