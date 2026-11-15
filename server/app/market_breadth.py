@@ -21,42 +21,48 @@ _STABLECOINS = {
 
 
 def summarize_market_breadth(rows: list[dict[str, Any]], *, full_catalogue: bool = False) -> dict[str, Any]:
-    """Count each CoinPaprika asset ID once; exclude stablecoins by symbol."""
-    by_id: dict[str, tuple[str, float]] = {}
+    """Count every unique non-stable active asset; track missing 24h changes separately."""
+    by_id: dict[str, tuple[str, float | None]] = {}
     for coin in rows:
         if not isinstance(coin, dict):
             continue
         coin_id = str(coin.get("id") or "").strip()
         symbol = str(coin.get("symbol") or "").strip().upper()
+        if not coin_id or not symbol or symbol in _STABLECOINS:
+            continue
         quote = (coin.get("quotes") or {}).get("USD") or {}
         change = quote.get("percent_change_24h")
-        if not coin_id or not symbol or symbol in _STABLECOINS or change is None:
-            continue
-        try:
-            change_value = float(change)
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(change_value):
-            continue
+        change_value: float | None = None
+        if change is not None:
+            try:
+                parsed = float(change)
+                if math.isfinite(parsed):
+                    change_value = parsed
+            except (TypeError, ValueError):
+                pass
+        # Keep the asset in the market total even when its 24h change is absent.
         by_id.setdefault(coin_id, (symbol, change_value))
 
     total = len(by_id)
-    rising = sum(1 for _, change in by_id.values() if change > 0)
-    falling = sum(1 for _, change in by_id.values() if change < 0)
-    unchanged = total - rising - falling
+    measured = [change for _, change in by_id.values() if change is not None]
+    rising = sum(1 for change in measured if change > 0)
+    falling = sum(1 for change in measured if change < 0)
+    unchanged = sum(1 for change in measured if change == 0)
+    missing = total - len(measured)
+    measured_total = len(measured)
 
-    if total == 0:
+    if measured_total == 0:
         status, allow_new_entries = "UNAVAILABLE", False
         reason = "Нет достоверных данных по изменению цен за 24 часа."
-    elif rising > total / 2:
+    elif rising > measured_total / 2:
         status, allow_new_entries = "ALLOW_NEW_BUYS", True
-        reason = "Растёт больше половины уникальных криптовалют рынка."
-    elif falling > total / 2:
+        reason = "Растёт больше половины монет с доступным изменением цены за 24 часа."
+    elif falling > measured_total / 2:
         status, allow_new_entries = "BLOCK_NEW_BUYS", False
-        reason = "Падает больше половины уникальных криптовалют рынка."
+        reason = "Падает больше половины монет с доступным изменением цены за 24 часа."
     else:
         status, allow_new_entries = "WAIT", False
-        reason = "Ни растущие, ни падающие монеты не составляют больше половины рынка."
+        reason = "Ни растущие, ни падающие монеты с доступными данными не составляют больше половины."
 
     return {
         "available": total > 0,
@@ -74,12 +80,14 @@ def summarize_market_breadth(rows: list[dict[str, Any]], *, full_catalogue: bool
         ),
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "total_coins": total,
+        "measured_coins": measured_total,
+        "missing_change_coins": missing,
         "rising_coins": rising,
         "falling_coins": falling,
         "unchanged_coins": unchanged,
-        "rising_pct": round(rising / total * 100, 2) if total else 0.0,
-        "falling_pct": round(falling / total * 100, 2) if total else 0.0,
-        "unchanged_pct": round(unchanged / total * 100, 2) if total else 0.0,
+        "rising_pct": round(rising / measured_total * 100, 2) if measured_total else 0.0,
+        "falling_pct": round(falling / measured_total * 100, 2) if measured_total else 0.0,
+        "unchanged_pct": round(unchanged / measured_total * 100, 2) if measured_total else 0.0,
         "status": status,
         "allow_new_entries": allow_new_entries,
         "reason": reason,
@@ -97,7 +105,6 @@ async def get_market_breadth() -> dict[str, Any]:
     source_url = PAID_SOURCE_URL if full_catalogue else FREE_SOURCE_URL
     headers = {"User-Agent": "HAN-INVEST/0.7", "Accept": "application/json"}
     if api_key:
-        # CoinPaprika expects the API key itself, without a Bearer prefix.
         headers["Authorization"] = api_key
 
     try:
@@ -105,8 +112,6 @@ async def get_market_breadth() -> dict[str, Any]:
             timeout=httpx.Timeout(20.0),
             headers=headers,
         ) as client:
-            # Do not send a fixed limit: CoinPaprika applies the account plan's
-            # maximum automatically (up to 2,000 on Free; all assets on paid).
             response = await client.get(source_url, params={"quotes": "USD"})
             response.raise_for_status()
             rows = response.json()
