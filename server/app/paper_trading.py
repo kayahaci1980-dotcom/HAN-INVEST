@@ -246,7 +246,7 @@ def _account_snapshot() -> dict[str, Any]:
             "SELECT * FROM paper_positions ORDER BY opened_at DESC"
         ).fetchall()
         trade_rows = db.execute(
-            "SELECT * FROM paper_trades ORDER BY id ASC LIMIT 2000"
+            "SELECT * FROM (SELECT * FROM paper_trades ORDER BY id DESC LIMIT 2000) ORDER BY id ASC"
         ).fetchall()
         lot_rows = db.execute("SELECT * FROM paper_position_lots").fetchall()
         lots_by_position = {}
@@ -331,10 +331,22 @@ def _account_snapshot() -> dict[str, Any]:
             open_times[key] = event_time
         trade["opened_at"] = open_times.get(key)
         trade["closed_at"] = None
+        if side == "BUY":
+            trade["event_label"] = "ПОКУПКА"
+        elif side == "SHORT_OPEN":
+            trade["event_label"] = "ОТКРЫТИЕ SHORT"
+        elif side == "SELL":
+            trade["event_label"] = "ЧАСТИЧНАЯ ПРОДАЖА" if reason.startswith("SCALE_OUT_") else "ПРОДАЖА"
+        elif side == "SHORT_COVER":
+            trade["event_label"] = "ЗАКРЫТИЕ SHORT"
+        else:
+            trade["event_label"] = side or "СДЕЛКА"
         trade["close_reason_label"] = None
         if reason in close_labels and side in {"SELL", "SHORT_COVER"}:
             trade["closed_at"] = event_time
             trade["close_reason_label"] = close_labels[reason]
+        elif side == "SELL" and reason.startswith("SCALE_OUT_"):
+            trade["close_reason_label"] = "Частичная фиксация"
             open_times.pop(key, None)
         enriched_trades.append(trade)
     history = list(reversed(enriched_trades[-30:]))

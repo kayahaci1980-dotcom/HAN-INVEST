@@ -245,6 +245,10 @@ class BuySignalWorker(
         private const val EARLY_CHANNEL_ID = "han_invest_early_buy_signals"
         private const val WORK_NAME = "han_invest_confirmed_buy_scan"
 
+        fun cancel(context: Context) {
+            WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
+        }
+
         fun schedule(context: Context) {
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
