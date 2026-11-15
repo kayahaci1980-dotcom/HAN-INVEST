@@ -405,8 +405,13 @@ def _close_position(db, position,
         (_now(), position["exchange"], position["symbol"], trade_side, price,
          quantity, gross, fee, pnl, reason),
     )
+    # Count only fully closed positions. Partial scale-outs are ledger events,
+    # not completed trades and must not trigger the global losing-streak pause.
     recent_closes = db.execute(
-        "SELECT pnl_usdt FROM paper_trades WHERE pnl_usdt IS NOT NULL ORDER BY id DESC LIMIT 2"
+        """SELECT pnl_usdt FROM paper_trades
+           WHERE pnl_usdt IS NOT NULL
+             AND reason IN ('STOP_LOSS', 'TAKE_PROFIT', 'TRAILING_STOP', 'MANUAL_CLOSE')
+           ORDER BY id DESC LIMIT 2"""
     ).fetchall()
     if len(recent_closes) == 2 and all(float(row["pnl_usdt"]) < 0 for row in recent_closes):
         global_until = _now().timestamp() + _CONSECUTIVE_LOSSES_COOLDOWN_SECONDS
@@ -445,7 +450,9 @@ def _open_position(db, exchange: str, asset: dict[str, Any], reason: str) -> boo
         return False
     cash = float(db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()["cash"])
     ticket = min(100.0, cash)
-    stop, target = price - 1.5 * atr, price + 3.0 * atr
+    # No fixed price target: the approved ATR trailing rules manage exits.
+    # TAKE_PROFIT cooldown remains available for a separately defined TP event.
+    stop, target = price - 1.5 * atr, 0.0
     if ticket < 10 or stop <= 0 or not candle_time:
         return False
     quantity = ticket / (price * (1.0 + _FEE_RATE))
@@ -628,7 +635,8 @@ def _open_short_position(db, exchange: str, asset: dict[str, Any], reason: str) 
         return False
     cash = float(db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()["cash"])
     ticket = min(100.0, cash)
-    stop, target = price + 1.5 * atr, price - 3.0 * atr
+    # No fixed price target: the approved ATR trailing rules manage exits.
+    stop, target = price + 1.5 * atr, 0.0
     if ticket < 10 or atr <= 0 or not candle_time:
         return False
     quantity = ticket / (price * (1.0 + _FEE_RATE))
@@ -758,16 +766,43 @@ def _apply_market_data(
             atr_1h = float(asset.get("atr_14_1h") or current["atr_14_1h"] or 0)
             candle_time = str(asset.get("atr_candle_time") or "")
             stop = float(current["stop_loss"] or 0)
-            target = float(current["take_profit"] or 0)
-            if target > 0 and (price >= target if direction == "LONG" else price <= target):
-                _close_position(db, current, price, "TAKE_PROFIT")
-                continue
+            # Legacy positions may still carry the former unapproved fixed +2R TP.
+            # Disable it so it cannot cut off the +2R/+3R trailing stages.
+            if float(current["take_profit"] or 0) != 0:
+                db.execute(
+                    "UPDATE paper_positions SET take_profit=0 WHERE exchange=? AND symbol=?",
+                    (exchange, position["symbol"]),
+                )
+                current = db.execute(
+                    "SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
+                    (exchange, position["symbol"]),
+                ).fetchone()
+            target = 0.0
+
+            previous_candle = str(current["trailing_candle"] or "")
+            is_new_candle = bool(candle_time and candle_time != previous_candle)
+            # First check the live quote. If it is beyond the stop, simulate a fill
+            # at the stop price (or current price when a gap has passed it).
             if stop > 0 and (price <= stop if direction == "LONG" else price >= stop):
                 stop_reason = "TRAILING_STOP" if int(current["trailing_stage"] or 0) > 0 else "STOP_LOSS"
-                _close_position(db, current, price, stop_reason)
+                _close_position(db, current, min(price, stop) if direction == "LONG" else max(price, stop), stop_reason)
                 continue
-            # Track the high/low of the latest completed 1H candle on every scan.
-            previous_candle = str(current["trailing_candle"] or "")
+
+            # Also inspect the just-completed 1H candle for a stop wick that may
+            # have crossed and recovered between 60-second quote scans.
+            candle_low = float(asset.get("candle_low_1h") or 0)
+            candle_high = float(asset.get("candle_high_1h") or 0)
+            crossed_in_candle = (
+                candle_low > 0 and candle_low <= stop if direction == "LONG" and stop > 0
+                else candle_high >= stop if direction == "SHORT" and stop > 0
+                else False
+            )
+            if is_new_candle and crossed_in_candle:
+                stop_reason = "TRAILING_STOP" if int(current["trailing_stage"] or 0) > 0 else "STOP_LOSS"
+                _close_position(db, current, stop, stop_reason)
+                continue
+
+            # Track the favorable extreme of the latest completed 1H candle.
             extreme = float(current["peak_price"] or entry)
             candle_extreme = float(asset.get("candle_high_1h" if direction == "LONG" else "candle_low_1h") or price)
             extreme = max(extreme, candle_extreme) if direction == "LONG" else min(extreme, candle_extreme)
@@ -775,8 +810,8 @@ def _apply_market_data(
                        (extreme, exchange, position["symbol"]))
             # Recalculate only when a new completed 1H candle is available.
             if initial_risk > 0 and atr_1h > 0 and candle_time and candle_time != previous_candle:
-                favorable = (price - entry) if direction == "LONG" else (entry - price)
-                r_multiple = favorable / initial_risk
+                favorable = (extreme - entry) if direction == "LONG" else (entry - extreme)
+                r_multiple = max(0.0, favorable / initial_risk)
                 stage = int(current["trailing_stage"] or 0)
                 candidate, new_stage = stop, stage
                 if r_multiple >= 3.0:
