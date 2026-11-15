@@ -271,10 +271,22 @@ def _account_snapshot() -> dict[str, Any]:
         price = float(position["last_price"])
         cost = float(position["cost_usdt"])
         direction = str(position["direction"] if "direction" in position.keys() else "LONG").upper()
+        # Keep the displayed entry price consistent with the PnL: scale-in lots
+        # can have different fills, while position.entry_price remains the first fill.
+        lots = lots_by_position.get((position["exchange"], position["symbol"]), [])
+        base_entry = entry
+        if lots:
+            lots_quantity = sum(float(lot["quantity"]) for lot in lots)
+            average_entry = (
+                sum(float(lot["entry_price"]) * float(lot["quantity"]) for lot in lots)
+                / lots_quantity
+                if lots_quantity > 0 else base_entry
+            )
+        else:
+            average_entry = base_entry
 
         if direction == "SHORT":
             # Calculate short PnL per lot: add-ons can have different entry prices.
-            lots = lots_by_position.get((position["exchange"], position["symbol"]), [])
             if lots:
                 opening_fee = sum(max(0.0, float(lot["cost_usdt"]) -
                                       float(lot["entry_price"]) * float(lot["quantity"]))
@@ -297,6 +309,9 @@ def _account_snapshot() -> dict[str, Any]:
         unrealized_profit += max(0.0, unrealized)
         unrealized_loss += max(0.0, -unrealized)
         item = dict(position)
+        item["base_entry_price"] = base_entry
+        item["average_entry_price"] = average_entry
+        item["entry_price"] = average_entry
         item["side"] = direction
         item["market_value_usdt"] = market_value
         item["unrealized_pnl_usdt"] = unrealized
