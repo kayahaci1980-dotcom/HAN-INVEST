@@ -430,7 +430,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        BuySignalWorker.schedule(this)
+        BuySignalWorker.cancel(this)
 
         window.statusBarColor = page
         window.navigationBarColor = page
@@ -513,14 +513,6 @@ class MainActivity : Activity() {
             "Доходность казначейских облигаций от 1 месяца до 30 лет.",
             ::loadTreasury
         )
-
-        // СКАНЕР АКЦИЙ И ETF
-        root.addView(StockScanner(this).createView())
-        root.addView(space(18))
-
-        // ИСТОРИЧЕСКОЕ ТЕСТИРОВАНИЕ 2.3
-        root.addView(BacktestEngine(this).createView())
-        root.addView(space(18))
 
         root.addView(
             label("🏠 Недвижимость и бизнес", 20f, dark, true)
