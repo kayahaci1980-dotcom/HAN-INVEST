@@ -1,6 +1,9 @@
 package com.haninvest.app
 
 import android.content.Context
+import android.app.Dialog
+import android.view.ViewGroup
+import android.view.WindowManager
 import android.os.Handler
 import android.os.Looper
 import android.graphics.Color
@@ -22,15 +25,15 @@ import java.util.Locale
 
 class CryptoScanner(private val context: Context) {
     // Modern HAN INVEST palette — visual-only; trading calculations and rules are unchanged.
-    private val blue = Color.rgb(38, 166, 255)
-    private val orange = Color.rgb(255, 177, 66)
-    private val purple = Color.rgb(153, 120, 255)
+    private val blue = Color.rgb(0, 174, 255)
+    private val orange = Color.rgb(255, 151, 35)
+    private val purple = Color.rgb(171, 91, 255)
     private val dark = Color.rgb(232, 240, 250)
     private val muted = Color.rgb(151, 169, 190)
-    private val page = Color.rgb(16, 30, 47)
-    private val surface = Color.rgb(9, 19, 32)
-    private val card = Color.rgb(22, 39, 59)
-    private val border = Color.rgb(48, 76, 104)
+    private val page = Color.rgb(9, 22, 39)
+    private val surface = Color.rgb(5, 13, 26)
+    private val card = Color.rgb(18, 38, 62)
+    private val border = Color.rgb(0, 153, 230)
 
     private data class ExchangeResult(
         val exchange: String,
@@ -143,6 +146,48 @@ class CryptoScanner(private val context: Context) {
             isFillViewport = true
             addView(content)
         }
+        val floatingDialog = Dialog(context)
+        val floatingRoot = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(10), dp(12), dp(12))
+            background = rounded(surface, 22)
+        }
+        val floatingHeader = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        floatingHeader.addView(label("HAN INVEST  •  РАЗДЕЛЫ", 15f, blue, true),
+            LinearLayout.LayoutParams(0, dp(42), 1f))
+        val closeFloating = Button(context).apply {
+            text = "✕"
+            textSize = 17f
+            buttonStyle(this, Color.rgb(220, 48, 72))
+            setOnClickListener { floatingDialog.dismiss() }
+        }
+        floatingHeader.addView(closeFloating, LinearLayout.LayoutParams(dp(46), dp(42)))
+        floatingRoot.addView(floatingHeader)
+        floatingRoot.addView(tabs)
+        floatingRoot.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        floatingDialog.setContentView(floatingRoot)
+        floatingDialog.setOnShowListener {
+            floatingDialog.window?.apply {
+                setBackgroundDrawableResource(android.R.color.transparent)
+                setLayout(WindowManager.LayoutParams.MATCH_PARENT,
+                    (context.resources.displayMetrics.heightPixels * 0.86f).toInt())
+                addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                attributes = attributes.apply { dimAmount = 0.62f }
+            }
+        }
+        val openSections = Button(context).apply {
+            text = "ОТКРЫТЬ РАЗДЕЛЫ"
+            textSize = 14f
+            buttonStyle(this, blue)
+            setOnClickListener {
+                selectedTab = "HOME"
+                render()
+                if (!floatingDialog.isShowing) floatingDialog.show()
+            }
+        }
         val status = label("Загрузка данных четырёх криптобирж...", 14f, dark)
         val refresh = Button(context).apply {
             text = "Обновить все биржи"
@@ -151,8 +196,7 @@ class CryptoScanner(private val context: Context) {
         panel.addView(status)
         panel.addView(refresh)
         section.addView(panel)
-        section.addView(tabs)
-        section.addView(scroll)
+        section.addView(openSections)
 
         var selectedTab = "HOME"
         lateinit var render: () -> Unit
@@ -237,6 +281,7 @@ class CryptoScanner(private val context: Context) {
                     selectedTab = key
                     render()
                     if (key == "PAPER") refreshPaperServer()
+                    if (!floatingDialog.isShowing) floatingDialog.show()
                 }
             }
             tabs.addView(b)
