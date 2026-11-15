@@ -20,12 +20,16 @@ import java.net.URL
 import java.util.Locale
 
 class CryptoScanner(private val context: Context) {
-    private val blue = Color.rgb(55, 105, 245)
-    private val orange = Color.rgb(230, 135, 25)
-    private val purple = Color.rgb(125, 75, 235)
-    private val dark = Color.rgb(30, 42, 65)
-    private val muted = Color.rgb(125, 137, 158)
-    private val page = Color.rgb(246, 248, 253)
+    // Modern HAN INVEST palette — visual-only; trading calculations and rules are unchanged.
+    private val blue = Color.rgb(38, 166, 255)
+    private val orange = Color.rgb(255, 177, 66)
+    private val purple = Color.rgb(153, 120, 255)
+    private val dark = Color.rgb(232, 240, 250)
+    private val muted = Color.rgb(151, 169, 190)
+    private val page = Color.rgb(16, 30, 47)
+    private val surface = Color.rgb(9, 19, 32)
+    private val card = Color.rgb(22, 39, 59)
+    private val border = Color.rgb(48, 76, 104)
 
     private data class ExchangeResult(
         val exchange: String,
@@ -68,6 +72,7 @@ class CryptoScanner(private val context: Context) {
     private fun rounded(color: Int, radius: Int = 14) = GradientDrawable().apply {
         setColor(color)
         cornerRadius = dp(radius).toFloat()
+        setStroke(dp(1), border)
     }
 
     private fun label(value: String, size: Float, color: Int, bold: Boolean = false) =
@@ -87,6 +92,8 @@ class CryptoScanner(private val context: Context) {
     fun createView(): View {
         val section = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            background = rounded(surface, 18)
         }
         section.addView(label("₿ Криптосканер HAN INVEST", 21f, dark, true))
         section.addView(label(
@@ -97,7 +104,7 @@ class CryptoScanner(private val context: Context) {
         val panel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded(Color.WHITE)
+            background = rounded(card)
             elevation = dp(2).toFloat()
         }
         panel.addView(label("РАСЧЁТ РАЗМЕРА ПОЗИЦИИ", 13f, muted, true))
@@ -129,7 +136,7 @@ class CryptoScanner(private val context: Context) {
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            background = rounded(Color.WHITE)
+            background = rounded(card)
         }
         val scroll = ScrollView(context).apply {
             isFillViewport = true
