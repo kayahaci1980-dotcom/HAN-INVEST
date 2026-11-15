@@ -137,7 +137,7 @@ class CryptoScanner(private val context: Context) {
         }
         val status = label("Загрузка данных четырёх криптобирж...", 14f, dark)
         val refresh = Button(context).apply {
-            text = "Обновить обе биржи"
+            text = "Обновить все биржи"
             buttonStyle(this, blue)
         }
         panel.addView(status)
@@ -211,6 +211,10 @@ class CryptoScanner(private val context: Context) {
         var coinbase: ExchangeResult? = null
         var okx: ExchangeResult? = null
         var marketContext: JSONObject? = null
+        var globalAssets: List<JSONObject>? = null
+        var globalMarketError: String? = null
+        var globalPage = 0
+        val globalPageSize = 50
         var loadingCount = 0
 
         fun addTab(title: String, key: String, color: Int) {
@@ -335,6 +339,7 @@ class CryptoScanner(private val context: Context) {
         render = {
             tabs.removeAllViews()
             addTab("Главная · TOP 3", "HOME", blue)
+            addTab("Рынок LIVE", "MARKET", purple)
             addTab("Binance", "BINANCE", blue)
             addTab("Bybit", "BYBIT", orange)
             addTab("Coinbase", "COINBASE", blue)
@@ -351,7 +356,57 @@ class CryptoScanner(private val context: Context) {
                     else -> "ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА"
                 }, 17f, dark, true
             ))
-            if (selectedTab == "PAPER") {
+            if (selectedTab == "MARKET") {
+                content.addView(label("ГЛОБАЛЬНЫЙ СПИСОК КРИПТОВАЛЮТ", 14f, dark, true))
+                content.addView(label("CoinPaprika • уникальные активы без стейблкоинов • список не является торговым сигналом Bybit", 11f, muted))
+                val all = globalAssets
+                if (all == null) {
+                    content.addView(label(globalMarketError ?: "Загрузка глобального списка до 2 000 активов...", 13f, muted))
+                } else {
+                    content.addView(label("Доступно: ${all.size} активов • Страница ${globalPage + 1}", 12f, muted))
+                    val start = globalPage * globalPageSize
+                    val end = minOf(start + globalPageSize, all.size)
+                    for (i in start until end) {
+                        val coin = all[i]
+                        val name = coin.optString("name", coin.optString("symbol"))
+                        val symbol = coin.optString("symbol", "—")
+                        val price = coin.optDouble("price_usd", Double.NaN)
+                        val change = if (coin.isNull("change_24h_pct")) null else coin.optDouble("change_24h_pct")
+                        val row = LinearLayout(context).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setPadding(dp(9), dp(7), dp(9), dp(7))
+                            background = rounded(page, 9)
+                        }
+                        row.addView(label("${start + i - start + 1 + globalPage * globalPageSize}. $name ($symbol)", 13f, dark, true))
+                        row.addView(label("Цена: ${if (price.isFinite()) formatNumber(price, 8) + " USD" else "—"}  •  24ч: ${change?.let { formatNumber(it, 2) + "%" } ?: "нет данных"}", 11f, muted))
+                        row.addView(label("Ранг: ${coin.optString("rank", "—")}  •  Объём 24ч: ${formatNumber(coin.optDouble("volume_24h_usd", 0.0), 0)} USD", 10f, muted))
+                        content.addView(row)
+                        content.addView(View(context).apply { layoutParams = LinearLayout.LayoutParams(1, dp(5)) })
+                    }
+                    val pager = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                    val prev = Button(context).apply {
+                        text = "Назад"
+                        buttonStyle(this, muted)
+                        isEnabled = globalPage > 0
+                        setOnClickListener { globalPage--; render() }
+                        layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(5) }
+                    }
+                    val next = Button(context).apply {
+                        text = "Далее"
+                        buttonStyle(this, blue)
+                        isEnabled = end < all.size
+                        setOnClickListener { globalPage++; render() }
+                        layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
+                    }
+                    pager.addView(prev); pager.addView(next); content.addView(pager)
+                    val reload = Button(context).apply {
+                        text = "Обновить глобальный список"
+                        buttonStyle(this, purple)
+                        setOnClickListener { loadGlobalMarket() }
+                    }
+                    content.addView(reload)
+                }
+            } else if (selectedTab == "PAPER") {
                 content.addView(label("ПРАВИЛА АВТОМАТИЧЕСКОЙ ТОРГОВЛИ", 13f, dark, true))
                 content.addView(label(
                     "Покупка: оценка 83+ без ожидания BUY.\\n" +
@@ -577,11 +632,7 @@ class CryptoScanner(private val context: Context) {
                     "Сравнение Binance, Bybit, Coinbase Exchange и OKX. В рейтинге учитывается оценка, а не порядок ответа API.",
                     12f, muted
                 ))
-                val combined = mutableListOf<Pair<JSONObject, ExchangeResult>>()
-                if (b.error == null) b.assets.forEach { combined.add(it to b) }
-                if (y.error == null) y.assets.forEach { combined.add(it to y) }
-                if (c.error == null) c.assets.forEach { combined.add(it to c) }
-                if (o.error == null) o.assets.forEach { combined.add(it to o) }
+                val combined = (y.assets).map { it to y }
                 val top = combined.sortedWith(
                     compareByDescending<Pair<JSONObject, ExchangeResult>> { it.first.optInt("score", 0) }
                         .thenByDescending { it.first.optDouble("volume_ratio", 0.0) }
@@ -603,7 +654,20 @@ class CryptoScanner(private val context: Context) {
                 } else if (result.assets.isEmpty()) {
                     content.addView(label("Кандидаты не найдены.", 14f, muted))
                 } else {
-                    result.assets.sortedByDescending { it.optInt("score", 0) }
+                    fun baseSymbol(asset: JSONObject): String = asset.optString("symbol", "")
+                        .uppercase(Locale.US).removeSuffix("-USDT").removeSuffix("USDT").removeSuffix("-USD").removeSuffix("USD")
+                    val bybitSymbols = y.assets.map { baseSymbol(it) }.toSet()
+                    val binanceSymbols = b.assets.map { baseSymbol(it) }.toSet()
+                    val coinbaseSymbols = c.assets.map { baseSymbol(it) }.toSet()
+                    val excluded = when (selectedTab) {
+                        "BINANCE" -> bybitSymbols
+                        "COINBASE" -> bybitSymbols + binanceSymbols
+                        "OKX" -> bybitSymbols + binanceSymbols + coinbaseSymbols
+                        else -> emptySet()
+                    }
+                    val uniqueAssets = result.assets.filter { baseSymbol(it) !in excluded }
+                    content.addView(label("Уникальных монет этого раздела: ${uniqueAssets.size}. Приоритет: Bybit → Binance → Coinbase → OKX.", 11f, muted))
+                    uniqueAssets.sortedByDescending { it.optInt("score", 0) }
                         .forEach { coinCard(it, result.exchange, result, maxRisk) }
                 }
             }
@@ -746,6 +810,36 @@ class CryptoScanner(private val context: Context) {
             }
         }
 
+        fun loadGlobalMarket() {
+            globalAssets = null
+            globalMarketError = null
+            render()
+            Thread {
+                var loaded: List<JSONObject>? = null
+                var error: String? = null
+                try {
+                    val connection = URL("https://han-invest-api-test.onrender.com/api/v1/crypto/market-assets?limit=2000")
+                        .openConnection() as HttpURLConnection
+                    try {
+                        connection.requestMethod = "GET"
+                        connection.connectTimeout = 15000
+                        connection.readTimeout = 30000
+                        connection.setRequestProperty("Accept", "application/json")
+                        if (connection.responseCode !in 200..299) throw Exception("HTTP ${connection.responseCode}")
+                        val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+                        val array = json.optJSONArray("assets") ?: JSONArray()
+                        loaded = (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+                    } finally { connection.disconnect() }
+                } catch (e: Exception) { error = e.message ?: "Ошибка загрузки" }
+                Handler(Looper.getMainLooper()).post {
+                    globalAssets = loaded
+                    globalMarketError = error
+                    globalPage = 0
+                    render()
+                }
+            }.start()
+        }
+
         fun loadAll() {
             capital = capitalInput.text.toString().trim().toDoubleOrNull() ?: 0.0
             risk = riskInput.text.toString().trim().toDoubleOrNull() ?: 0.0
@@ -763,6 +857,7 @@ class CryptoScanner(private val context: Context) {
             okx = null
             marketContext = null
             fetchMarketContext()
+            loadGlobalMarket()
             loadingCount = 4
             status.text = "Загружаем Binance, Bybit, Coinbase Exchange и OKX независимо..."
             render()
