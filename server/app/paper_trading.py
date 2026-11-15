@@ -89,6 +89,7 @@ def _init_db() -> None:
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS direction TEXT NOT NULL DEFAULT 'LONG'")
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS next_add_level INTEGER NOT NULL DEFAULT 1")
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS next_reduce_level INTEGER NOT NULL DEFAULT 1")
+            db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS peak_price DOUBLE PRECISION NOT NULL DEFAULT 0")
             db.execute(
                 """CREATE TABLE IF NOT EXISTS paper_position_lots (
                     exchange TEXT NOT NULL,
@@ -185,6 +186,8 @@ def _init_db() -> None:
             db.execute("ALTER TABLE paper_positions ADD COLUMN next_add_level INTEGER NOT NULL DEFAULT 1")
         if "next_reduce_level" not in position_columns:
             db.execute("ALTER TABLE paper_positions ADD COLUMN next_reduce_level INTEGER NOT NULL DEFAULT 1")
+        if "peak_price" not in position_columns:
+            db.execute("ALTER TABLE paper_positions ADD COLUMN peak_price REAL NOT NULL DEFAULT 0")
         db.execute(
             """INSERT OR IGNORE INTO paper_position_lots
                (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
@@ -397,10 +400,10 @@ def _open_position(db, exchange: str,
     db.execute(
         """INSERT INTO paper_positions
            (exchange, symbol, quantity, cost_usdt, entry_price,
-            stop_loss, take_profit, last_price, opened_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            stop_loss, take_profit, last_price, opened_at, peak_price)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (exchange, symbol, quantity, total_cost, price,
-         stop, target, price, _now()),
+         stop, target, price, _now(), price),
     )
     db.execute(
         "UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1",
@@ -517,7 +520,7 @@ def _reduce_latest_scale_lot(db, position, price: float) -> bool:
 
 
 def _manage_long_scale(db, position, price: float) -> None:
-    """Apply the 0.5% portfolio stop first, then 1% scale milestones from base entry."""
+    """Apply the hard stop, add at +1% from base entry, and reduce on 1% pullbacks from peak."""
     entry = float(position["entry_price"])
     if entry <= 0 or price <= 0:
         return
@@ -529,7 +532,23 @@ def _manage_long_scale(db, position, price: float) -> None:
         _close_position(db, position, price, "DRAWDOWN_0_5_PERCENT")
         return
 
-    # Milestones are anchored to the original purchase price and advanced once.
+    # Keep a durable high-water mark. A fresh high starts a new pullback ladder.
+    peak = float(position["peak_price"] if "peak_price" in position.keys() else entry)
+    if peak <= 0:
+        peak = entry
+    if price > peak:
+        peak = price
+        db.execute(
+            "UPDATE paper_positions SET peak_price=?, next_reduce_level=1 WHERE exchange=? AND symbol=?",
+            (peak, position["exchange"], position["symbol"]),
+        )
+    else:
+        db.execute(
+            "UPDATE paper_positions SET peak_price=? WHERE exchange=? AND symbol=?",
+            (peak, position["exchange"], position["symbol"]),
+        )
+
+    # Add milestones remain anchored to the original purchase price.
     next_add = int(position["next_add_level"] if "next_add_level" in position.keys() else 1)
     while price >= entry * (1.0 + next_add / 100.0):
         if not _add_scale_lot(db, position, price):
@@ -541,7 +560,7 @@ def _manage_long_scale(db, position, price: float) -> None:
         ).fetchone()
 
     next_reduce = int(position["next_reduce_level"] if "next_reduce_level" in position.keys() else 1)
-    while price <= entry * (1.0 - next_reduce / 100.0):
+    while price <= peak * (1.0 - next_reduce / 100.0):
         if not _reduce_latest_scale_lot(db, position, price):
             break
         next_reduce += 1
