@@ -47,7 +47,6 @@ _STOP_LOSS_COOLDOWN_SECONDS = 4 * 60 * 60
 _TAKE_PROFIT_COOLDOWN_SECONDS = 1 * 60 * 60
 _TRAILING_STOP_COOLDOWN_SECONDS = 2 * 60 * 60
 _CONSECUTIVE_LOSSES_COOLDOWN_SECONDS = 8 * 60 * 60
-_GLOBAL_COOLDOWN_SYMBOL = "__GLOBAL__"
 _SCAN_INTERVAL_SECONDS = max(60, int(os.getenv("PAPER_SCAN_INTERVAL_SECONDS", "60")))
 _worker_task: asyncio.Task | None = None
 _scan_requested = asyncio.Event()
@@ -405,25 +404,27 @@ def _close_position(db, position,
         (_now(), position["exchange"], position["symbol"], trade_side, price,
          quantity, gross, fee, pnl, reason),
     )
-    # Count only fully closed positions. Partial scale-outs are ledger events,
-    # not completed trades and must not trigger the global losing-streak pause.
+    # Count fully closed trades for this exact exchange+symbol only.
+    # Other symbols must never contribute to this coin's losing streak.
     recent_closes = db.execute(
         """SELECT pnl_usdt FROM paper_trades
-           WHERE pnl_usdt IS NOT NULL
+           WHERE exchange=? AND symbol=? AND pnl_usdt IS NOT NULL
              AND reason IN ('STOP_LOSS', 'TAKE_PROFIT', 'TRAILING_STOP', 'MANUAL_CLOSE')
-           ORDER BY id DESC LIMIT 2"""
+           ORDER BY id DESC LIMIT 2""",
+        (position["exchange"], position["symbol"]),
     ).fetchall()
     if len(recent_closes) == 2 and all(float(row["pnl_usdt"]) < 0 for row in recent_closes):
-        global_until = _now().timestamp() + _CONSECUTIVE_LOSSES_COOLDOWN_SECONDS
+        symbol_until = _now().timestamp() + _CONSECUTIVE_LOSSES_COOLDOWN_SECONDS
         db.execute(
             """INSERT INTO paper_loss_cooldowns
                (exchange, symbol, blocked_until, loss_pct)
                VALUES (?, ?, ?, ?)
                ON CONFLICT (exchange, symbol) DO UPDATE SET
                    blocked_until=excluded.blocked_until, loss_pct=excluded.loss_pct""",
-            ("ALL", _GLOBAL_COOLDOWN_SYMBOL, global_until, loss_pct),
+            (position["exchange"], position["symbol"], symbol_until, loss_pct),
         )
-        logger.warning("Two consecutive losing trades: global 8-hour entry pause")
+        logger.warning("Two consecutive losing closes: %s on %s blocked for 8 hours",
+                       position["symbol"], position["exchange"])
     db.execute(
         "DELETE FROM paper_position_lots WHERE exchange=? AND symbol=?",
         (position["exchange"], position["symbol"]),
@@ -835,13 +836,6 @@ def _apply_market_data(
         if not allow_new_entries and not allow_short_entries:
             return
 
-        global_cooldown = db.execute(
-            "SELECT blocked_until FROM paper_loss_cooldowns WHERE exchange=? AND symbol=?",
-            ("ALL", _GLOBAL_COOLDOWN_SYMBOL),
-        ).fetchone()
-        if global_cooldown and float(global_cooldown["blocked_until"]) > _now().timestamp():
-            logger.info("New entries paused globally after two consecutive losses")
-            return
         current_positions = db.execute("SELECT COUNT(*) AS n FROM paper_positions").fetchone()["n"]
         if current_positions >= _MAX_POSITIONS:
             return
