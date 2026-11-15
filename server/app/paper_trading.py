@@ -245,8 +245,8 @@ def _account_snapshot() -> dict[str, Any]:
         positions = db.execute(
             "SELECT * FROM paper_positions ORDER BY opened_at DESC"
         ).fetchall()
-        trades = db.execute(
-            "SELECT * FROM paper_trades ORDER BY id DESC LIMIT 30"
+        trade_rows = db.execute(
+            "SELECT * FROM paper_trades ORDER BY id ASC LIMIT 2000"
         ).fetchall()
         lot_rows = db.execute("SELECT * FROM paper_position_lots").fetchall()
         lots_by_position = {}
@@ -307,6 +307,38 @@ def _account_snapshot() -> dict[str, Any]:
     profit = realized_profit + unrealized_profit
     loss = realized_loss + unrealized_loss
 
+    # Build readable round-trip timestamps from the immutable trade ledger.
+    # Scale-ins do not reset the base opening time; partial scale-outs do not close a cycle.
+    open_times: dict[tuple[str, str], Any] = {}
+    close_labels = {
+        "STOP_LOSS": "Стоп-лосс",
+        "TRAILING_STOP": "Трейлинг-стоп",
+        "TAKE_PROFIT": "Тейк-профит",
+        "MANUAL_CLOSE": "Ручное закрытие",
+    }
+    enriched_trades = []
+    for trade_row in trade_rows:
+        trade = dict(trade_row)
+        key = (str(trade["exchange"]), str(trade["symbol"]))
+        reason = str(trade.get("reason") or "")
+        side = str(trade.get("side") or "")
+        event_time = trade.get("time")
+        is_base_open = (
+            side in {"BUY", "SHORT_OPEN"}
+            and reason.startswith(("AUTO_LONG_", "AUTO_SHORT_"))
+        )
+        if is_base_open and key not in open_times:
+            open_times[key] = event_time
+        trade["opened_at"] = open_times.get(key)
+        trade["closed_at"] = None
+        trade["close_reason_label"] = None
+        if reason in close_labels and side in {"SELL", "SHORT_COVER"}:
+            trade["closed_at"] = event_time
+            trade["close_reason_label"] = close_labels[reason]
+            open_times.pop(key, None)
+        enriched_trades.append(trade)
+    history = list(reversed(enriched_trades[-30:]))
+
     return {
         "mode": "PAPER",
         "enabled": bool(account["enabled"]),
@@ -325,7 +357,7 @@ def _account_snapshot() -> dict[str, Any]:
         "unrealized_pnl_usdt": unrealized_profit - unrealized_loss,
         "total_pnl_usdt": net_pnl,
         "open_positions": open_position_items,
-        "history": [dict(t) for t in trades],
+        "history": history,
         "last_scan_at": account["last_scan_at"],
         "last_error": account["last_error"],
         "market_breadth": dict(_last_market_breadth),
