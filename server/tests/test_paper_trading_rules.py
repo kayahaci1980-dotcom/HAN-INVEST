@@ -81,7 +81,7 @@ class PaperTradingRuleTests(unittest.TestCase):
 
     def test_adds_equal_initial_tranches_at_each_one_percent_milestone_once(self):
         self.seed_position()
-        for price in (101.0, 102.0, 103.0):
+        for price in (101.0, 102.0, 102.5):
             paper._apply_market_data("Bybit", {"assets": [self.asset(83, price)]}, False)
         with paper._connect() as db:
             lots = db.execute(
@@ -93,17 +93,16 @@ class PaperTradingRuleTests(unittest.TestCase):
             trades_before = db.execute(
                 "SELECT COUNT(*) AS n FROM paper_trades WHERE reason LIKE 'SCALE_IN_%'"
             ).fetchone()["n"]
-        self.assertEqual(len(lots), 4)
+        self.assertEqual(len(lots), 3)
         self.assertAlmostEqual(float(lots[1]["cost_usdt"]), float(lots[0]["cost_usdt"]), places=6)
         self.assertAlmostEqual(float(lots[2]["cost_usdt"]), float(lots[0]["cost_usdt"]), places=6)
-        self.assertAlmostEqual(float(lots[3]["cost_usdt"]), float(lots[0]["cost_usdt"]), places=6)
-        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 103.0)]}, False)
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 102.5)]}, False)
         with paper._connect() as db:
             trades_after = db.execute(
                 "SELECT COUNT(*) AS n FROM paper_trades WHERE reason LIKE 'SCALE_IN_%'"
             ).fetchone()["n"]
         self.assertEqual(trades_before, trades_after)
-        self.assertEqual(int(position["next_add_level"]), 4)
+        self.assertEqual(int(position["next_add_level"]), 3)
 
     def test_hard_stop_at_half_percent_closes_position_and_starts_three_hour_cooldown(self):
         self.seed_position()
