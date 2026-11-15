@@ -532,22 +532,11 @@ def _manage_long_scale(db, position, price: float) -> None:
         _close_position(db, position, price, "DRAWDOWN_0_5_PERCENT")
         return
 
-    # Keep a durable high-water mark. A fresh high starts a new pullback ladder.
-    peak = float(position["peak_price"] if "peak_price" in position.keys() else entry)
-    if peak <= 0:
-        peak = entry
-    if price > peak:
-        peak = price
-        db.execute(
-            "UPDATE paper_positions SET peak_price=?, next_reduce_level=1 WHERE exchange=? AND symbol=?",
-            (peak, position["exchange"], position["symbol"]),
-        )
-    else:
-        db.execute(
-            "UPDATE paper_positions SET peak_price=? WHERE exchange=? AND symbol=?",
-            (peak, position["exchange"], position["symbol"]),
-        )
-    # Reload so a newly reset pullback ladder is used even when no add-on can be bought.
+    peak = max(float(position["peak_price"] or entry), price)
+    db.execute(
+        "UPDATE paper_positions SET peak_price=? WHERE exchange=? AND symbol=?",
+        (peak, position["exchange"], position["symbol"]),
+    )
     position = db.execute(
         "SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
         (position["exchange"], position["symbol"]),
@@ -567,7 +556,7 @@ def _manage_long_scale(db, position, price: float) -> None:
         ).fetchone()
 
     next_reduce = int(position["next_reduce_level"] if "next_reduce_level" in position.keys() else 1)
-    while price <= peak * (1.0 - next_reduce / 100.0):
+    while price <= entry * (1.0 - next_reduce / 100.0):
         if not _reduce_latest_scale_lot(db, position, price):
             break
         next_reduce += 1
