@@ -318,7 +318,7 @@ def _close_position(db, position,
         trade_side = "SELL"
     cost_basis = float(position["cost_usdt"])
     loss_pct = (pnl / cost_basis * 100.0) if cost_basis > 0 else 0.0
-    if direction == "LONG" and reason == "DRAWDOWN_0_5_PERCENT":
+    if reason == "DRAWDOWN_0_5_PERCENT":
         blocked_until = _now().timestamp() + _LOSS_COOLDOWN_SECONDS
         db.execute(
             """INSERT INTO paper_loss_cooldowns
@@ -690,29 +690,37 @@ def _apply_market_data(
         current_positions = db.execute("SELECT COUNT(*) AS n FROM paper_positions").fetchone()["n"]
         if current_positions >= _MAX_POSITIONS:
             return
-        candidates = sorted((x for x in assets if isinstance(x, dict)),
-                            key=lambda x: float(x.get("score") or 0), reverse=True)
+        candidates = sorted(
+            (x for x in assets if isinstance(x, dict)),
+            key=lambda x: float(x.get("quote_volume_24h") or 0), reverse=True,
+        )
         for asset in candidates:
             if current_positions >= _MAX_POSITIONS:
                 break
             try:
-                score = float(asset.get("score") or 0)
                 price = float(asset.get("price") or 0)
+                atr = float(asset.get("atr_14_1d") or asset.get("atr_14") or 0)
                 ma20 = float(asset.get("ma20") or asset.get("ema20") or 0)
                 ma50 = float(asset.get("ma50") or 0)
+                daily_open = float(asset.get("daily_open") or 0)
+                volume = float(asset.get("quote_volume_24h") or 0)
             except (TypeError, ValueError):
                 continue
-            if asset.get("trade_ready") is not True or not asset.get("symbol"):
+            if (asset.get("trade_ready") is not True or not asset.get("symbol")
+                    or price <= 0 or atr <= 0 or daily_open <= 0
+                    or volume <= 50_000_000 or str(asset.get("atr_timeframe") or "") != "1D"):
                 continue
             cooldown = db.execute("SELECT blocked_until FROM paper_loss_cooldowns WHERE exchange=? AND symbol=?",
                                   (exchange, str(asset["symbol"]))).fetchone()
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
                 continue
             opened = False
-            if allow_new_entries and price > 0 and ma20 > 0 and price > ma20:
-                opened = _open_position(db, exchange, asset, "AUTO_LONG_ATR_PRO_CANDIDATE")
-            elif allow_short_entries and price > 0 and ma20 > 0 and ma50 > 0 and price < ma20 <= ma50:
-                opened = _open_short_position(db, exchange, asset, "AUTO_SHORT_ATR_PRO_CANDIDATE")
+            if (allow_new_entries and ma20 > 0 and ma50 > 0 and price > ma20 > ma50
+                    and price < daily_open + 0.5 * atr):
+                opened = _open_position(db, exchange, asset, "AUTO_LONG_ATR_PRO_RR_1_2")
+            elif (allow_short_entries and ma20 > 0 and ma50 > 0 and price < ma20 < ma50
+                    and price > daily_open - 0.5 * atr):
+                opened = _open_short_position(db, exchange, asset, "AUTO_SHORT_ATR_PRO_RR_1_2")
             if opened:
                 current_positions += 1
 
@@ -724,7 +732,7 @@ async def _scan_cycle() -> None:
             # Each exchange is scanned independently. All requests are public market data only.
             gathered = await asyncio.gather(
                 get_market_breadth(),
-                scan_crypto(limit=50, universe_limit=200, min_volume=50_000_000,
+                scan_crypto(limit=50, universe_limit=200, min_volume=50_000_001,
                             capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
                             fee_rate=_FEE_RATE),
                 scan_bybit(limit=50, min_volume=1_000_000,
