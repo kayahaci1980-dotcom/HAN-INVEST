@@ -135,69 +135,18 @@ class CryptoScanner(private val context: Context) {
         ))
 
         val tabs = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(12), 0, dp(8))
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(10), 0, dp(8))
         }
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(12), dp(12), dp(12))
             background = rounded(card)
         }
-        val scroll = ScrollView(context).apply {
-            isFillViewport = true
-            addView(content)
-        }
         var selectedTab = "HOME"
+        var tabCount = 0
+        var tabRow: LinearLayout? = null
         lateinit var render: () -> Unit
-        val floatingDialog = Dialog(context)
-        val floatingRoot = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(10), dp(12), dp(12))
-            background = rounded(surface, 22)
-        }
-        val floatingHeader = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        floatingHeader.addView(label("HAN INVEST  •  РАЗДЕЛЫ", 15f, blue, true),
-            LinearLayout.LayoutParams(0, dp(42), 1f))
-        val closeFloating = Button(context).apply {
-            text = "✕"
-            textSize = 17f
-            buttonStyle(this, Color.rgb(220, 48, 72))
-            setOnClickListener { floatingDialog.dismiss() }
-        }
-        floatingHeader.addView(closeFloating, LinearLayout.LayoutParams(dp(46), dp(42)))
-        floatingRoot.addView(floatingHeader)
-        val tabScroller = HorizontalScrollView(context).apply {
-            isHorizontalScrollBarEnabled = false
-            isFillViewport = false
-            addView(tabs, ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ))
-        }
-        floatingRoot.addView(tabScroller, LinearLayout.LayoutParams(-1, dp(52)))
-        floatingRoot.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        floatingDialog.setContentView(floatingRoot)
-        floatingDialog.setOnShowListener {
-            floatingDialog.window?.apply {
-                setBackgroundDrawableResource(android.R.color.transparent)
-                setLayout(WindowManager.LayoutParams.MATCH_PARENT,
-                    (context.resources.displayMetrics.heightPixels * 0.86f).toInt())
-                addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                attributes = attributes.apply { dimAmount = 0.62f }
-            }
-        }
-        val openSections = Button(context).apply {
-            text = "ОТКРЫТЬ РАЗДЕЛЫ"
-            textSize = 14f
-            buttonStyle(this, blue)
-            setOnClickListener {
-                selectedTab = "HOME"
-                render()
-                if (!floatingDialog.isShowing) floatingDialog.show()
-            }
-        }
         val status = label("Загрузка данных четырёх криптобирж...", 14f, dark)
         val refresh = Button(context).apply {
             text = "Обновить все биржи"
@@ -206,7 +155,9 @@ class CryptoScanner(private val context: Context) {
         panel.addView(status)
         panel.addView(refresh)
         section.addView(panel)
-        section.addView(openSections)
+        section.addView(label("РАЗДЕЛЫ HAN INVEST", 14f, blue, true))
+        section.addView(tabs)
+        section.addView(content)
 
         val paperPrefs = context.getSharedPreferences("han_invest_paper", Context.MODE_PRIVATE)
         var paperCash = paperPrefs.getFloat("cash_usdt", 1000f).toDouble()
@@ -281,21 +232,28 @@ class CryptoScanner(private val context: Context) {
         var loadingCount = 0
 
         fun addTab(title: String, key: String, color: Int) {
+            if (tabCount % 2 == 0) {
+                tabRow = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                }
+                tabs.addView(tabRow, LinearLayout.LayoutParams(-1, dp(48)))
+            }
             val b = Button(context).apply {
                 text = title
                 textSize = 12f
                 buttonStyle(this, if (selectedTab == key) color else muted)
                 layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply {
                     marginEnd = dp(5)
+                    marginStart = dp(5)
                 }
                 setOnClickListener {
                     selectedTab = key
                     render()
                     if (key == "PAPER" || key == "ARCHIVE") refreshPaperServer()
-                    if (!floatingDialog.isShowing) floatingDialog.show()
                 }
             }
-            tabs.addView(b)
+            tabRow?.addView(b, LinearLayout.LayoutParams(0, dp(44), 1f))
+            tabCount++
         }
 
         fun tradeReady(coin: JSONObject, result: ExchangeResult, maxRisk: Double): Boolean {
@@ -469,6 +427,8 @@ class CryptoScanner(private val context: Context) {
 
         render = {
             tabs.removeAllViews()
+            tabCount = 0
+            tabRow = null
             addTab("Главная · TOP 3", "HOME", blue)
             addTab("Рынок LIVE", "MARKET", purple)
             addTab("Binance", "BINANCE", blue)
