@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _STABLECOIN_BASES = {
     "USDT", "USDC", "USDE", "USDS", "DAI", "FDUSD", "TUSD", "USDP",
     "PYUSD", "USD1", "RLUSD", "UST", "USTC", "EURC", "EURI", "USDD",
-    "FRAX", "USDX", "GUSD", "XAUT", "PAXG",
+    "FRAX", "USDX", "GUSD",
 }
 
 def _is_stablecoin_pair(symbol: str) -> bool:
@@ -838,13 +838,9 @@ async def _scan_cycle() -> None:
                                    allow_short_entries=allow_short_entries)
             else:
                 errors.append("Bybit: trading skipped because Bybit market data is unavailable")
-            coinbase_payload = exchange_payloads.get("Coinbase Exchange")
-            if isinstance(coinbase_payload, dict):
-                _apply_market_data("Coinbase Exchange", coinbase_payload, allow_new_entries=allow_new_entries,
-                                   allow_short_entries=allow_short_entries)
-            else:
-                errors.append("Coinbase Exchange: trading skipped because market data is unavailable")
-            logger.info("Paper trading venues: Bybit Spot and Coinbase Exchange; virtual LONG/SHORT")
+            # Binance, Coinbase Exchange and OKX are analysis-only feeds.
+            # Never pass their payloads to the PAPER position manager.
+            logger.info("Paper trading venue: Bybit Spot only; Binance/Coinbase/OKX analysis-only")
             with _connect() as db:
                 db.execute(
                     """UPDATE paper_account SET last_scan_at=?, last_error=?, updated_at=?
