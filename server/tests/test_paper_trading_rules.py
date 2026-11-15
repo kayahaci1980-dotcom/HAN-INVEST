@@ -125,9 +125,9 @@ class PaperTradingRuleTests(unittest.TestCase):
 
     def test_automatic_partial_reduction_triggers_on_one_percent_pullback_from_peak(self):
         self.seed_position()
-        # Add one tranche at +1% and let the market make a fresh +2% high.
+        # Add one tranche at +1%, then make a smaller fresh high below +2%.
         paper._apply_market_data("Bybit", {"assets": [self.asset(83, 101.0)]}, False)
-        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 102.0)]}, False)
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 101.5)]}, False)
         with paper._connect() as db:
             base_quantity = float(db.execute(
                 "SELECT quantity FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT' AND lot_index=0"
@@ -136,7 +136,7 @@ class PaperTradingRuleTests(unittest.TestCase):
                 "SELECT quantity FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT' AND lot_index=1"
             ).fetchone()["quantity"])
         # A 1% pullback from the high is above the -0.5% whole-position stop.
-        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 100.98)]}, False)
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 100.485)]}, False)
         with paper._connect() as db:
             lots = db.execute(
                 "SELECT * FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT' ORDER BY lot_index"
@@ -152,7 +152,7 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.assertAlmostEqual(float(lots[0]["quantity"]), base_quantity, places=8)
         self.assertAlmostEqual(float(sale["quantity"]), add_quantity, places=8)
         self.assertIsNotNone(remaining)
-        self.assertAlmostEqual(float(remaining["peak_price"]), 102.0, places=8)
+        self.assertAlmostEqual(float(remaining["peak_price"]), 101.5, places=8)
 
     def test_pullback_ladder_sells_next_added_lot_at_each_one_percent_step(self):
         self.seed_position()
