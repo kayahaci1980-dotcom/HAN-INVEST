@@ -272,6 +272,9 @@ class CryptoScanner(private val context: Context) {
         var marketContext: JSONObject? = null
         var globalAssets: List<JSONObject>? = null
         var globalMarketError: String? = null
+        var globalMarketsData: JSONObject? = null
+        var globalMarketsError: String? = null
+        var globalMarketsLoading = false
         var globalPage = 0
         val globalPageSize = 50
         var loadingCount = 0
@@ -405,6 +408,34 @@ class CryptoScanner(private val context: Context) {
             })
         }
 
+        fun loadGlobalMarkets() {
+            if (globalMarketsLoading) return
+            globalMarketsLoading = true
+            globalMarketsError = null
+            render()
+            Thread {
+                var result: JSONObject? = null
+                var error: String? = null
+                try {
+                    val connection = URL("https://han-invest-api-test.onrender.com/api/v1/global-markets").openConnection() as HttpURLConnection
+                    try {
+                        connection.requestMethod = "GET"
+                        connection.connectTimeout = 15000
+                        connection.readTimeout = 25000
+                        connection.setRequestProperty("Accept", "application/json")
+                        if (connection.responseCode !in 200..299) throw Exception("HTTP ${connection.responseCode}")
+                        result = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+                    } finally { connection.disconnect() }
+                } catch (e: Exception) { error = e.message ?: "Ошибка загрузки" }
+                Handler(Looper.getMainLooper()).post {
+                    globalMarketsData = result
+                    globalMarketsError = error
+                    globalMarketsLoading = false
+                    render()
+                }
+            }.start()
+        }
+
         fun loadGlobalMarket() {
             globalAssets = null
             globalMarketError = null
@@ -445,6 +476,7 @@ class CryptoScanner(private val context: Context) {
             addTab("OKX", "OKX", purple)
             addTab("PAPER · Вирт. счёт", "PAPER", Color.rgb(0, 190, 105))
             addTab("Архив сделок", "ARCHIVE", Color.rgb(255, 151, 35))
+            addTab("Мировые рынки", "GLOBAL", Color.rgb(0, 190, 170))
             content.removeAllViews()
             content.addView(label(
                 when (selectedTab) {
@@ -454,6 +486,7 @@ class CryptoScanner(private val context: Context) {
                     "OKX" -> "⚫ OKX SPOT — отдельные данные биржи"
                     "PAPER" -> "ВИРТУАЛЬНЫЙ СЧЁТ — PAPER TRADING"
                     "ARCHIVE" -> "АРХИВ ПОКУПОК И ПРОДАЖ PAPER"
+                    "GLOBAL" -> "МИРОВЫЕ ФИНАНСОВЫЕ РЫНКИ"
                     else -> "ТОП-3 ЛУЧШИХ РЕЗУЛЬТАТА"
                 }, 17f, dark, true
             ))
@@ -487,7 +520,51 @@ class CryptoScanner(private val context: Context) {
                 modeRow.addView(label("Виртуальная торговля", 11f, muted), LinearLayout.LayoutParams(0, dp(42), 1f))
                 content.addView(modeRow)
             }
-            if (selectedTab == "MARKET") {
+            if (selectedTab == "GLOBAL") {
+                content.addView(label("ВАЛЮТЫ • ДРАГОЦЕННЫЕ МЕТАЛЛЫ • ЭНЕРГИЯ • ИНДЕКСЫ", 13f, dark, true))
+                content.addView(label("Котировки мировых рынков. Изменение указано относительно предыдущего закрытия; данные могут задерживаться.", 11f, muted))
+                val data = globalMarketsData
+                if (globalMarketsLoading && data == null) {
+                    content.addView(label("Загружаем мировые котировки…", 13f, muted))
+                } else if (data == null) {
+                    content.addView(label(globalMarketsError ?: "Нажмите «Обновить мировые рынки».", 13f, muted))
+                } else {
+                    content.addView(label("Источник: ${data.optString("source", "—")} • Доступно: ${data.optInt("available")}/${data.optInt("total")}", 11f, muted))
+                    val assets = data.optJSONArray("assets") ?: JSONArray()
+                    val categories = listOf("Валюты", "Металлы", "Энергия", "Индексы")
+                    for (category in categories) {
+                        content.addView(label(category.uppercase(Locale("ru", "RU")), 14f, blue, true))
+                        for (i in 0 until assets.length()) {
+                            val item = assets.optJSONObject(i) ?: continue
+                            if (item.optString("category") != category) continue
+                            val price = if (item.isNull("price")) "—" else formatNumber(item.optDouble("price"), 4)
+                            val change = if (item.isNull("change_pct")) "нет данных" else {
+                                val pct = item.optDouble("change_pct")
+                                (if (pct >= 0) "+" else "") + formatNumber(pct, 2) + "%"
+                            }
+                            val positive = !item.isNull("change_pct") && item.optDouble("change_pct") >= 0
+                            val row = LinearLayout(context).apply {
+                                orientation = LinearLayout.VERTICAL
+                                setPadding(dp(10), dp(8), dp(10), dp(8))
+                                background = rounded(page, 10)
+                            }
+                            row.addView(label("${item.optString("name")}  •  ${item.optString("symbol")}", 13f, dark, true))
+                            row.addView(label("Цена: $price ${item.optString("currency", "USD")}   |   За день: $change", 12f, if (positive) Color.rgb(0, 210, 115) else muted))
+                            content.addView(row)
+                            content.addView(View(context).apply { layoutParams = LinearLayout.LayoutParams(1, dp(5)) })
+                        }
+                    }
+                    val updated = data.optLong("updated_at", 0L)
+                    if (updated > 0) content.addView(label("Обновлено: " + java.text.SimpleDateFormat("dd.MM.yyyy HH:mm:ss", Locale("ru", "RU")).apply { timeZone = java.util.TimeZone.getTimeZone("Asia/Bishkek") }.format(java.util.Date(updated * 1000)), 10f, muted))
+                }
+                val globalRefresh = Button(context).apply {
+                    text = if (globalMarketsLoading) "Обновление…" else "Обновить мировые рынки"
+                    buttonStyle(this, blue)
+                    isEnabled = !globalMarketsLoading
+                    setOnClickListener { loadGlobalMarkets() }
+                }
+                content.addView(globalRefresh)
+            } else if (selectedTab == "MARKET") {
                 content.addView(label("ГЛОБАЛЬНЫЙ СПИСОК КРИПТОВАЛЮТ", 14f, dark, true))
                 content.addView(label("CoinPaprika • уникальные активы без стейблкоинов • список не является торговым сигналом Bybit", 11f, muted))
                 val all = globalAssets
