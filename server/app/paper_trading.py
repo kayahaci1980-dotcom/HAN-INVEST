@@ -902,15 +902,21 @@ async def _scan_cycle() -> None:
             breadth_result, *results = gathered
             errors = []
             if isinstance(breadth_result, BaseException) or not isinstance(breadth_result, dict):
-                allow_new_entries = False
-                allow_short_entries = False
+                # Fail open only for the optional global breadth overlay:
+                # Bybit's own per-symbol trend, volume, ATR, RR and daily-open
+                # filters still decide whether a LONG or SHORT may be opened.
+                # Position management and protective exits run independently above.
+                allow_new_entries = True
+                allow_short_entries = True
                 _last_market_breadth = {
                     "available": False, "status": "UNAVAILABLE",
-                    "allow_new_entries": False,
-                    "reason": "Нет достоверных глобальных данных; новые входы заблокированы.",
+                    "allow_new_entries": True,
+                    "allow_short_entries": True,
+                    "fallback": "BYBIT_ONLY",
+                    "reason": "Глобальные данные недоступны; входы проверяются по локальным фильтрам Bybit.",
                 }
-                errors.append("Market breadth: unavailable; new entries blocked")
-                logger.warning("Market breadth unavailable; fail-closed entry filter active")
+                errors.append("Market breadth: unavailable; using Bybit-only entry filters")
+                logger.warning("Market breadth unavailable; falling back to Bybit-only entry filters")
             else:
                 _last_market_breadth = dict(breadth_result)
                 allow_new_entries = breadth_result.get("allow_new_entries") is True
