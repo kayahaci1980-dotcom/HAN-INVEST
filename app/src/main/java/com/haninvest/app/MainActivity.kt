@@ -23,12 +23,12 @@ import java.util.Locale
 
 class MainActivity : Activity() {
 
-    private val blue = Color.rgb(0, 174, 255)
-    private val purple = Color.rgb(153, 120, 255)
-    private val green = Color.rgb(0, 220, 105)
+    private val blue = Color.rgb(0, 184, 255)
+    private val purple = Color.rgb(174, 92, 255)
+    private val green = Color.rgb(0, 232, 118)
     private val dark = Color.rgb(232, 240, 250)
     private val muted = Color.rgb(151, 169, 190)
-    private val page = Color.rgb(5, 12, 22)
+    private val page = Color.rgb(4, 10, 22)
 
     private fun dp(v: Int) =
         (v * resources.displayMetrics.density).toInt()
@@ -55,7 +55,7 @@ class MainActivity : Activity() {
         LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(17), dp(15), dp(17), dp(15))
-            background = bg(Color.rgb(15, 29, 45), 19)
+            background = bg(Color.rgb(17, 39, 64), 19)
             elevation = dp(2).toFloat()
         }
 
