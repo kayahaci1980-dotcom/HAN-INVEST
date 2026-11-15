@@ -680,8 +680,6 @@ def _apply_market_data(
                     _close_position(db, current, price, "DRAWDOWN_0_5_PERCENT")
                 elif change_pct >= 10.0:
                     _close_position(db, current, price, "TAKE_PROFIT_10_REBUY")
-                elif score <= 82:
-                    _close_position(db, current, price, "SCORE_AT_OR_BELOW_82")
                 else:
                     _manage_long_scale(db, current, price)
 
