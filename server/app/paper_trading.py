@@ -355,74 +355,42 @@ def _close_position(db, position,
     )
 
 
-def _open_position(db, exchange: str,
-                   asset: dict[str, Any], reason: str) -> bool:
-    """Open a virtual spot position using ATR risk sizing."""
+def _open_position(db, exchange: str, asset: dict[str, Any], reason: str) -> bool:
+    """Open a virtual LONG with a fixed 100 USDT base tranche."""
     symbol = str(asset.get("symbol") or "")
     try:
         price = float(asset.get("price") or 0)
-        atr = float(asset.get("atr_14") or asset.get("atr_14_1d") or 0)
+        atr = float(asset.get("atr_14_1d") or asset.get("atr_14") or 0)
     except (TypeError, ValueError):
         return False
     if not symbol or price <= 0 or atr <= 0:
         return False
-
-    exists = db.execute(
-        "SELECT 1 FROM paper_positions WHERE exchange=? AND symbol=?",
-        (exchange, symbol),
-    ).fetchone()
-    if exists:
+    if db.execute("SELECT 1 FROM paper_positions WHERE exchange=? AND symbol=?",
+                  (exchange, symbol)).fetchone():
         return False
-
-    account = db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()
-    cash = float(account["cash"])
-    # ATR controls position sizing; user-defined exits are fixed at -2% and +10%.
-    atr_risk_stop = price - 1.5 * atr
-    stop = price * 0.98
-    target = price * 1.10
-    risk_per_coin = (price - atr_risk_stop) + (price + atr_risk_stop) * _FEE_RATE
-    if cash <= 0 or atr_risk_stop <= 0 or stop <= 0 or target <= price or risk_per_coin <= 0:
+    cash = float(db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()["cash"])
+    ticket = min(100.0, cash)
+    stop, target = price - 1.5 * atr, price + 3.0 * atr
+    if ticket < 10 or stop <= 0:
         return False
-
-    risk_budget = cash * _RISK_PCT / 100.0
-    quantity_by_risk = risk_budget / risk_per_coin
-    quantity_by_cash = cash / (price * (1 + _FEE_RATE))
-    quantity = min(quantity_by_risk, quantity_by_cash)
-    if quantity <= 0:
-        return False
-
-    gross = quantity * price
-    fee = gross * _FEE_RATE
-    total_cost = gross + fee
-    if total_cost > cash + 1e-8:
-        return False
-
-    db.execute(
-        """INSERT INTO paper_positions
-           (exchange, symbol, quantity, cost_usdt, entry_price,
-            stop_loss, take_profit, last_price, opened_at, peak_price)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (exchange, symbol, quantity, total_cost, price,
-         stop, target, price, _now(), price),
-    )
-    db.execute(
-        "UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1",
-        (total_cost, _now()),
-    )
-    db.execute(
-        """INSERT INTO paper_position_lots
-           (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
-           VALUES (?, ?, 0, ?, ?, ?, ?)""",
-        (exchange, symbol, quantity, total_cost, price, _now()),
-    )
-    db.execute(
-        """INSERT INTO paper_trades
-           (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
-           VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?, NULL, ?)""",
-        (_now(), exchange, symbol, price, quantity, gross, fee, reason),
-    )
+    quantity = ticket / (price * (1.0 + _FEE_RATE))
+    gross, fee = quantity * price, quantity * price * _FEE_RATE
+    cost = gross + fee
+    db.execute("""INSERT INTO paper_positions
+        (exchange, symbol, quantity, cost_usdt, entry_price, stop_loss,
+         take_profit, last_price, opened_at, peak_price, direction)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'LONG')""",
+        (exchange, symbol, quantity, cost, price, stop, target, price, _now(), price))
+    db.execute("UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1", (cost, _now()))
+    db.execute("""INSERT INTO paper_position_lots
+        (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
+        VALUES (?, ?, 0, ?, ?, ?, ?)""",
+        (exchange, symbol, quantity, cost, price, _now()))
+    db.execute("""INSERT INTO paper_trades
+        (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
+        VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?, NULL, ?)""",
+        (_now(), exchange, symbol, price, quantity, gross, fee, reason))
     return True
-
 
 
 def _add_scale_lot(db, position, price: float) -> bool:
@@ -569,10 +537,11 @@ def _manage_long_scale(db, position, price: float) -> None:
 
 
 def _open_short_position(db, exchange: str, asset: dict[str, Any], reason: str) -> bool:
+    """Open a virtual SHORT with a fixed 100 USDT collateral tranche."""
     symbol = str(asset.get("symbol") or "")
     try:
         price = float(asset.get("price") or 0)
-        atr = float(asset.get("atr_14") or asset.get("atr_14_1d") or 0)
+        atr = float(asset.get("atr_14_1d") or asset.get("atr_14") or 0)
     except (TypeError, ValueError):
         return False
     if not symbol or price <= 0 or atr <= 0:
@@ -581,30 +550,75 @@ def _open_short_position(db, exchange: str, asset: dict[str, Any], reason: str) 
                   (exchange, symbol)).fetchone():
         return False
     cash = float(db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()["cash"])
-    stop, target = price * 1.02, price * 0.90
-    risk_per_coin = (stop - price) + (price + stop) * _FEE_RATE
-    if cash <= 0 or risk_per_coin <= 0:
+    ticket = min(100.0, cash)
+    stop, target = price + 1.5 * atr, price - 3.0 * atr
+    if ticket < 10 or target <= 0:
         return False
-    qty = min(cash * _RISK_PCT / 100.0 / risk_per_coin,
-              cash / (price * (1 + _FEE_RATE)))
-    if qty <= 0:
-        return False
-    gross, fee = qty * price, qty * price * _FEE_RATE
+    quantity = ticket / (price * (1.0 + _FEE_RATE))
+    gross, fee = quantity * price, quantity * price * _FEE_RATE
     reserve = gross + fee
-    if reserve > cash + 1e-8:
-        return False
     db.execute("""INSERT INTO paper_positions
         (exchange, symbol, quantity, cost_usdt, entry_price, stop_loss,
-         take_profit, last_price, opened_at, direction)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SHORT')""",
-        (exchange, symbol, qty, reserve, price, stop, target, price, _now()))
-    db.execute("UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1",
-               (reserve, _now()))
+         take_profit, last_price, opened_at, direction, peak_price)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SHORT', ?)""",
+        (exchange, symbol, quantity, reserve, price, stop, target, price, _now(), price))
+    db.execute("UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1", (reserve, _now()))
+    db.execute("""INSERT INTO paper_position_lots
+        (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
+        VALUES (?, ?, 0, ?, ?, ?, ?)""",
+        (exchange, symbol, quantity, reserve, price, _now()))
     db.execute("""INSERT INTO paper_trades
         (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
         VALUES (?, ?, ?, 'SHORT_OPEN', ?, ?, ?, ?, NULL, ?)""",
-        (_now(), exchange, symbol, price, qty, gross, fee, reason))
+        (_now(), exchange, symbol, price, quantity, gross, fee, reason))
     return True
+
+
+def _manage_short_scale(db, position, price: float) -> None:
+    """Add on each favorable 1% SHORT move; reduce newest add-on on each adverse 1%."""
+    entry = float(position["entry_price"])
+    if entry <= 0 or price <= 0:
+        return
+    next_add = int(position["next_add_level"] or 1)
+    while price <= entry * (1.0 - next_add / 100.0):
+        if not _add_scale_lot(db, position, price):
+            break
+        next_add += 1
+        position = db.execute("SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
+                              (position["exchange"], position["symbol"])).fetchone()
+        if position is None:
+            return
+    next_reduce = int(position["next_reduce_level"] or 1)
+    while price >= entry * (1.0 + next_reduce / 100.0):
+        lot = db.execute("""SELECT * FROM paper_position_lots
+            WHERE exchange=? AND symbol=? AND lot_index>0
+            ORDER BY lot_index DESC LIMIT 1""",
+            (position["exchange"], position["symbol"])).fetchone()
+        if lot is None:
+            break
+        qty, lot_cost = float(lot["quantity"]), float(lot["cost_usdt"])
+        lot_entry = float(lot["entry_price"])
+        fee = qty * price * _FEE_RATE
+        pnl = (lot_entry - price) * qty - max(0.0, lot_cost - lot_entry * qty) - fee
+        release = lot_entry * qty + (lot_entry - price) * qty - fee
+        db.execute("UPDATE paper_account SET cash=cash+?, updated_at=? WHERE id=1", (release, _now()))
+        db.execute("""UPDATE paper_positions SET quantity=quantity-?, cost_usdt=cost_usdt-?,
+            next_reduce_level=next_reduce_level+1, last_price=?
+            WHERE exchange=? AND symbol=?""",
+            (qty, lot_cost, price, position["exchange"], position["symbol"]))
+        db.execute("DELETE FROM paper_position_lots WHERE exchange=? AND symbol=? AND lot_index=?",
+                   (position["exchange"], position["symbol"], lot["lot_index"]))
+        db.execute("""INSERT INTO paper_trades
+            (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
+            VALUES (?, ?, ?, 'SHORT_COVER', ?, ?, ?, ?, ?, ?)""",
+            (_now(), position["exchange"], position["symbol"], price, qty, qty * price, fee, pnl,
+             "SHORT_SCALE_OUT_ADVERSE_{}_PERCENT".format(next_reduce)))
+        next_reduce += 1
+        position = db.execute("SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
+                              (position["exchange"], position["symbol"])).fetchone()
+        if position is None:
+            return
+
 
 
 def _apply_market_data(
