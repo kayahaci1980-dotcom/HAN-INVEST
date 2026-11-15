@@ -864,7 +864,7 @@ def _apply_market_data(
             if (asset.get("trade_ready") is not True or not asset.get("symbol")
                     or _is_stablecoin_pair(str(asset.get("symbol")))
                     or price <= 0 or atr <= 0 or daily_open <= 0
-                    or volume <= 50_000_000 or str(asset.get("atr_timeframe") or "") != "1H"
+                    or not (5_000_000 <= volume <= 40_000_000) or str(asset.get("atr_timeframe") or "") != "1H"
                     or not asset.get("atr_candle_time")):
                 continue
             cooldown = db.execute("SELECT blocked_until FROM paper_loss_cooldowns WHERE exchange=? AND symbol=?",
@@ -892,7 +892,7 @@ async def _scan_cycle() -> None:
                 scan_crypto(limit=50, universe_limit=200, min_volume=50_000_001,
                             capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
                             fee_rate=_FEE_RATE),
-                scan_bybit(limit=50, min_volume=50_000_001,
+                scan_bybit(limit=50, min_volume=5_000_000,
                            capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
                            fee_rate=_FEE_RATE),
                 scan_coinbase(limit=50, min_volume=50_000_001),
