@@ -434,12 +434,16 @@ def _add_scale_lot(db, position, price: float) -> bool:
         "UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1",
         (actual_cost, _now()),
     )
+    direction = str(position["direction"] if "direction" in position.keys() else "LONG").upper()
+    side = "SHORT_OPEN" if direction == "SHORT" else "BUY"
+    reason = ("SHORT_SCALE_IN_MINUS_{}_PERCENT".format(int(position["next_add_level"]))
+              if direction == "SHORT"
+              else "SCALE_IN_PLUS_{}_PERCENT".format(int(position["next_add_level"])))
     db.execute(
         """INSERT INTO paper_trades
            (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
-           VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?, NULL, ?)""",
-        (_now(), exchange, symbol, price, quantity, gross, fee,
-         "SCALE_IN_PLUS_{}_PERCENT".format(int(position["next_add_level"]))),
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
+        (_now(), exchange, symbol, side, price, quantity, gross, fee, reason),
     )
     return True
 
