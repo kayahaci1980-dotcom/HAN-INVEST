@@ -23,12 +23,12 @@ import java.util.Locale
 
 class MainActivity : Activity() {
 
-    private val blue = Color.rgb(55, 105, 245)
-    private val purple = Color.rgb(125, 75, 235)
-    private val green = Color.rgb(25, 175, 115)
-    private val dark = Color.rgb(30, 42, 65)
-    private val muted = Color.rgb(125, 137, 158)
-    private val page = Color.rgb(246, 248, 253)
+    private val blue = Color.rgb(0, 174, 255)
+    private val purple = Color.rgb(153, 120, 255)
+    private val green = Color.rgb(0, 220, 105)
+    private val dark = Color.rgb(232, 240, 250)
+    private val muted = Color.rgb(151, 169, 190)
+    private val page = Color.rgb(5, 12, 22)
 
     private fun dp(v: Int) =
         (v * resources.displayMetrics.density).toInt()
@@ -55,7 +55,7 @@ class MainActivity : Activity() {
         LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(17), dp(15), dp(17), dp(15))
-            background = bg(Color.WHITE, 19)
+            background = bg(Color.rgb(15, 29, 45), 19)
             elevation = dp(2).toFloat()
         }
 
@@ -447,41 +447,16 @@ class MainActivity : Activity() {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(12))
         }
-        header.addView(label("HAN", 28f, blue, true))
-        header.addView(label(" INVEST", 28f, purple, true))
+        header.addView(label("☰", 27f, Color.WHITE, true), LinearLayout.LayoutParams(dp(42), dp(48)))
+        val brand = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        brand.addView(label("📈 HAN INVEST", 25f, Color.WHITE, true))
+        brand.addView(label("Крипто • Анализ • Автоторговля", 12f, muted))
+        header.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
+        header.addView(label("♧", 25f, Color.WHITE, true))
+        header.addView(label("⚙", 25f, Color.WHITE, true))
         root.addView(header)
-
-        root.addView(
-            label(
-                "Международная инвестиционная аналитика",
-                13f, muted
-            )
-        )
-        root.addView(space(18))
-
-        val banner = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(23), dp(20), dp(23))
-            background = GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                intArrayOf(blue, purple)
-            ).apply { cornerRadius = dp(22).toFloat() }
-        }
-        banner.addView(label("HAN INVEST", 13f, Color.WHITE, true))
-        banner.addView(space(8))
-        banner.addView(
-            label("Инвестируйте\nосознанно.", 29f, Color.WHITE, true)
-        )
-        banner.addView(space(8))
-        banner.addView(
-            label(
-                "Сравнивайте рынки, доходность и риски.",
-                14f, Color.WHITE
-            )
-        )
-        root.addView(banner)
-        root.addView(space(12))
 
         // ГЛАВНЫЙ РЫНОК HAN INVEST — КРИПТОВАЛЮТЫ
         root.addView(CryptoScanner(this).createView())
