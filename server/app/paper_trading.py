@@ -217,6 +217,10 @@ def _account_snapshot() -> dict[str, Any]:
         trades = db.execute(
             "SELECT * FROM paper_trades ORDER BY id DESC LIMIT 30"
         ).fetchall()
+        lot_rows = db.execute("SELECT * FROM paper_position_lots").fetchall()
+        lots_by_position = {}
+        for lot in lot_rows:
+            lots_by_position.setdefault((lot["exchange"], lot["symbol"]), []).append(lot)
         # Totals use the complete ledger; the UI history remains capped at 30 rows.
         realized_rows = db.execute(
             "SELECT pnl_usdt FROM paper_trades WHERE pnl_usdt IS NOT NULL"
@@ -238,12 +242,16 @@ def _account_snapshot() -> dict[str, Any]:
         direction = str(position["direction"] if "direction" in position.keys() else "LONG").upper()
 
         if direction == "SHORT":
-            # Reserve is returned as collateral, then mark-to-market the short
-            # and deduct both the opening fee already paid and estimated close fee.
-            opening_fee = max(0.0, cost - entry * quantity)
+            # Calculate short PnL per lot: add-ons can have different entry prices.
+            lots = lots_by_position.get((position["exchange"], position["symbol"]), [])
+            opening_fee = sum(max(0.0, float(lot["cost_usdt"]) -
+                                  float(lot["entry_price"]) * float(lot["quantity"]))
+                              for lot in lots)
+            gross_pnl = sum((float(lot["entry_price"]) - price) * float(lot["quantity"])
+                            for lot in lots)
             closing_fee = price * quantity * _FEE_RATE
-            market_value = cost + (entry - price) * quantity - opening_fee - closing_fee
-            unrealized = (entry - price) * quantity - opening_fee - closing_fee
+            market_value = cost + gross_pnl - opening_fee - closing_fee
+            unrealized = gross_pnl - opening_fee - closing_fee
         else:
             # Equity uses estimated liquidation value, including the closing fee.
             market_value = price * quantity * (1.0 - _FEE_RATE)
@@ -307,9 +315,17 @@ def _close_position(db, position,
     direction = str(position["direction"] if "direction" in position.keys() else "LONG").upper()
     entry = float(position["entry_price"])
     if direction == "SHORT":
-        opening_fee = float(position["cost_usdt"]) - entry * quantity
-        pnl = (entry - price) * quantity - opening_fee - fee
-        cash_release = entry * quantity + (entry - price) * quantity - fee
+        lots = db.execute(
+            "SELECT quantity, cost_usdt, entry_price FROM paper_position_lots WHERE exchange=? AND symbol=?",
+            (position["exchange"], position["symbol"]),
+        ).fetchall()
+        opening_fee = sum(max(0.0, float(lot["cost_usdt"]) -
+                              float(lot["entry_price"]) * float(lot["quantity"]))
+                          for lot in lots)
+        gross_pnl = sum((float(lot["entry_price"]) - price) * float(lot["quantity"])
+                        for lot in lots)
+        pnl = gross_pnl - opening_fee - fee
+        cash_release = float(position["cost_usdt"]) + pnl
         trade_side = "SHORT_COVER"
     else:
         net = gross - fee
@@ -680,8 +696,13 @@ def _apply_market_data(
             else:
                 net_pnl = quantity * price * (1.0 - _FEE_RATE) - cost
             loss_pct = (net_pnl / cost * 100.0) if cost > 0 else 0.0
+            target = float(current["take_profit"] or 0)
+            atr_target_hit = (target > 0 and
+                              (price >= target if direction == "LONG" else price <= target))
             if loss_pct <= -0.5:
                 _close_position(db, current, price, "DRAWDOWN_0_5_PERCENT")
+            elif atr_target_hit:
+                _close_position(db, current, price, "ATR_TAKE_PROFIT_RR_1_2")
             elif change_pct >= 10.0:
                 _close_position(db, current, price,
                                 "TAKE_PROFIT_10_REBUY" if direction == "LONG" else "SHORT_TAKE_PROFIT_10")
