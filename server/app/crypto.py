@@ -228,20 +228,26 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
         score = min(100, trend_score + momentum_score + short_score +
                     liquidity_score + stability_score + volume_score)
 
-        # BUY is deliberately selective: require a strong score, aligned MA trend,
-        # positive short-term momentum, and a meaningful closed-candle volume surge.
+        # The score is display-only: directional signals are based on market structure,
+        # momentum, liquidity, closed-candle volume and the BTC market regime.
         volume_confirmed = volume_ratio >= 1.2
-        # Use the live ticker price too: a stale candle close must not keep BUY active.
         strong_uptrend = current_price > ma20 > ma50
-        asset_setup_confirmed = (
-            score >= 83 and strong_uptrend and change_6h >= 1.0
-            and volume_confirmed and quote_volume >= 1_000_000
+        strong_downtrend = current_price < ma20 < ma50
+        liquid_enough = quote_volume > 50_000_000
+        long_setup = (
+            strong_uptrend and change_6h > 0 and volume_confirmed and liquid_enough
             and (change_24h - btc_change_24h_pct) > 0
         )
-        early_buy = asset_setup_confirmed and btc_market_state == "SIDEWAYS"
-        if asset_setup_confirmed and btc_market_state == "BULLISH":
+        short_setup = (
+            strong_downtrend and change_6h < 0 and volume_confirmed and liquid_enough
+            and (change_24h - btc_change_24h_pct) < 0
+        )
+        early_buy = long_setup and btc_market_state == "SIDEWAYS"
+        if long_setup and btc_market_state == "BULLISH":
             signal = "BUY"
-        elif score >= 55:
+        elif short_setup and btc_market_state == "BEARISH":
+            signal = "SHORT"
+        elif strong_uptrend or strong_downtrend:
             signal = "WATCH"
         else:
             signal = "HOLD"
@@ -250,9 +256,11 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "Средний" if hourly_volatility >= 1.2 else "Умеренный"
         )
 
-        entry_price = current_price if signal == "BUY" else None
-        stop_loss = current_price - 1.5 * atr_14 if signal == "BUY" else None
-        take_profit = current_price + 3.0 * atr_14 if signal == "BUY" else None
+        entry_price = current_price if signal in ("BUY", "SHORT") else None
+        stop_loss = (current_price - 1.5 * atr_14 if signal == "BUY" else
+                     current_price + 1.5 * atr_14 if signal == "SHORT" else None)
+        take_profit = (current_price + 3.0 * atr_14 if signal == "BUY" else
+                       current_price - 3.0 * atr_14 if signal == "SHORT" else None)
         position_sizing = (
             _calculate_position_sizing(
                 entry_price, stop_loss, take_profit, capital_usdt, risk_pct, fee_rate
@@ -283,7 +291,7 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "entry_price": round(entry_price, 8) if entry_price is not None else None,
             "stop_loss": round(stop_loss, 8) if stop_loss is not None else None,
             "take_profit": round(take_profit, 8) if take_profit is not None else None,
-            "risk_reward": "1:2" if signal == "BUY" else None,
+            "risk_reward": "1:2" if signal in ("BUY", "SHORT") else None,
             "position_sizing": position_sizing,
             "ma20": round(ma20, 8),
             "ma50": round(ma50, 8),
