@@ -742,11 +742,11 @@ async def _scan_cycle() -> None:
                 scan_crypto(limit=50, universe_limit=200, min_volume=50_000_001,
                             capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
                             fee_rate=_FEE_RATE),
-                scan_bybit(limit=50, min_volume=1_000_000,
+                scan_bybit(limit=50, min_volume=50_000_001,
                            capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
                            fee_rate=_FEE_RATE),
-                scan_coinbase(limit=50, min_volume=1_000_000),
-                scan_okx(limit=50, min_volume=1_000_000),
+                scan_coinbase(limit=50, min_volume=50_000_001),
+                scan_okx(limit=50, min_volume=50_000_001),
                 return_exceptions=True,
             )
             breadth_result, *results = gathered
