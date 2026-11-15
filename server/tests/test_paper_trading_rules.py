@@ -131,6 +131,41 @@ class PaperTradingRuleTests(unittest.TestCase):
         paper._apply_market_data("Bybit", {"assets": [asset]}, True)
         self.assertEqual(len(self.positions()), 0)
 
+    def test_short_entry_is_score_independent_and_uses_one_hundred_usdt_base(self):
+        asset = self.asset(0, 99.9)
+        asset["ma20"] = 101.0
+        asset["ma50"] = 102.0
+        paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
+        positions = self.positions()
+        self.assertEqual(len(positions), 1)
+        self.assertEqual(positions[0]["direction"], "SHORT")
+        self.assertAlmostEqual(float(positions[0]["cost_usdt"]), 100.0, places=5)
+
+    def test_short_hard_stop_starts_three_hour_cooldown(self):
+        asset = self.asset(0, 99.9)
+        asset["ma20"] = 101.0
+        asset["ma50"] = 102.0
+        with paper._connect() as db:
+            self.assertTrue(paper._open_short_position(db, "Bybit", asset, "TEST_SHORT"))
+        # Opening and estimated closing fees are included in the -0.5% stop.
+        paper._apply_market_data("Bybit", {"assets": [self.asset(0, 100.6)]}, False, True)
+        self.assertEqual(len(self.positions()), 0)
+        self.assertIsNotNone(self.cooldown())
+
+    def test_short_adds_one_equal_tranche_after_each_favorable_one_percent(self):
+        asset = self.asset(0, 99.9)
+        asset["ma20"] = 101.0
+        asset["ma50"] = 102.0
+        with paper._connect() as db:
+            self.assertTrue(paper._open_short_position(db, "Bybit", asset, "TEST_SHORT"))
+            db.execute("UPDATE paper_account SET cash=5000 WHERE id=1")
+        for price in (98.9, 97.9):
+            paper._apply_market_data("Bybit", {"assets": [self.asset(0, price)]}, False, True)
+        with paper._connect() as db:
+            lots = db.execute("SELECT * FROM paper_position_lots ORDER BY lot_index").fetchall()
+        self.assertEqual(len(lots), 3)
+        self.assertAlmostEqual(float(lots[1]["cost_usdt"]), float(lots[0]["cost_usdt"]), places=5)
+
     def test_volume_must_be_strictly_above_fifty_million(self):
         asset = self.asset(1, 100.0)
         asset["quote_volume_24h"] = 50_000_000
