@@ -230,7 +230,7 @@ async def analyze(
 
 @router.get("/api/v1/crypto/bybit/scan")
 async def scan_bybit(
-    limit: int = Query(30, ge=1, le=1000),
+    limit: int = Query(500, ge=1, le=1000),
     min_volume: float = Query(1_000_000, ge=0),
     capital_usdt: float | None = Query(None, gt=0),
     risk_pct: float = Query(1.0, ge=0.1, le=5.0),
@@ -272,7 +272,8 @@ async def scan_bybit(
                         "market_state": btc_state, "price": price,
                         "ma20": round(ma20, 2), "ma50": round(ma50, 2),
                     }
-            selected = sorted(tickers, key=lambda x: float(x.get("turnover24h") or 0), reverse=True)[:limit]
+            candidate_limit = min(limit, 500)
+            selected = sorted(tickers, key=lambda x: float(x.get("turnover24h") or 0), reverse=True)[:candidate_limit]
             semaphore = asyncio.Semaphore(5)
 
             async def limited(item):
@@ -297,12 +298,13 @@ async def scan_bybit(
                     "exchange_pairs": len(instruments),
                     "volume_qualified_candidates": len(tickers),
                     "analysis_attempted": len(selected),
+                    "candidate_limit": candidate_limit,
                     "analysis_succeeded": len(assets),
                     "analysis_skipped": len(selected) - len(assets),
                     "skip_reason": "Недостаточно свечей, ошибка API или некорректные данные; детали в логах сервера.",
                 },
                 "btc_market_filter": btc_info, "updated_at": datetime.now(timezone.utc).isoformat(),
-                "assets": assets, "limit": limit,
+                "assets": assets, "limit": candidate_limit, "candidate_limit": candidate_limit,
                 "cache_key": (limit, min_volume, capital_usdt, risk_pct, fee_rate),
                 "notice": (
                     "Только спотовые пары Bybit USDT. MA20, MA50 и объём рассчитаны по закрытым часовым свечам; ATR(14) для Stop Loss и Take Profit — по 14 завершённым дневным свечам (1D). "
