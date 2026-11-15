@@ -744,14 +744,18 @@ def _apply_market_data(
             if stop > 0 and (price <= stop if direction == "LONG" else price >= stop):
                 _close_position(db, current, price, "ATR_TRAILING_STOP")
                 continue
-            # Recalculate only when a new completed 1H candle is available.
+            # Track the high/low of the latest completed 1H candle on every scan.
             previous_candle = str(current["trailing_candle"] or "")
+            extreme = float(current["peak_price"] or entry)
+            candle_extreme = float(asset.get("candle_high_1h" if direction == "LONG" else "candle_low_1h") or price)
+            extreme = max(extreme, candle_extreme) if direction == "LONG" else min(extreme, candle_extreme)
+            db.execute("UPDATE paper_positions SET peak_price=? WHERE exchange=? AND symbol=?",
+                       (extreme, exchange, position["symbol"]))
+            # Recalculate only when a new completed 1H candle is available.
             if initial_risk > 0 and atr_1h > 0 and candle_time and candle_time != previous_candle:
                 favorable = (price - entry) if direction == "LONG" else (entry - price)
                 r_multiple = favorable / initial_risk
                 stage = int(current["trailing_stage"] or 0)
-                extreme = float(current["peak_price"] or entry)
-                extreme = max(extreme, price) if direction == "LONG" else min(extreme, price)
                 candidate, new_stage = stop, stage
                 if r_multiple >= 3.0:
                     candidate = extreme - 1.5 * atr_1h if direction == "LONG" else extreme + 1.5 * atr_1h
