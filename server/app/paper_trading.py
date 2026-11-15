@@ -106,6 +106,10 @@ def _init_db() -> None:
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS next_add_level INTEGER NOT NULL DEFAULT 1")
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS next_reduce_level INTEGER NOT NULL DEFAULT 1")
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS peak_price DOUBLE PRECISION NOT NULL DEFAULT 0")
+            db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS initial_risk DOUBLE PRECISION NOT NULL DEFAULT 0")
+            db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS atr_14_1h DOUBLE PRECISION NOT NULL DEFAULT 0")
+            db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS trailing_stage INTEGER NOT NULL DEFAULT 0")
+            db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS trailing_candle TEXT NOT NULL DEFAULT ''")
             db.execute(
                 """CREATE TABLE IF NOT EXISTS paper_position_lots (
                     exchange TEXT NOT NULL,
@@ -204,6 +208,14 @@ def _init_db() -> None:
             db.execute("ALTER TABLE paper_positions ADD COLUMN next_reduce_level INTEGER NOT NULL DEFAULT 1")
         if "peak_price" not in position_columns:
             db.execute("ALTER TABLE paper_positions ADD COLUMN peak_price REAL NOT NULL DEFAULT 0")
+        for column, definition in (
+            ("initial_risk", "REAL NOT NULL DEFAULT 0"),
+            ("atr_14_1h", "REAL NOT NULL DEFAULT 0"),
+            ("trailing_stage", "INTEGER NOT NULL DEFAULT 0"),
+            ("trailing_candle", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in position_columns:
+                db.execute(f"ALTER TABLE paper_positions ADD COLUMN {column} {definition}")
         db.execute(
             """INSERT OR IGNORE INTO paper_position_lots
                (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
@@ -359,7 +371,7 @@ def _close_position(db, position,
         trade_side = "SELL"
     cost_basis = float(position["cost_usdt"])
     loss_pct = (pnl / cost_basis * 100.0) if cost_basis > 0 else 0.0
-    if reason == "DRAWDOWN_0_5_PERCENT":
+    if reason in ("DRAWDOWN_0_5_PERCENT", "ATR_TRAILING_STOP") and loss_pct < 0:
         blocked_until = _now().timestamp() + _LOSS_COOLDOWN_SECONDS
         db.execute(
             """INSERT INTO paper_loss_cooldowns
@@ -401,7 +413,8 @@ def _open_position(db, exchange: str, asset: dict[str, Any], reason: str) -> boo
     symbol = str(asset.get("symbol") or "")
     try:
         price = float(asset.get("price") or 0)
-        atr = float(asset.get("atr_14_1d") or asset.get("atr_14") or 0)
+        atr = float(asset.get("atr_14_1h") or 0)
+        candle_time = str(asset.get("atr_candle_time") or "")
     except (TypeError, ValueError):
         return False
     if not symbol or price <= 0 or atr <= 0:
@@ -411,17 +424,18 @@ def _open_position(db, exchange: str, asset: dict[str, Any], reason: str) -> boo
         return False
     cash = float(db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()["cash"])
     ticket = min(100.0, cash)
-    stop, target = price - 1.5 * atr, price + 3.0 * atr
-    if ticket < 10 or stop <= 0:
+    stop, target = price - 1.5 * atr, 0.0
+    if ticket < 10 or stop <= 0 or not candle_time:
         return False
     quantity = ticket / (price * (1.0 + _FEE_RATE))
     gross, fee = quantity * price, quantity * price * _FEE_RATE
     cost = gross + fee
     db.execute("""INSERT INTO paper_positions
         (exchange, symbol, quantity, cost_usdt, entry_price, stop_loss,
-         take_profit, last_price, opened_at, peak_price, direction)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'LONG')""",
-        (exchange, symbol, quantity, cost, price, stop, target, price, _now(), price))
+         take_profit, last_price, opened_at, peak_price, direction,
+         initial_risk, atr_14_1h, trailing_stage, trailing_candle)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'LONG', ?, ?, 0, ?)""",
+        (exchange, symbol, quantity, cost, price, stop, target, price, _now(), price, 1.5 * atr, atr, candle_time))
     db.execute("UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1", (cost, _now()))
     db.execute("""INSERT INTO paper_position_lots
         (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
@@ -586,7 +600,8 @@ def _open_short_position(db, exchange: str, asset: dict[str, Any], reason: str) 
     symbol = str(asset.get("symbol") or "")
     try:
         price = float(asset.get("price") or 0)
-        atr = float(asset.get("atr_14_1d") or asset.get("atr_14") or 0)
+        atr = float(asset.get("atr_14_1h") or 0)
+        candle_time = str(asset.get("atr_candle_time") or "")
     except (TypeError, ValueError):
         return False
     if not symbol or price <= 0 or atr <= 0:
@@ -596,17 +611,18 @@ def _open_short_position(db, exchange: str, asset: dict[str, Any], reason: str) 
         return False
     cash = float(db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()["cash"])
     ticket = min(100.0, cash)
-    stop, target = price + 1.5 * atr, price - 3.0 * atr
-    if ticket < 10 or target <= 0:
+    stop, target = price + 1.5 * atr, 0.0
+    if ticket < 10 or atr <= 0 or not candle_time:
         return False
     quantity = ticket / (price * (1.0 + _FEE_RATE))
     gross, fee = quantity * price, quantity * price * _FEE_RATE
     reserve = gross + fee
     db.execute("""INSERT INTO paper_positions
         (exchange, symbol, quantity, cost_usdt, entry_price, stop_loss,
-         take_profit, last_price, opened_at, direction, peak_price)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SHORT', ?)""",
-        (exchange, symbol, quantity, reserve, price, stop, target, price, _now(), price))
+         take_profit, last_price, opened_at, direction, peak_price,
+         initial_risk, atr_14_1h, trailing_stage, trailing_candle)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SHORT', ?, ?, ?, 0, ?)""",
+        (exchange, symbol, quantity, reserve, price, stop, target, price, _now(), price, 1.5 * atr, atr, candle_time))
     db.execute("UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1", (reserve, _now()))
     db.execute("""INSERT INTO paper_position_lots
         (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
@@ -721,17 +737,35 @@ def _apply_market_data(
             else:
                 net_pnl = quantity * price * (1.0 - _FEE_RATE) - cost
             loss_pct = (net_pnl / cost * 100.0) if cost > 0 else 0.0
-            target = float(current["take_profit"] or 0)
-            atr_target_hit = (target > 0 and
-                              (price >= target if direction == "LONG" else price <= target))
-            if loss_pct <= -0.5:
-                _close_position(db, current, price, "DRAWDOWN_0_5_PERCENT")
-            elif atr_target_hit:
-                _close_position(db, current, price, "ATR_TAKE_PROFIT_RR_1_2")
-            elif change_pct >= 10.0:
-                _close_position(db, current, price,
-                                "TAKE_PROFIT_10_REBUY" if direction == "LONG" else "SHORT_TAKE_PROFIT_10")
-            elif direction == "LONG":
+            initial_risk = float(current["initial_risk"] or 0)
+            atr_1h = float(asset.get("atr_14_1h") or current["atr_14_1h"] or 0)
+            candle_time = str(asset.get("atr_candle_time") or "")
+            stop = float(current["stop_loss"] or 0)
+            if stop > 0 and (price <= stop if direction == "LONG" else price >= stop):
+                _close_position(db, current, price, "ATR_TRAILING_STOP")
+                continue
+            # Recalculate only when a new completed 1H candle is available.
+            previous_candle = str(current["trailing_candle"] or "")
+            if initial_risk > 0 and atr_1h > 0 and candle_time and candle_time != previous_candle:
+                favorable = (price - entry) if direction == "LONG" else (entry - price)
+                r_multiple = favorable / initial_risk
+                stage = int(current["trailing_stage"] or 0)
+                extreme = float(current["peak_price"] or entry)
+                extreme = max(extreme, price) if direction == "LONG" else min(extreme, price)
+                candidate, new_stage = stop, stage
+                if r_multiple >= 3.0:
+                    candidate = extreme - 1.5 * atr_1h if direction == "LONG" else extreme + 1.5 * atr_1h
+                    new_stage = 3
+                elif r_multiple >= 2.0:
+                    candidate = extreme - 2.0 * atr_1h if direction == "LONG" else extreme + 2.0 * atr_1h
+                    new_stage = max(stage, 2)
+                elif r_multiple >= 1.5:
+                    candidate, new_stage = entry, max(stage, 1)
+                tightened = max(stop, candidate) if direction == "LONG" else min(stop, candidate)
+                db.execute("""UPDATE paper_positions SET stop_loss=?, peak_price=?, atr_14_1h=?,
+                    trailing_stage=?, trailing_candle=? WHERE exchange=? AND symbol=?""",
+                    (tightened, extreme, atr_1h, new_stage, candle_time, exchange, position["symbol"]))
+            if direction == "LONG":
                 _manage_long_scale(db, current, price)
             else:
                 _manage_short_scale(db, current, price)
@@ -752,7 +786,7 @@ def _apply_market_data(
                 break
             try:
                 price = float(asset.get("price") or 0)
-                atr = float(asset.get("atr_14_1d") or asset.get("atr_14") or 0)
+                atr = float(asset.get("atr_14_1h") or 0)
                 ma20 = float(asset.get("ma20") or asset.get("ema20") or 0)
                 ma50 = float(asset.get("ma50") or 0)
                 daily_open = float(asset.get("daily_open") or 0)
@@ -762,7 +796,8 @@ def _apply_market_data(
             if (asset.get("trade_ready") is not True or not asset.get("symbol")
                     or _is_stablecoin_pair(str(asset.get("symbol")))
                     or price <= 0 or atr <= 0 or daily_open <= 0
-                    or volume <= 50_000_000 or str(asset.get("atr_timeframe") or "") != "1D"):
+                    or volume <= 50_000_000 or str(asset.get("atr_timeframe") or "") != "1H"
+                    or not asset.get("atr_candle_time")):
                 continue
             cooldown = db.execute("SELECT blocked_until FROM paper_loss_cooldowns WHERE exchange=? AND symbol=?",
                                   (exchange, str(asset["symbol"]))).fetchone()
