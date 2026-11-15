@@ -12,7 +12,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 BASE = "https://api.bybit.com"
 CACHE_TTL = 45
-MIN_PAPER_VOLUME_24H = 5_000_000
+MIN_PAPER_VOLUME_24H = 3_000_000
 MAX_PAPER_VOLUME_24H = 40_000_000
 _NAME_CACHE_TTL = 21600
 _name_cache: tuple[float, dict[str, str]] = (0.0, {})
@@ -251,7 +251,7 @@ async def scan_bybit(
             }
             all_tickers = tickers_data.get("list", [])
             # BTC is a market benchmark, not a trade candidate: do not apply
-            # the 5–40M USDT candidate liquidity band to BTC market context.
+            # the 3–40M USDT candidate liquidity band to BTC market context.
             btc = next((x for x in all_tickers if x.get("symbol") == "BTCUSDT"), None)
             tickers = [
                 x for x in all_tickers
