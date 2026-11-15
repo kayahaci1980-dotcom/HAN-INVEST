@@ -201,6 +201,7 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "/api/v3/klines",
             {"symbol": symbol, "interval": "1d", "limit": 20},
         )
+        daily_open = float(daily_candles[-1][1]) if daily_candles else 0.0
         daily_closed = daily_candles[:-1]
         daily_closes = [float(row[4]) for row in daily_closed if len(row) > 5]
         daily_highs = [float(row[2]) for row in daily_closed if len(row) > 5]
@@ -276,6 +277,7 @@ async def _analyze_symbol(client: httpx.AsyncClient, ticker: dict, pair_info: di
             "volume_confirmed": volume_confirmed,
             "atr_14": round(atr_14, 8),
             "atr_14_1d": round(atr_14, 8),
+            "daily_open": daily_open,
             "atr_14_1h": round(atr_14_1h, 8),
             "atr_timeframe": "1D",
             "entry_price": round(entry_price, 8) if entry_price is not None else None,
