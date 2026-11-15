@@ -547,6 +547,13 @@ def _manage_long_scale(db, position, price: float) -> None:
             "UPDATE paper_positions SET peak_price=? WHERE exchange=? AND symbol=?",
             (peak, position["exchange"], position["symbol"]),
         )
+    # Reload so a newly reset pullback ladder is used even when no add-on can be bought.
+    position = db.execute(
+        "SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
+        (position["exchange"], position["symbol"]),
+    ).fetchone()
+    if position is None:
+        return
 
     # Add milestones remain anchored to the original purchase price.
     next_add = int(position["next_add_level"] if "next_add_level" in position.keys() else 1)
