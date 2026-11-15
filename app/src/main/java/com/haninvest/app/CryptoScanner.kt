@@ -45,6 +45,26 @@ class CryptoScanner(private val context: Context) {
         if (value.isNaN() || value.isInfinite()) "—"
         else String.format(Locale.US, "%,.${digits}f", value)
 
+    private fun formatBishkekTime(value: String?): String {
+        if (value.isNullOrBlank() || value == "null") return "—"
+        val patterns = listOf(
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+            "yyyy-MM-dd'T'HH:mm:ssXXX",
+            "yyyy-MM-dd HH:mm:ss"
+        )
+        for (pattern in patterns) {
+            try {
+                val parser = java.text.SimpleDateFormat(pattern, Locale.US)
+                parser.timeZone = java.util.TimeZone.getTimeZone("UTC")
+                val date = parser.parse(value) ?: continue
+                val formatter = java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", Locale("ru", "RU"))
+                formatter.timeZone = java.util.TimeZone.getTimeZone("Asia/Bishkek")
+                return formatter.format(date)
+            } catch (_: Exception) { }
+        }
+        return value
+    }
+
     private fun rounded(color: Int, radius: Int = 14) = GradientDrawable().apply {
         setColor(color)
         cornerRadius = dp(radius).toFloat()
@@ -384,6 +404,52 @@ class CryptoScanner(private val context: Context) {
                     val remoteError = remote.optString("last_error", "")
                     if (remoteError.isNotBlank() && remoteError != "null") {
                         content.addView(label("Ошибка сканирования: $remoteError", 11f, Color.RED))
+                    }
+                }
+                if (remote != null) {
+                    content.addView(label("ИСТОРИЯ СЕРВЕРНЫХ СДЕЛОК", 14f, dark, true))
+                    val serverHistory = remote.optJSONArray("history") ?: JSONArray()
+                    if (serverHistory.length() == 0) {
+                        content.addView(label("Пока нет записей о сделках.", 12f, muted))
+                    } else {
+                        for (i in 0 until serverHistory.length()) {
+                            val trade = serverHistory.optJSONObject(i) ?: continue
+                            val side = trade.optString("side", "—")
+                            val symbol = trade.optString("symbol", "—")
+                            val exchange = trade.optString("exchange", "—")
+                            val direction = if (side.startsWith("SHORT")) "SHORT" else "LONG"
+                            val openedAt = formatBishkekTime(trade.optString("opened_at", ""))
+                            val closedAt = formatBishkekTime(trade.optString("closed_at", ""))
+                            val pnl = if (trade.isNull("pnl_usdt")) null else trade.optDouble("pnl_usdt")
+                            val reasonLabel = trade.optString("close_reason_label", "")
+                            val eventTime = formatBishkekTime(trade.optString("time", ""))
+                            val entry = LinearLayout(context).apply {
+                                orientation = LinearLayout.VERTICAL
+                                setPadding(dp(9), dp(8), dp(9), dp(8))
+                                background = rounded(page, 10)
+                            }
+                            entry.addView(label("$symbol • $exchange • $direction", 13f, dark, true))
+                            entry.addView(label("Открытие: $openedAt", 11f, muted))
+                            if (closedAt != "—") {
+                                entry.addView(label("Закрытие: $closedAt", 11f, muted))
+                                val closeReason = if (reasonLabel.isBlank()) trade.optString("reason", "—") else reasonLabel
+                                entry.addView(label("Причина: $closeReason", 11f, dark))
+                            } else if (side == "BUY" || side == "SHORT_OPEN") {
+                                entry.addView(label("Статус события: открытие / добавление позиции", 11f, muted))
+                            } else {
+                                entry.addView(label("Время события: $eventTime • " + trade.optString("reason", "—"), 11f, muted))
+                            }
+                            if (pnl != null) {
+                                entry.addView(label(
+                                    "Результат: " + formatNumber(pnl, 2) + " USDT",
+                                    12f, if (pnl >= 0) Color.rgb(20,145,90) else Color.RED, true
+                                ))
+                            }
+                            content.addView(entry)
+                            content.addView(View(context).apply {
+                                layoutParams = LinearLayout.LayoutParams(1, dp(6))
+                            })
+                        }
                     }
                 }
                 if (serverPaperError != null) {
