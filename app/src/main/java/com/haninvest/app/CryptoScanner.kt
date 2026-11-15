@@ -112,7 +112,15 @@ class CryptoScanner(private val context: Context) {
             background = rounded(card)
             elevation = dp(2).toFloat()
         }
-        panel.addView(label("РАСЧЁТ РАЗМЕРА ПОЗИЦИИ", 13f, muted, true))
+        panel.addView(label("БАЛАНС PAPER", 14f, blue, true))
+        val totalBalanceValue = label("Загрузка…", 19f, dark, true)
+        val remainingValue = label("Остаток средств: —", 13f, dark, true)
+        val profitValue = label("Прибыль: —", 13f, Color.rgb(20, 190, 110), true)
+        val lossValue = label("Убыток: —", 13f, Color.rgb(235, 90, 90), true)
+        panel.addView(totalBalanceValue)
+        panel.addView(remainingValue)
+        panel.addView(profitValue)
+        panel.addView(lossValue)
         val capitalInput = EditText(context).apply {
             hint = "Ваш капитал в USDT"
             setText("100")
@@ -127,12 +135,6 @@ class CryptoScanner(private val context: Context) {
             textSize = 14f
             setSingleLine(true)
         }
-        panel.addView(capitalInput)
-        panel.addView(riskInput)
-        panel.addView(label(
-            "По умолчанию риск 1% капитала. Только Spot, без кредитного плеча.",
-            12f, muted
-        ))
 
         val tabs = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -168,6 +170,19 @@ class CryptoScanner(private val context: Context) {
         var serverPaperLoading = false
         lateinit var refreshPaperServer: () -> Unit
         lateinit var togglePaperServer: (Boolean) -> Unit
+        fun updateAccountSummary(state: JSONObject?) {
+            if (state == null) {
+                totalBalanceValue.text = "Общий баланс: —"
+                remainingValue.text = "Остаток средств: —"
+                profitValue.text = "Прибыль: —"
+                lossValue.text = "Убыток: —"
+                return
+            }
+            totalBalanceValue.text = "Общий баланс: " + formatNumber(state.optDouble("equity_usdt"), 2) + " USDT"
+            remainingValue.text = "Остаток средств: " + formatNumber(state.optDouble("cash_usdt"), 2) + " USDT"
+            profitValue.text = "Прибыль: +" + formatNumber(state.optDouble("profit_usdt"), 2) + " USDT"
+            lossValue.text = "Убыток: -" + formatNumber(state.optDouble("loss_usdt"), 2) + " USDT"
+        }
         fun savePaper() {
             paperPrefs.edit().putFloat("cash_usdt", paperCash.toFloat())
                 .putString("positions", paperPositions.toString())
@@ -1032,6 +1047,7 @@ class CryptoScanner(private val context: Context) {
                     Handler(Looper.getMainLooper()).post {
                         serverPaperState = state
                         serverPaperError = error
+                        updateAccountSummary(state)
                         serverPaperLoading = false
                         render()
                     }
@@ -1070,12 +1086,21 @@ class CryptoScanner(private val context: Context) {
                     Handler(Looper.getMainLooper()).post {
                         serverPaperState = state ?: serverPaperState
                         serverPaperError = error
+                        updateAccountSummary(serverPaperState)
                         serverPaperLoading = false
                         render()
                     }
                 }.start()
             }
         }
+
+        val accountRefresh = Button(context).apply {
+            text = "Обновить баланс PAPER"
+            buttonStyle(this, Color.rgb(20, 145, 90))
+            setOnClickListener { refreshPaperServer() }
+        }
+        panel.addView(accountRefresh)
+        updateAccountSummary(serverPaperState)
 
         fun loadAll() {
             capital = capitalInput.text.toString().trim().toDoubleOrNull() ?: 0.0
@@ -1156,6 +1181,7 @@ class CryptoScanner(private val context: Context) {
             }
         })
         loadAll()
+        refreshPaperServer()
         return section
     }
 }
