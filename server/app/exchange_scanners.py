@@ -93,7 +93,9 @@ async def _coinbase_scan(limit: int, min_volume: float) -> dict[str, Any]:
                     hourly_response.raise_for_status()
                     daily_response.raise_for_status()
                     hourly = sorted(hourly_response.json(), key=lambda x: x[0])[:-1]
-                    daily = sorted(daily_response.json(), key=lambda x: x[0])[:-1]
+                    daily_all = sorted(daily_response.json(), key=lambda x: x[0])
+                    daily_open = float(daily_all[-1][3]) if daily_all else 0.0
+                    daily = daily_all[:-1]
                     if len(hourly) < 51 or len(daily) < 15:
                         return None
                     closes = [float(x[4]) for x in hourly]
@@ -120,7 +122,7 @@ async def _coinbase_scan(limit: int, min_volume: float) -> dict[str, Any]:
                         "change_24h_pct": round((price / float(stats.get("open") or price) - 1) * 100, 2),
                         "score": int(metrics["score"]), "signal": "WATCH",
                         "trade_ready": True, "exchange_pair_verified": True,
-                        "pair_status": "online", "atr_14": atr, "atr_14_1d": atr,
+                        "pair_status": "online", "atr_14": atr, "atr_14_1d": atr, "daily_open": daily_open,
                         "atr_timeframe": "1D", "ma20": metrics["ma20"], "ma50": metrics["ma50"],
                         "momentum_6h_pct": metrics["momentum_6h_pct"],
                         "momentum_24h_pct": metrics["momentum_24h_pct"],
@@ -234,7 +236,9 @@ async def _okx_scan(limit: int, min_volume: float) -> dict[str, Any]:
                     hourly = list(reversed(hdata.get("data", [])))
                     daily = list(reversed(ddata.get("data", [])))
                     hourly = [x for x in hourly if len(x) > 8 and x[8] == "1"][-60:]
-                    daily = [x for x in daily if len(x) > 8 and x[8] == "1"][-20:]
+                    daily_all = [x for x in daily if len(x) > 8 and x[8] in ("0", "1")][-20:]
+                    daily_open = float(daily_all[-1][1]) if daily_all else 0.0
+                    daily = [x for x in daily_all if x[8] == "1"][-20:]
                     if len(hourly) < 51 or len(daily) < 15:
                         return None
                     closes = [float(x[4]) for x in hourly]
@@ -262,7 +266,7 @@ async def _okx_scan(limit: int, min_volume: float) -> dict[str, Any]:
                         "change_24h_pct": round((price / open24 - 1) * 100, 2) if open24 else 0,
                         "score": int(metrics["score"]), "signal": "WATCH",
                         "trade_ready": True, "exchange_pair_verified": True,
-                        "pair_status": "live", "atr_14": atr, "atr_14_1d": atr,
+                        "pair_status": "live", "atr_14": atr, "atr_14_1d": atr, "daily_open": daily_open,
                         "atr_timeframe": "1D", "ma20": metrics["ma20"], "ma50": metrics["ma50"],
                         "momentum_6h_pct": metrics["momentum_6h_pct"],
                         "momentum_24h_pct": metrics["momentum_24h_pct"],
