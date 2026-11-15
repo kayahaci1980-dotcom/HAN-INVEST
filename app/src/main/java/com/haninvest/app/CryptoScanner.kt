@@ -146,6 +146,8 @@ class CryptoScanner(private val context: Context) {
             isFillViewport = true
             addView(content)
         }
+        var selectedTab = "HOME"
+        lateinit var render: () -> Unit
         val floatingDialog = Dialog(context)
         val floatingRoot = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -198,8 +200,6 @@ class CryptoScanner(private val context: Context) {
         section.addView(panel)
         section.addView(openSections)
 
-        var selectedTab = "HOME"
-        lateinit var render: () -> Unit
         val paperPrefs = context.getSharedPreferences("han_invest_paper", Context.MODE_PRIVATE)
         var paperCash = paperPrefs.getFloat("cash_usdt", 1000f).toDouble()
         var paperPositions = try { JSONObject(paperPrefs.getString("positions", "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
