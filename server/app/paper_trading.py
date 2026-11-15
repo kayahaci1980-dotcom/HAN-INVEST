@@ -87,6 +87,20 @@ def _init_db() -> None:
                 (_INITIAL_CASH, _INITIAL_CASH, _now()),
             )
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS direction TEXT NOT NULL DEFAULT 'LONG'")
+            db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS next_add_level INTEGER NOT NULL DEFAULT 1")
+            db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS next_reduce_level INTEGER NOT NULL DEFAULT 1")
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS paper_position_lots (
+                    exchange TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    lot_index INTEGER NOT NULL,
+                    quantity DOUBLE PRECISION NOT NULL,
+                    cost_usdt DOUBLE PRECISION NOT NULL,
+                    entry_price DOUBLE PRECISION NOT NULL,
+                    opened_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (exchange, symbol, lot_index)
+                )"""
+            )
             db.execute(
                 """CREATE TABLE IF NOT EXISTS paper_loss_cooldowns (
                     exchange TEXT NOT NULL,
@@ -95,6 +109,17 @@ def _init_db() -> None:
                     loss_pct DOUBLE PRECISION NOT NULL,
                     PRIMARY KEY (exchange, symbol)
                 )"""
+            )
+            db.execute(
+                """INSERT INTO paper_position_lots
+                   (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
+                   SELECT p.exchange, p.symbol, 0, p.quantity, p.cost_usdt, p.entry_price, p.opened_at
+                   FROM paper_positions p
+                   WHERE UPPER(COALESCE(p.direction, 'LONG'))='LONG'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM paper_position_lots l
+                       WHERE l.exchange=p.exchange AND l.symbol=p.symbol
+                     )"""
             )
         return
 
@@ -142,10 +167,35 @@ def _init_db() -> None:
             loss_pct REAL NOT NULL,
             PRIMARY KEY (exchange, symbol)
         );
+        CREATE TABLE IF NOT EXISTS paper_position_lots (
+            exchange TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            lot_index INTEGER NOT NULL,
+            quantity REAL NOT NULL,
+            cost_usdt REAL NOT NULL,
+            entry_price REAL NOT NULL,
+            opened_at TEXT NOT NULL,
+            PRIMARY KEY (exchange, symbol, lot_index)
+        );
         """)
         position_columns = {row[1] for row in db.execute("PRAGMA table_info(paper_positions)").fetchall()}
         if "direction" not in position_columns:
             db.execute("ALTER TABLE paper_positions ADD COLUMN direction TEXT NOT NULL DEFAULT 'LONG'")
+        if "next_add_level" not in position_columns:
+            db.execute("ALTER TABLE paper_positions ADD COLUMN next_add_level INTEGER NOT NULL DEFAULT 1")
+        if "next_reduce_level" not in position_columns:
+            db.execute("ALTER TABLE paper_positions ADD COLUMN next_reduce_level INTEGER NOT NULL DEFAULT 1")
+        db.execute(
+            """INSERT OR IGNORE INTO paper_position_lots
+               (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
+               SELECT p.exchange, p.symbol, 0, p.quantity, p.cost_usdt, p.entry_price, p.opened_at
+               FROM paper_positions p
+               WHERE UPPER(COALESCE(p.direction, 'LONG'))='LONG'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM paper_position_lots l
+                   WHERE l.exchange=p.exchange AND l.symbol=p.symbol
+                 )"""
+        )
         db.execute(
             """INSERT OR IGNORE INTO paper_account
                (id, initial_cash, cash, enabled, updated_at)
@@ -265,7 +315,7 @@ def _close_position(db, position,
         trade_side = "SELL"
     cost_basis = float(position["cost_usdt"])
     loss_pct = (pnl / cost_basis * 100.0) if cost_basis > 0 else 0.0
-    if loss_pct <= -2.0:
+    if direction == "LONG" and reason == "DRAWDOWN_0_5_PERCENT":
         blocked_until = _now().timestamp() + _LOSS_COOLDOWN_SECONDS
         db.execute(
             """INSERT INTO paper_loss_cooldowns
@@ -291,6 +341,10 @@ def _close_position(db, position,
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (_now(), position["exchange"], position["symbol"], trade_side, price,
          quantity, gross, fee, pnl, reason),
+    )
+    db.execute(
+        "DELETE FROM paper_position_lots WHERE exchange=? AND symbol=?",
+        (position["exchange"], position["symbol"]),
     )
     db.execute(
         "DELETE FROM paper_positions WHERE exchange=? AND symbol=?",
@@ -353,12 +407,150 @@ def _open_position(db, exchange: str,
         (total_cost, _now()),
     )
     db.execute(
+        """INSERT INTO paper_position_lots
+           (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
+           VALUES (?, ?, 0, ?, ?, ?, ?)""",
+        (exchange, symbol, quantity, total_cost, price, _now()),
+    )
+    db.execute(
         """INSERT INTO paper_trades
            (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
            VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?, NULL, ?)""",
         (_now(), exchange, symbol, price, quantity, gross, fee, reason),
     )
     return True
+
+
+
+def _add_scale_lot(db, position, price: float) -> bool:
+    """Buy one add-on tranche equal to the original entry tranche."""
+    exchange, symbol = position["exchange"], position["symbol"]
+    base = db.execute(
+        """SELECT cost_usdt FROM paper_position_lots
+           WHERE exchange=? AND symbol=? AND lot_index=0""",
+        (exchange, symbol),
+    ).fetchone()
+    if not base:
+        return False
+    tranche_cost = float(base["cost_usdt"])
+    account = db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()
+    if tranche_cost <= 0 or float(account["cash"]) + 1e-8 < tranche_cost:
+        return False
+    quantity = tranche_cost / (price * (1.0 + _FEE_RATE))
+    gross = quantity * price
+    fee = gross * _FEE_RATE
+    actual_cost = gross + fee
+    latest = db.execute(
+        """SELECT COALESCE(MAX(lot_index), 0) AS n FROM paper_position_lots
+           WHERE exchange=? AND symbol=?""",
+        (exchange, symbol),
+    ).fetchone()
+    lot_index = int(latest["n"]) + 1
+    db.execute(
+        """INSERT INTO paper_position_lots
+           (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (exchange, symbol, lot_index, quantity, actual_cost, price, _now()),
+    )
+    db.execute(
+        """UPDATE paper_positions
+           SET quantity=quantity+?, cost_usdt=cost_usdt+?, last_price=?,
+               next_add_level=next_add_level+1
+           WHERE exchange=? AND symbol=?""",
+        (quantity, actual_cost, price, exchange, symbol),
+    )
+    db.execute(
+        "UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1",
+        (actual_cost, _now()),
+    )
+    db.execute(
+        """INSERT INTO paper_trades
+           (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
+           VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?, NULL, ?)""",
+        (_now(), exchange, symbol, price, quantity, gross, fee,
+         "SCALE_IN_PLUS_{}_PERCENT".format(int(position["next_add_level"]))),
+    )
+    return True
+
+
+def _reduce_latest_scale_lot(db, position, price: float) -> bool:
+    """Sell only the most recently added tranche; the base lot is never reduced."""
+    exchange, symbol = position["exchange"], position["symbol"]
+    lot = db.execute(
+        """SELECT * FROM paper_position_lots
+           WHERE exchange=? AND symbol=? AND lot_index>0
+           ORDER BY lot_index DESC LIMIT 1""",
+        (exchange, symbol),
+    ).fetchone()
+    if not lot:
+        return False
+    quantity = float(lot["quantity"])
+    cost = float(lot["cost_usdt"])
+    gross = quantity * price
+    fee = gross * _FEE_RATE
+    proceeds = gross - fee
+    pnl = proceeds - cost
+    account = db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()
+    db.execute(
+        "UPDATE paper_account SET cash=cash+?, updated_at=? WHERE id=1",
+        (proceeds, _now()),
+    )
+    db.execute(
+        """UPDATE paper_positions
+           SET quantity=quantity-?, cost_usdt=cost_usdt-?, last_price=?,
+               next_reduce_level=next_reduce_level+1
+           WHERE exchange=? AND symbol=?""",
+        (quantity, cost, price, exchange, symbol),
+    )
+    db.execute(
+        "DELETE FROM paper_position_lots WHERE exchange=? AND symbol=? AND lot_index=?",
+        (exchange, symbol, lot["lot_index"]),
+    )
+    db.execute(
+        """INSERT INTO paper_trades
+           (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
+           VALUES (?, ?, ?, 'SELL', ?, ?, ?, ?, ?, ?)""",
+        (_now(), exchange, symbol, price, quantity, gross, fee, pnl,
+         "SCALE_OUT_PULLBACK_{}_PERCENT".format(int(position["next_reduce_level"]))),
+    )
+    return True
+
+
+def _manage_long_scale(db, position, price: float) -> None:
+    """Apply the 0.5% portfolio stop first, then 1% scale milestones from base entry."""
+    entry = float(position["entry_price"])
+    if entry <= 0 or price <= 0:
+        return
+    quantity = float(position["quantity"])
+    cost = float(position["cost_usdt"])
+    net_liquidation = quantity * price * (1.0 - _FEE_RATE)
+    loss_pct = ((net_liquidation - cost) / cost * 100.0) if cost > 0 else 0.0
+    if loss_pct <= -0.5:
+        _close_position(db, position, price, "DRAWDOWN_0_5_PERCENT")
+        return
+
+    # Milestones are anchored to the original purchase price and advanced once.
+    next_add = int(position["next_add_level"] if "next_add_level" in position.keys() else 1)
+    while price >= entry * (1.0 + next_add / 100.0):
+        if not _add_scale_lot(db, position, price):
+            break
+        next_add += 1
+        position = db.execute(
+            "SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
+            (position["exchange"], position["symbol"]),
+        ).fetchone()
+
+    next_reduce = int(position["next_reduce_level"] if "next_reduce_level" in position.keys() else 1)
+    while price <= entry * (1.0 - next_reduce / 100.0):
+        if not _reduce_latest_scale_lot(db, position, price):
+            break
+        next_reduce += 1
+        position = db.execute(
+            "SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
+            (position["exchange"], position["symbol"]),
+        ).fetchone()
+        if position is None:
+            break
 
 
 def _open_short_position(db, exchange: str, asset: dict[str, Any], reason: str) -> bool:
@@ -448,12 +640,25 @@ def _apply_market_data(
                 elif change_pct <= -2.0:
                     _close_position(db, position, price, "SHORT_STOP_LOSS_2")
             else:
-                if change_pct >= 10.0:
-                    _close_position(db, position, price, "TAKE_PROFIT_10_REBUY")
+                # The hard portfolio stop has priority over score and scale rules.
+                current = db.execute(
+                    "SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
+                    (exchange, position["symbol"]),
+                ).fetchone()
+                if current is None:
+                    continue
+                quantity = float(current["quantity"])
+                cost = float(current["cost_usdt"])
+                net_liquidation = quantity * price * (1.0 - _FEE_RATE)
+                loss_pct = ((net_liquidation - cost) / cost * 100.0) if cost > 0 else 0.0
+                if loss_pct <= -0.5:
+                    _close_position(db, current, price, "DRAWDOWN_0_5_PERCENT")
+                elif change_pct >= 10.0:
+                    _close_position(db, current, price, "TAKE_PROFIT_10_REBUY")
                 elif score <= 82:
-                    _close_position(db, position, price, "SCORE_AT_OR_BELOW_82")
-                elif change_pct <= -2.0:
-                    _close_position(db, position, price, "DRAWDOWN_2_PERCENT")
+                    _close_position(db, current, price, "SCORE_AT_OR_BELOW_82")
+                else:
+                    _manage_long_scale(db, current, price)
 
         # Market breadth blocks only new entries. Position exits above always run.
         if not allow_new_entries and not allow_short_entries:

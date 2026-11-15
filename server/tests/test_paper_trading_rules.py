@@ -45,9 +45,12 @@ class PaperTradingRuleTests(unittest.TestCase):
 
     def seed_position(self):
         with paper._connect() as db:
+            # Open with normal ATR sizing, then top up the isolated test account
+            # so it can exercise multiple equal-sized add-on tranches.
             self.assertTrue(
                 paper._open_position(db, "Bybit", self.asset(), "TEST_SEED")
             )
+            db.execute("UPDATE paper_account SET cash=5000 WHERE id=1")
 
     def test_score_83_opens_position(self):
         paper._apply_market_data("Bybit", {"assets": [self.asset(83)]}, True)
@@ -80,6 +83,73 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.assertLessEqual(remaining, 10_800)
         paper._apply_market_data("Bybit", {"assets": [self.asset(90, 100.0)]}, True)
         self.assertEqual(len(self.positions()), 0)
+
+
+    def test_adds_equal_initial_tranches_at_each_one_percent_milestone_once(self):
+        self.seed_position()
+        for price in (101.0, 102.0, 103.0):
+            paper._apply_market_data("Bybit", {"assets": [self.asset(83, price)]}, False)
+        with paper._connect() as db:
+            lots = db.execute(
+                "SELECT * FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT' ORDER BY lot_index"
+            ).fetchall()
+            position = db.execute(
+                "SELECT * FROM paper_positions WHERE exchange='Bybit' AND symbol='BTCUSDT'"
+            ).fetchone()
+            trades_before = db.execute(
+                "SELECT COUNT(*) AS n FROM paper_trades WHERE reason LIKE 'SCALE_IN_%'"
+            ).fetchone()["n"]
+        self.assertEqual(len(lots), 4)
+        self.assertAlmostEqual(float(lots[1]["cost_usdt"]), float(lots[0]["cost_usdt"]), places=6)
+        self.assertAlmostEqual(float(lots[2]["cost_usdt"]), float(lots[0]["cost_usdt"]), places=6)
+        self.assertAlmostEqual(float(lots[3]["cost_usdt"]), float(lots[0]["cost_usdt"]), places=6)
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 103.0)]}, False)
+        with paper._connect() as db:
+            trades_after = db.execute(
+                "SELECT COUNT(*) AS n FROM paper_trades WHERE reason LIKE 'SCALE_IN_%'"
+            ).fetchone()["n"]
+        self.assertEqual(trades_before, trades_after)
+        self.assertEqual(int(position["next_add_level"]), 4)
+
+    def test_hard_stop_at_half_percent_closes_position_and_starts_three_hour_cooldown(self):
+        self.seed_position()
+        stop_price = 100.0 * 1.001 * 0.995 / 0.999
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, stop_price)]}, False)
+        self.assertEqual(len(self.positions()), 0)
+        cooldown = self.cooldown()
+        self.assertIsNotNone(cooldown)
+        self.assertAlmostEqual(float(cooldown["loss_pct"]), -0.5, places=5)
+        remaining = float(cooldown["blocked_until"]) - paper._now().timestamp()
+        self.assertGreater(remaining, 10_700)
+        self.assertLessEqual(remaining, 10_800)
+
+    def test_partial_reduction_sells_only_latest_add_on_lot(self):
+        self.seed_position()
+        with paper._connect() as db:
+            position = db.execute(
+                "SELECT * FROM paper_positions WHERE exchange='Bybit' AND symbol='BTCUSDT'"
+            ).fetchone()
+            self.assertTrue(paper._add_scale_lot(db, position, 101.0))
+            position = db.execute(
+                "SELECT * FROM paper_positions WHERE exchange='Bybit' AND symbol='BTCUSDT'"
+            ).fetchone()
+            base_quantity = float(db.execute(
+                "SELECT quantity FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT' AND lot_index=0"
+            ).fetchone()["quantity"])
+            add_quantity = float(db.execute(
+                "SELECT quantity FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT' AND lot_index=1"
+            ).fetchone()["quantity"])
+            self.assertTrue(paper._reduce_latest_scale_lot(db, position, 101.5))
+            remaining = db.execute(
+                "SELECT quantity FROM paper_positions WHERE exchange='Bybit' AND symbol='BTCUSDT'"
+            ).fetchone()
+            remaining_lots = db.execute(
+                "SELECT COUNT(*) AS n FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT'"
+            ).fetchone()["n"]
+        self.assertAlmostEqual(float(remaining["quantity"]), base_quantity, places=8)
+        self.assertEqual(int(remaining_lots), 1)
+        self.assertGreater(add_quantity, 0)
+
 
 
 if __name__ == "__main__":
