@@ -473,7 +473,7 @@ async def _scan_coinpaprika(client: httpx.AsyncClient, limit: int, min_volume: f
 @router.get("/api/v1/crypto/scan")
 async def scan_crypto(
     limit: int = Query(30, ge=5, le=500),
-    universe_limit: int = Query(100, ge=30, le=500),
+    universe_limit: int = Query(500, ge=30, le=500),
     min_volume: float = Query(1_000_000, ge=0),
     capital_usdt: float | None = Query(None, gt=0),
     risk_pct: float = Query(1.0, ge=0.1, le=5.0),
@@ -567,7 +567,9 @@ async def scan_crypto(
                         }
                 except (httpx.HTTPError, ValueError, TypeError, IndexError, KeyError):
                     logger.warning("Could not calculate BTC market filter")
-            selected = eligible[:universe_limit]
+            # Always analyze up to 500 candidates; the response limit controls display only.
+            universe_limit = min(500, max(30, universe_limit))
+            selected = eligible[:500]
             results = await asyncio.gather(
                 *[_analyze_symbol(client, item, spot_pairs[item.get("symbol", "")],
                                   capital_usdt, risk_pct, fee_rate,
