@@ -17,6 +17,22 @@ from app.exchange_scanners import scan_coinbase, scan_okx
 from app.market_breadth import get_market_breadth
 
 logger = logging.getLogger(__name__)
+
+# Stablecoin base assets are excluded from directional PAPER trading.
+_STABLECOIN_BASES = {
+    "USDT", "USDC", "USDE", "USDS", "DAI", "FDUSD", "TUSD", "USDP",
+    "PYUSD", "USD1", "RLUSD", "UST", "USTC", "EURC", "EURI", "USDD",
+    "FRAX", "USDX", "GUSD", "XAUT", "PAXG",
+}
+
+def _is_stablecoin_pair(symbol: str) -> bool:
+    clean = str(symbol or "").upper().replace("-", "").replace("/", "").replace("_", "")
+    for quote in ("USDT", "USDC", "USD"):
+        if clean.endswith(quote):
+            base = clean[:-len(quote)]
+            return base in _STABLECOIN_BASES
+    return clean in _STABLECOIN_BASES
+
 router = APIRouter(prefix="/api/v1/paper", tags=["paper-trading"])
 
 # Supabase PostgreSQL is the durable store. SQLite remains a local/test fallback only.
@@ -744,6 +760,7 @@ def _apply_market_data(
             except (TypeError, ValueError):
                 continue
             if (asset.get("trade_ready") is not True or not asset.get("symbol")
+                    or _is_stablecoin_pair(str(asset.get("symbol")))
                     or price <= 0 or atr <= 0 or daily_open <= 0
                     or volume <= 50_000_000 or str(asset.get("atr_timeframe") or "") != "1D"):
                 continue
