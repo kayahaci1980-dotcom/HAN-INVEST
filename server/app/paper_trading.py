@@ -244,11 +244,16 @@ def _account_snapshot() -> dict[str, Any]:
         if direction == "SHORT":
             # Calculate short PnL per lot: add-ons can have different entry prices.
             lots = lots_by_position.get((position["exchange"], position["symbol"]), [])
-            opening_fee = sum(max(0.0, float(lot["cost_usdt"]) -
-                                  float(lot["entry_price"]) * float(lot["quantity"]))
-                              for lot in lots)
-            gross_pnl = sum((float(lot["entry_price"]) - price) * float(lot["quantity"])
-                            for lot in lots)
+            if lots:
+                opening_fee = sum(max(0.0, float(lot["cost_usdt"]) -
+                                      float(lot["entry_price"]) * float(lot["quantity"]))
+                                  for lot in lots)
+                gross_pnl = sum((float(lot["entry_price"]) - price) * float(lot["quantity"])
+                                for lot in lots)
+            else:
+                # Backward-compatible fallback for legacy positions without lot rows.
+                opening_fee = max(0.0, cost - entry * quantity)
+                gross_pnl = (entry - price) * quantity
             closing_fee = price * quantity * _FEE_RATE
             market_value = cost + gross_pnl - opening_fee - closing_fee
             unrealized = gross_pnl - opening_fee - closing_fee
@@ -319,11 +324,15 @@ def _close_position(db, position,
             "SELECT quantity, cost_usdt, entry_price FROM paper_position_lots WHERE exchange=? AND symbol=?",
             (position["exchange"], position["symbol"]),
         ).fetchall()
-        opening_fee = sum(max(0.0, float(lot["cost_usdt"]) -
-                              float(lot["entry_price"]) * float(lot["quantity"]))
-                          for lot in lots)
-        gross_pnl = sum((float(lot["entry_price"]) - price) * float(lot["quantity"])
-                        for lot in lots)
+        if lots:
+            opening_fee = sum(max(0.0, float(lot["cost_usdt"]) -
+                                  float(lot["entry_price"]) * float(lot["quantity"]))
+                              for lot in lots)
+            gross_pnl = sum((float(lot["entry_price"]) - price) * float(lot["quantity"])
+                            for lot in lots)
+        else:
+            opening_fee = max(0.0, float(position["cost_usdt"]) - entry * quantity)
+            gross_pnl = (entry - price) * quantity
         pnl = gross_pnl - opening_fee - fee
         cash_release = float(position["cost_usdt"]) + pnl
         trade_side = "SHORT_COVER"
