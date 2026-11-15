@@ -70,7 +70,7 @@ class CryptoScanner(private val context: Context) {
         }
         section.addView(label("₿ Криптосканер HAN INVEST", 21f, dark, true))
         section.addView(label(
-            "В разделе Рынок LIVE анализируются только Bybit и Coinbase Exchange.",
+            "В разделе Рынок LIVE анализируются Binance, Bybit, Coinbase Exchange и OKX.",
             13f, muted
         ))
 
@@ -116,9 +116,9 @@ class CryptoScanner(private val context: Context) {
             isFillViewport = true
             addView(content)
         }
-        val status = label("Загрузка данных Bybit и Coinbase Exchange...", 14f, dark)
+        val status = label("Загрузка данных четырёх бирж...", 14f, dark)
         val refresh = Button(context).apply {
-            text = "Обновить обе биржи"
+            text = "Обновить все 4 биржи"
             buttonStyle(this, blue)
         }
         panel.addView(status)
@@ -620,11 +620,11 @@ class CryptoScanner(private val context: Context) {
             } else {
             val y = bybit
             val c = coinbase
-            if (y == null || c == null) {
-                content.addView(label("Ожидаем ответы Bybit и Coinbase Exchange.\n${status.text}", 14f, muted))
+            val b = binance
+            val o = okx
+            if (y == null || c == null || b == null || o == null) {
+                content.addView(label("Ожидаем ответы четырёх бирж.\n${status.text}", 14f, muted))
             } else {
-            val b = ExchangeResult("Binance", "Отключена в Рынок LIVE", 0, 0, "—", false, emptyList(), "Биржа отключена в этом разделе")
-            val o = ExchangeResult("OKX", "Отключена в Рынок LIVE", 0, 0, "—", false, emptyList(), "Биржа отключена в этом разделе")
             val maxRisk = capital * risk / 100.0
             if (selectedTab == "HOME" || selectedTab == "MARKET" || selectedTab == "ANALYSIS") {
                 marketContext?.let { context ->
@@ -665,7 +665,7 @@ class CryptoScanner(private val context: Context) {
                     }
                 }
                 content.addView(label(
-                    "Сравнение Bybit и Coinbase Exchange. В рейтинге учитывается оценка, а не порядок ответа API.",
+                    "Сравнение Binance, Bybit, Coinbase Exchange и OKX. В рейтинге учитывается оценка, а не порядок ответа API.",
                     12f, muted
                 ))
                 val combined = mutableListOf<Pair<JSONObject, ExchangeResult>>()
@@ -1035,24 +1035,40 @@ class CryptoScanner(private val context: Context) {
             // Keep the last successful snapshot visible while the next refresh is running.
             marketContext = null
             fetchMarketContext()
-            loadingCount = 2
-            status.text = "Загружаем Bybit и Coinbase Exchange независимо..."
+            loadingCount = 4
+            status.text = "Загружаем Binance, Bybit, Coinbase Exchange и OKX независимо..."
             render()
+            fun exchangeDone(exchange: String, result: ExchangeResult) {
+                when (exchange) {
+                    "Binance" -> binance = result
+                    "Bybit" -> bybit = result
+                    "Coinbase Exchange" -> coinbase = result
+                    "OKX" -> okx = result
+                }
+                loadingCount--
+                status.text = if (loadingCount == 0) {
+                    val results = listOfNotNull(binance, bybit, coinbase, okx)
+                    "Обновление завершено: " + results.joinToString(" • ") {
+                        if (it.error == null) "${it.exchange}: ${it.assets.size}" else "${it.exchange}: ошибка"
+                    }
+                } else "Получены данные ${4 - loadingCount} из 4 бирж..."
+                render()
+            }
+            fetchExchange("Binance",
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/scan?limit=500&universe_limit=500&min_volume=1000000&capital_usdt=$capital&risk_pct=$risk") {
+                exchangeDone("Binance", it)
+            }
             fetchExchange("Bybit",
                 "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=1000&min_volume=100000&capital_usdt=$capital&risk_pct=$risk") {
-                bybit = it
-                loadingCount--
-                status.text = if (loadingCount == 0) "Данные Bybit и Coinbase Exchange обновлены."
-                    else "Bybit получен. Загружается Coinbase Exchange..."
-                render()
+                exchangeDone("Bybit", it)
             }
             fetchExchange("Coinbase Exchange",
                 "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=1000&min_volume=100000") {
-                coinbase = it
-                loadingCount--
-                status.text = if (loadingCount == 0) "Данные Bybit и Coinbase Exchange обновлены."
-                    else "Coinbase Exchange загружается..."
-                render()
+                exchangeDone("Coinbase Exchange", it)
+            }
+            fetchExchange("OKX",
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/okx/scan?limit=500&min_volume=100000") {
+                exchangeDone("OKX", it)
             }
         }
 

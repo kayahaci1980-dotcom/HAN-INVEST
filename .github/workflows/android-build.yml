@@ -8,6 +8,7 @@ on:
       - auto-paper-rules-coinbase-okx
       - fix/test-render-paper-accounting
       - feat/atr-pro-volume-50m-100m
+      - fix/four-exchange-live-market
     paths:
       - "app/**"
       - "server/**"
