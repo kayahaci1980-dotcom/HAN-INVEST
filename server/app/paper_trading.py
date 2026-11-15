@@ -43,7 +43,11 @@ _INITIAL_CASH = 1000.0
 _FEE_RATE = 0.001
 _RISK_PCT = 1.0
 _MAX_POSITIONS = 10
-_LOSS_COOLDOWN_SECONDS = 3 * 60 * 60
+_STOP_LOSS_COOLDOWN_SECONDS = 4 * 60 * 60
+_TAKE_PROFIT_COOLDOWN_SECONDS = 1 * 60 * 60
+_TRAILING_STOP_COOLDOWN_SECONDS = 2 * 60 * 60
+_CONSECUTIVE_LOSSES_COOLDOWN_SECONDS = 8 * 60 * 60
+_GLOBAL_COOLDOWN_SYMBOL = "__GLOBAL__"
 _SCAN_INTERVAL_SECONDS = max(60, int(os.getenv("PAPER_SCAN_INTERVAL_SECONDS", "60")))
 _worker_task: asyncio.Task | None = None
 _scan_requested = asyncio.Event()
@@ -371,8 +375,13 @@ def _close_position(db, position,
         trade_side = "SELL"
     cost_basis = float(position["cost_usdt"])
     loss_pct = (pnl / cost_basis * 100.0) if cost_basis > 0 else 0.0
-    if reason in ("DRAWDOWN_0_5_PERCENT", "ATR_TRAILING_STOP") and loss_pct < 0:
-        blocked_until = _now().timestamp() + _LOSS_COOLDOWN_SECONDS
+    cooldown_seconds = {
+        "STOP_LOSS": _STOP_LOSS_COOLDOWN_SECONDS,
+        "TAKE_PROFIT": _TAKE_PROFIT_COOLDOWN_SECONDS,
+        "TRAILING_STOP": _TRAILING_STOP_COOLDOWN_SECONDS,
+    }.get(reason, 0)
+    if cooldown_seconds:
+        blocked_until = _now().timestamp() + cooldown_seconds
         db.execute(
             """INSERT INTO paper_loss_cooldowns
                (exchange, symbol, blocked_until, loss_pct)
@@ -382,10 +391,8 @@ def _close_position(db, position,
                    loss_pct=excluded.loss_pct""",
             (position["exchange"], position["symbol"], blocked_until, loss_pct),
         )
-        logger.info(
-            "Loss cooldown started for %s on %s: %.2f%%; 3 hours",
-            position["symbol"], position["exchange"], loss_pct,
-        )
+        logger.info("%s cooldown started for %s on %s: %s seconds",
+                    reason, position["symbol"], position["exchange"], cooldown_seconds)
     account = db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()
     db.execute(
         "UPDATE paper_account SET cash=?, updated_at=? WHERE id=1",
@@ -398,6 +405,20 @@ def _close_position(db, position,
         (_now(), position["exchange"], position["symbol"], trade_side, price,
          quantity, gross, fee, pnl, reason),
     )
+    recent_closes = db.execute(
+        "SELECT pnl_usdt FROM paper_trades WHERE pnl_usdt IS NOT NULL ORDER BY id DESC LIMIT 2"
+    ).fetchall()
+    if len(recent_closes) == 2 and all(float(row["pnl_usdt"]) < 0 for row in recent_closes):
+        global_until = _now().timestamp() + _CONSECUTIVE_LOSSES_COOLDOWN_SECONDS
+        db.execute(
+            """INSERT INTO paper_loss_cooldowns
+               (exchange, symbol, blocked_until, loss_pct)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT (exchange, symbol) DO UPDATE SET
+                   blocked_until=excluded.blocked_until, loss_pct=excluded.loss_pct""",
+            ("ALL", _GLOBAL_COOLDOWN_SYMBOL, global_until, loss_pct),
+        )
+        logger.warning("Two consecutive losing trades: global 8-hour entry pause")
     db.execute(
         "DELETE FROM paper_position_lots WHERE exchange=? AND symbol=?",
         (position["exchange"], position["symbol"]),
@@ -424,7 +445,7 @@ def _open_position(db, exchange: str, asset: dict[str, Any], reason: str) -> boo
         return False
     cash = float(db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()["cash"])
     ticket = min(100.0, cash)
-    stop, target = price - 1.5 * atr, 0.0
+    stop, target = price - 1.5 * atr, price + 3.0 * atr
     if ticket < 10 or stop <= 0 or not candle_time:
         return False
     quantity = ticket / (price * (1.0 + _FEE_RATE))
@@ -555,10 +576,6 @@ def _manage_long_scale(db, position, price: float) -> None:
     cost = float(position["cost_usdt"])
     net_liquidation = quantity * price * (1.0 - _FEE_RATE)
     loss_pct = ((net_liquidation - cost) / cost * 100.0) if cost > 0 else 0.0
-    if loss_pct <= -0.5:
-        _close_position(db, position, price, "DRAWDOWN_0_5_PERCENT")
-        return
-
     peak = max(float(position["peak_price"] or entry), price)
     db.execute(
         "UPDATE paper_positions SET peak_price=? WHERE exchange=? AND symbol=?",
@@ -611,7 +628,7 @@ def _open_short_position(db, exchange: str, asset: dict[str, Any], reason: str) 
         return False
     cash = float(db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()["cash"])
     ticket = min(100.0, cash)
-    stop, target = price + 1.5 * atr, 0.0
+    stop, target = price + 1.5 * atr, price - 3.0 * atr
     if ticket < 10 or atr <= 0 or not candle_time:
         return False
     quantity = ticket / (price * (1.0 + _FEE_RATE))
@@ -741,8 +758,13 @@ def _apply_market_data(
             atr_1h = float(asset.get("atr_14_1h") or current["atr_14_1h"] or 0)
             candle_time = str(asset.get("atr_candle_time") or "")
             stop = float(current["stop_loss"] or 0)
+            target = float(current["take_profit"] or 0)
+            if target > 0 and (price >= target if direction == "LONG" else price <= target):
+                _close_position(db, current, price, "TAKE_PROFIT")
+                continue
             if stop > 0 and (price <= stop if direction == "LONG" else price >= stop):
-                _close_position(db, current, price, "ATR_TRAILING_STOP")
+                stop_reason = "TRAILING_STOP" if int(current["trailing_stage"] or 0) > 0 else "STOP_LOSS"
+                _close_position(db, current, price, stop_reason)
                 continue
             # Track the high/low of the latest completed 1H candle on every scan.
             previous_candle = str(current["trailing_candle"] or "")
@@ -778,6 +800,13 @@ def _apply_market_data(
         if not allow_new_entries and not allow_short_entries:
             return
 
+        global_cooldown = db.execute(
+            "SELECT blocked_until FROM paper_loss_cooldowns WHERE exchange=? AND symbol=?",
+            ("ALL", _GLOBAL_COOLDOWN_SYMBOL),
+        ).fetchone()
+        if global_cooldown and float(global_cooldown["blocked_until"]) > _now().timestamp():
+            logger.info("New entries paused globally after two consecutive losses")
+            return
         current_positions = db.execute("SELECT COUNT(*) AS n FROM paper_positions").fetchone()["n"]
         if current_positions >= _MAX_POSITIONS:
             return
