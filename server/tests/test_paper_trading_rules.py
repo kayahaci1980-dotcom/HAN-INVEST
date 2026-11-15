@@ -123,32 +123,57 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.assertGreater(remaining, 10_700)
         self.assertLessEqual(remaining, 10_800)
 
-    def test_partial_reduction_sells_only_latest_add_on_lot(self):
+    def test_automatic_partial_reduction_triggers_on_one_percent_pullback_from_peak(self):
         self.seed_position()
+        # Add one tranche at +1%, then make a smaller fresh high below +2%.
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 101.0)]}, False)
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 101.5)]}, False)
         with paper._connect() as db:
-            position = db.execute(
-                "SELECT * FROM paper_positions WHERE exchange='Bybit' AND symbol='BTCUSDT'"
-            ).fetchone()
-            self.assertTrue(paper._add_scale_lot(db, position, 101.0))
-            position = db.execute(
-                "SELECT * FROM paper_positions WHERE exchange='Bybit' AND symbol='BTCUSDT'"
-            ).fetchone()
             base_quantity = float(db.execute(
                 "SELECT quantity FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT' AND lot_index=0"
             ).fetchone()["quantity"])
             add_quantity = float(db.execute(
                 "SELECT quantity FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT' AND lot_index=1"
             ).fetchone()["quantity"])
-            self.assertTrue(paper._reduce_latest_scale_lot(db, position, 101.5))
+        # A 1% pullback from the high is above the -0.5% whole-position stop.
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 100.485)]}, False)
+        with paper._connect() as db:
+            lots = db.execute(
+                "SELECT * FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT' ORDER BY lot_index"
+            ).fetchall()
             remaining = db.execute(
-                "SELECT quantity FROM paper_positions WHERE exchange='Bybit' AND symbol='BTCUSDT'"
+                "SELECT * FROM paper_positions WHERE exchange='Bybit' AND symbol='BTCUSDT'"
             ).fetchone()
-            remaining_lots = db.execute(
-                "SELECT COUNT(*) AS n FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT'"
+            sale = db.execute(
+                "SELECT * FROM paper_trades WHERE reason LIKE 'SCALE_OUT_PULLBACK_%' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(len(lots), 1)
+        self.assertEqual(int(lots[0]["lot_index"]), 0)
+        self.assertAlmostEqual(float(lots[0]["quantity"]), base_quantity, places=8)
+        self.assertAlmostEqual(float(sale["quantity"]), add_quantity, places=8)
+        self.assertIsNotNone(remaining)
+        self.assertAlmostEqual(float(remaining["peak_price"]), 101.5, places=8)
+
+    def test_pullback_ladder_sells_next_added_lot_at_each_one_percent_step(self):
+        self.seed_position()
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 101.0)]}, False)
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 102.0)]}, False)
+        # First pullback removes the +2% add-on.
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 100.98)]}, False)
+        # Re-add on a new +3% milestone; then another high at +4%.
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 103.0)]}, False)
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 104.0)]}, False)
+        # One percent below the new high sells only the most recent add-on lot.
+        paper._apply_market_data("Bybit", {"assets": [self.asset(83, 102.96)]}, False)
+        with paper._connect() as db:
+            lots = db.execute(
+                "SELECT lot_index FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT' ORDER BY lot_index"
+            ).fetchall()
+            sales = db.execute(
+                "SELECT COUNT(*) AS n FROM paper_trades WHERE reason LIKE 'SCALE_OUT_PULLBACK_%'"
             ).fetchone()["n"]
-        self.assertAlmostEqual(float(remaining["quantity"]), base_quantity, places=8)
-        self.assertEqual(int(remaining_lots), 1)
-        self.assertGreater(add_quantity, 0)
+        self.assertEqual([int(x["lot_index"]) for x in lots], [0, 1, 2])
+        self.assertEqual(int(sales), 2)
 
 
 
