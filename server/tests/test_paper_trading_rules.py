@@ -31,6 +31,8 @@ class PaperTradingRuleTests(unittest.TestCase):
             "atr_14": 1.0,
             "score": score,
             "trade_ready": True,
+            "ma20": 99.0,
+            "ma50": 98.0,
         }
 
     def positions(self):
@@ -52,25 +54,14 @@ class PaperTradingRuleTests(unittest.TestCase):
             )
             db.execute("UPDATE paper_account SET cash=5000 WHERE id=1")
 
-    def test_score_83_opens_position(self):
-        paper._apply_market_data("Bybit", {"assets": [self.asset(83)]}, True)
+    def test_low_score_does_not_block_long_entry(self):
+        paper._apply_market_data("Bybit", {"assets": [self.asset(1)]}, True)
         self.assertEqual(len(self.positions()), 1)
 
-    def test_score_82_does_not_open_position(self):
-        paper._apply_market_data("Bybit", {"assets": [self.asset(82)]}, True)
-        self.assertEqual(len(self.positions()), 0)
-
-    def test_existing_position_holds_at_83_and_closes_at_82(self):
+    def test_score_change_does_not_close_existing_position(self):
         self.seed_position()
-        paper._apply_market_data("Bybit", {"assets": [self.asset(83)]}, False)
+        paper._apply_market_data("Bybit", {"assets": [self.asset(1, 100.0)]}, False)
         self.assertEqual(len(self.positions()), 1)
-        paper._apply_market_data("Bybit", {"assets": [self.asset(82)]}, False)
-        self.assertEqual(len(self.positions()), 0)
-        with paper._connect() as db:
-            trade = db.execute(
-                "SELECT reason FROM paper_trades WHERE side='SELL' ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-        self.assertEqual(trade["reason"], "SCORE_AT_OR_BELOW_82")
 
     def test_loss_of_two_percent_starts_three_hour_cooldown_and_blocks_rebuy(self):
         self.seed_position()
