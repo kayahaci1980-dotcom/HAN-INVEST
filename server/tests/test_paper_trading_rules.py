@@ -212,6 +212,20 @@ class PaperTradingRuleTests(unittest.TestCase):
             trade = db.execute("SELECT * FROM paper_trades WHERE side='SHORT_COVER' ORDER BY id DESC LIMIT 1").fetchone()
         self.assertEqual(trade["reason"], "ATR_TAKE_PROFIT_RR_1_2")
 
+    def test_stablecoin_pairs_are_excluded_from_new_entries(self):
+        for symbol in ("USDCUSDT", "USD1USDT", "USDTUSDT", "RLUSDUSDT", "USDC-USD"):
+            with self.subTest(symbol=symbol):
+                self.assertTrue(paper._is_stablecoin_pair(symbol))
+        for symbol in ("BTCUSDT", "ETHUSDT", "APTUSDT", "SOLUSDT"):
+            with self.subTest(symbol=symbol):
+                self.assertFalse(paper._is_stablecoin_pair(symbol))
+
+    def test_stablecoin_candidate_does_not_open_position(self):
+        asset = self.asset(1, 100.0)
+        asset["symbol"] = "USDCUSDT"
+        paper._apply_market_data("Bybit", {"assets": [asset]}, True)
+        self.assertEqual(len(self.positions()), 0)
+
     def test_volume_must_be_strictly_above_fifty_million(self):
         asset = self.asset(1, 100.0)
         asset["quote_volume_24h"] = 50_000_000
