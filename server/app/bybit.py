@@ -249,11 +249,14 @@ async def scan_bybit(
                 x.get("symbol"): x for x in instruments_data.get("list", [])
                 if x.get("quoteCoin") == "USDT" and x.get("status") == "Trading"
             }
+            all_tickers = tickers_data.get("list", [])
+            # BTC is a market benchmark, not a trade candidate: do not apply
+            # the 5–40M USDT candidate liquidity band to BTC market context.
+            btc = next((x for x in all_tickers if x.get("symbol") == "BTCUSDT"), None)
             tickers = [
-                x for x in tickers_data.get("list", [])
+                x for x in all_tickers
                 if x.get("symbol") in instruments and max(min_volume, MIN_PAPER_VOLUME_24H) <= float(x.get("turnover24h") or 0) <= MAX_PAPER_VOLUME_24H
             ]
-            btc = next((x for x in tickers if x.get("symbol") == "BTCUSDT"), None)
             btc_change_24h_pct = float(btc.get("price24hPcnt") or 0) * 100 if btc else 0.0
             btc_state = "UNKNOWN"
             btc_info = {"available": False, "buy_allowed": False, "market_state": "UNKNOWN"}
