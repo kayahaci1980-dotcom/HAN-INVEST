@@ -672,20 +672,27 @@ class CryptoScanner(private val context: Context) {
                                     setPadding(dp(9), dp(8), dp(9), dp(8))
                                     background = rounded(page, 10)
                                 }
-                                entry.addView(label("$symbol • $exchange • $direction", 13f, dark, true))
-                                entry.addView(label("Открытие: $openedAt", 11f, muted))
-                                if (closedAt != "—") {
-                                    entry.addView(label("Закрытие: $closedAt", 11f, muted))
-                                    val closeReason = if (reasonLabel.isBlank()) trade.optString("reason", "—") else reasonLabel
-                                    entry.addView(label("Причина: $closeReason", 11f, dark))
-                                } else if (side == "BUY" || side == "SHORT_OPEN") {
-                                    entry.addView(label("Статус события: открытие / добавление позиции", 11f, muted))
-                                } else {
-                                    entry.addView(label("Время события: $eventTime • " + trade.optString("reason", "—"), 11f, muted))
-                                }
+                                val eventLabel = trade.optString("event_label", when (side) {
+                                    "BUY" -> "ПОКУПКА"
+                                    "SELL" -> "ПРОДАЖА"
+                                    "SHORT_OPEN" -> "ОТКРЫТИЕ SHORT"
+                                    "SHORT_COVER" -> "ЗАКРЫТИЕ SHORT"
+                                    else -> side
+                                })
+                                val price = trade.optDouble("price", 0.0)
+                                val quantity = trade.optDouble("quantity", 0.0)
+                                entry.addView(label("$eventLabel • $symbol • $exchange • $direction", 13f,
+                                    if (side == "BUY" || side == "SHORT_OPEN") Color.rgb(20,145,90) else Color.rgb(190,75,55), true))
+                                entry.addView(label("Цена: " + formatNumber(price, 8) +
+                                    " USDT • Количество: " + formatNumber(quantity, 6), 11f, dark))
+                                entry.addView(label("Событие: $eventTime", 11f, muted))
+                                if (openedAt != "—") entry.addView(label("Открытие позиции: $openedAt", 11f, muted))
+                                if (closedAt != "—") entry.addView(label("Закрытие позиции: $closedAt", 11f, muted))
+                                val closeReason = if (reasonLabel.isBlank()) trade.optString("reason", "—") else reasonLabel
+                                entry.addView(label("Причина: $closeReason", 11f, muted))
                                 if (pnl != null) {
                                     entry.addView(label(
-                                        "Результат: " + formatNumber(pnl, 2) + " USDT",
+                                        "Результат сделки: " + formatNumber(pnl, 2) + " USDT",
                                         12f, if (pnl >= 0) Color.rgb(20,145,90) else Color.RED, true
                                     ))
                                 }
