@@ -5,6 +5,7 @@ on:
     branches:
       - feature/paper-scale-in-0-5-stop
       - feat/atr-pro-volume-50m-100m
+      - diagnostics/paper-entry-filters
     paths:
       - "server/app/paper_trading.py"
       - "server/tests/test_paper_trading_rules.py"
