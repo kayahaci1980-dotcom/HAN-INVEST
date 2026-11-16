@@ -77,19 +77,51 @@ class PaperTradingRuleTests(unittest.TestCase):
         paper._apply_market_data("Bybit", {"assets": [self.asset(1, 100.0)]}, False)
         self.assertEqual(len(self.positions()), 1)
 
-    def test_initial_long_stop_is_one_point_five_hourly_atr(self):
+    def test_initial_long_stop_caps_net_loss_at_one_percent_including_fees(self):
         self.seed_position()
-        position = self.positions()[0]
-        self.assertAlmostEqual(float(position["stop_loss"]), 98.5, places=6)
+        with paper._connect() as db:
+            position = db.execute("SELECT * FROM paper_positions").fetchone()
+            stop = paper._loss_limit_stop_price(db, position)
+            self.assertAlmostEqual(float(position["stop_loss"]), 98.5, places=6)
+            self.assertAlmostEqual(stop, 99.198, places=2)
         self.assertAlmostEqual(float(position["initial_risk"]), 1.5, places=6)
         self.assertEqual(float(position["take_profit"]), 0.0)
 
-    def test_initial_short_stop_is_one_point_five_hourly_atr(self):
+    def test_initial_short_stop_caps_net_loss_at_one_percent_including_fees(self):
         self.seed_position("SHORT")
-        position = self.positions()[0]
-        self.assertAlmostEqual(float(position["stop_loss"]), 101.5, places=6)
+        with paper._connect() as db:
+            position = db.execute("SELECT * FROM paper_positions").fetchone()
+            stop = paper._loss_limit_stop_price(db, position)
+            self.assertAlmostEqual(float(position["stop_loss"]), 101.5, places=6)
+            self.assertAlmostEqual(stop, 100.8, places=2)
         self.assertAlmostEqual(float(position["initial_risk"]), 1.5, places=6)
         self.assertEqual(float(position["take_profit"]), 0.0)
+
+    def test_long_position_closes_at_one_percent_net_loss_including_fees(self):
+        self.seed_position()
+        with paper._connect() as db:
+            position = db.execute("SELECT * FROM paper_positions").fetchone()
+            stop = paper._loss_limit_stop_price(db, position)
+        paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                 position_prices={"BTCUSDT": stop})
+        self.assertEqual(len(self.positions()), 0)
+        with paper._connect() as db:
+            trade = db.execute("SELECT * FROM paper_trades WHERE pnl_usdt IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(trade["reason"], "STOP_LOSS")
+        self.assertAlmostEqual(float(trade["pnl_usdt"]) / 100.0, -0.01, places=5)
+
+    def test_short_position_closes_at_one_percent_net_loss_including_fees(self):
+        self.seed_position("SHORT")
+        with paper._connect() as db:
+            position = db.execute("SELECT * FROM paper_positions").fetchone()
+            stop = paper._loss_limit_stop_price(db, position)
+        paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                 position_prices={"BTCUSDT": stop})
+        self.assertEqual(len(self.positions()), 0)
+        with paper._connect() as db:
+            trade = db.execute("SELECT * FROM paper_trades WHERE side='SHORT_COVER' ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(trade["reason"], "STOP_LOSS")
+        self.assertAlmostEqual(float(trade["pnl_usdt"]) / 100.0, -0.01, places=5)
 
     def test_long_trailing_moves_to_breakeven_at_one_point_five_r(self):
         self.seed_position()
