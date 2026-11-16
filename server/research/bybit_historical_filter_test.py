@@ -216,8 +216,11 @@ async def main() -> None:
     common = set.intersection(*(set(c.start for c in rows) for rows in history.values()))
     if len(common) < 100:
         raise RuntimeError("Недостаточно общих часовых свечей для корректного сравнения")
-    aligned = {s: [next(c for c in rows if c.start == ts) for ts in sorted(common)]
-               for s, rows in history.items()}
+    aligned = {}
+    ordered_times = sorted(common)
+    for symbol, rows in history.items():
+        by_time = {c.start: c for c in rows}
+        aligned[symbol] = [by_time[ts] for ts in ordered_times]
     report = [simulate_variant(aligned, mode, floor)
               for mode in ("STRICT", "FLEX") for floor in ATR_FLOORS]
     output = Path(args.output)
