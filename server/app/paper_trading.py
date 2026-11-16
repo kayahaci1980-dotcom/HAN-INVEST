@@ -903,25 +903,48 @@ def _apply_market_data(
                 score = float(asset.get("score") or 0)
             except (TypeError, ValueError):
                 continue
-            if (asset.get("trade_ready") is not True or not asset.get("symbol")
-                    or _is_stablecoin_pair(str(asset.get("symbol")))
-                    or score < 60
-                    or price <= 0 or atr <= 0 or daily_open <= 0
-                    or not (3_000_000 <= volume <= 40_000_000) or str(asset.get("atr_timeframe") or "") != "1H"
-                    or not asset.get("atr_candle_time")):
+            symbol = str(asset.get("symbol") or "")
+            rejects = []
+            if asset.get("trade_ready") is not True: rejects.append("trade_ready=false")
+            if not symbol: rejects.append("symbol_missing")
+            if symbol and _is_stablecoin_pair(symbol): rejects.append("stablecoin_pair")
+            if score < 60: rejects.append(f"score_below_60:{score:g}")
+            if price <= 0: rejects.append("price_missing")
+            if atr <= 0: rejects.append("atr_missing")
+            if daily_open <= 0: rejects.append("daily_open_missing")
+            if not (3_000_000 <= volume <= 40_000_000): rejects.append(f"volume_outside_3m_40m:{volume:g}")
+            if str(asset.get("atr_timeframe") or "") != "1H": rejects.append("atr_timeframe_not_1H")
+            if not asset.get("atr_candle_time"): rejects.append("atr_candle_time_missing")
+            if rejects:
+                logger.info("PAPER candidate %s rejected: %s", symbol or "UNKNOWN", ",".join(rejects))
                 continue
             cooldown = db.execute("SELECT blocked_until FROM paper_loss_cooldowns WHERE exchange=? AND symbol=?",
-                                  (exchange, str(asset["symbol"]))).fetchone()
+                                  (exchange, symbol)).fetchone()
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
+                logger.info("PAPER candidate %s rejected: cooldown_active", symbol)
                 continue
+            long_trend = ma20 > 0 and ma50 > 0 and price > ma20 > ma50
+            short_trend = ma20 > 0 and ma50 > 0 and price < ma20 < ma50
+            long_daily_ok = price < daily_open + 0.5 * atr
+            short_daily_ok = price > daily_open - 0.5 * atr
             opened = False
-            if (allow_new_entries and ma20 > 0 and ma50 > 0 and price > ma20 > ma50
-                    and price < daily_open + 0.5 * atr):
+            if allow_new_entries and long_trend and long_daily_ok:
                 opened = _open_position(db, exchange, asset, "AUTO_LONG_ATR_PRO_RR_1_2")
-            elif (allow_short_entries and ma20 > 0 and ma50 > 0 and price < ma20 < ma50
-                    and price > daily_open - 0.5 * atr):
+                if not opened:
+                    logger.info("PAPER LONG %s passed filters but sizing/entry rejected", symbol)
+            elif allow_short_entries and short_trend and short_daily_ok:
                 opened = _open_short_position(db, exchange, asset, "AUTO_SHORT_ATR_PRO_RR_1_2")
+                if not opened:
+                    logger.info("PAPER SHORT %s passed filters but sizing/entry rejected", symbol)
+            else:
+                reasons = []
+                if not long_trend: reasons.append("LONG_trend_price>MA20>MA50_not_met")
+                if not long_daily_ok: reasons.append("LONG_daily_open_guard")
+                if not short_trend: reasons.append("SHORT_trend_price<MA20<MA50_not_met")
+                if not short_daily_ok: reasons.append("SHORT_daily_open_guard")
+                logger.info("PAPER candidate %s no entry: %s", symbol, ",".join(reasons))
             if opened:
+                logger.info("PAPER opened %s", symbol)
                 current_positions += 1
 
 
@@ -962,7 +985,9 @@ async def _scan_cycle() -> None:
                 logger.warning("Market breadth unavailable; falling back to Bybit-only entry filters")
             else:
                 _last_market_breadth = dict(breadth_result)
-                allow_new_entries = breadth_result.get("allow_new_entries") is True
+                # Global market breadth is informational only. Each Bybit symbol
+                # must still pass its own direction-specific trend and risk filters.
+                allow_new_entries = breadth_result.get("available") is True
                 allow_short_entries = breadth_result.get("available") is True
                 logger.info(
                     "Market breadth %s: rising=%s falling=%s total=%s; new entries=%s",
