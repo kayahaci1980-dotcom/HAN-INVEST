@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from app import paper_trading as paper
@@ -130,15 +131,16 @@ class PaperTradingRuleTests(unittest.TestCase):
 
     def test_long_profit_trailing_closes_after_one_usdt_giveback_and_blocks_ten_minutes(self):
         self.seed_position("LONG")
-        paper._apply_market_data("Bybit", {"assets": []}, False, False,
-                                 position_prices={"BTCUSDT": 104.0})
-        position = self.positions()[0]
-        self.assertGreater(float(position["peak_profit_usdt"]), 3.0)
-        paper._apply_market_data("Bybit", {"assets": []}, False, False,
-                                 position_prices={"BTCUSDT": 103.5})
-        self.assertEqual(len(self.positions()), 1)
-        paper._apply_market_data("Bybit", {"assets": []}, False, False,
-                                 position_prices={"BTCUSDT": 102.9})
+        with patch.object(paper, "_manage_long_scale"):
+            paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                     position_prices={"BTCUSDT": 104.0})
+            position = self.positions()[0]
+            self.assertGreater(float(position["peak_profit_usdt"]), 3.0)
+            paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                     position_prices={"BTCUSDT": 103.5})
+            self.assertEqual(len(self.positions()), 1)
+            paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                     position_prices={"BTCUSDT": 102.9})
         self.assertEqual(len(self.positions()), 0)
         with paper._connect() as db:
             trade = db.execute(
@@ -152,15 +154,16 @@ class PaperTradingRuleTests(unittest.TestCase):
 
     def test_short_profit_trailing_closes_after_one_usdt_giveback_and_blocks_ten_minutes(self):
         self.seed_position("SHORT")
-        paper._apply_market_data("Bybit", {"assets": []}, False, False,
-                                 position_prices={"BTCUSDT": 96.0})
-        position = self.positions()[0]
-        self.assertGreater(float(position["peak_profit_usdt"]), 3.0)
-        paper._apply_market_data("Bybit", {"assets": []}, False, False,
-                                 position_prices={"BTCUSDT": 96.5})
-        self.assertEqual(len(self.positions()), 1)
-        paper._apply_market_data("Bybit", {"assets": []}, False, False,
-                                 position_prices={"BTCUSDT": 97.1})
+        with patch.object(paper, "_manage_short_scale"):
+            paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                     position_prices={"BTCUSDT": 96.0})
+            position = self.positions()[0]
+            self.assertGreater(float(position["peak_profit_usdt"]), 3.0)
+            paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                     position_prices={"BTCUSDT": 96.5})
+            self.assertEqual(len(self.positions()), 1)
+            paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                     position_prices={"BTCUSDT": 97.1})
         self.assertEqual(len(self.positions()), 0)
         with paper._connect() as db:
             trade = db.execute(
@@ -176,9 +179,11 @@ class PaperTradingRuleTests(unittest.TestCase):
         for direction, prices in (("LONG", (104.0, 103.5)), ("SHORT", (96.0, 96.5))):
             with self.subTest(direction=direction):
                 self.seed_position(direction)
-                for price in prices:
-                    paper._apply_market_data("Bybit", {"assets": []}, False, False,
-                                             position_prices={"BTCUSDT": price})
+                manager = "_manage_long_scale" if direction == "LONG" else "_manage_short_scale"
+                with patch.object(paper, manager):
+                    for price in prices:
+                        paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                                 position_prices={"BTCUSDT": price})
                 position = self.positions()[0]
                 self.assertGreater(float(position["peak_profit_usdt"]), 0.0)
                 with paper._connect() as db:
