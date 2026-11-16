@@ -297,8 +297,7 @@ class CryptoScanner(private val context: Context) {
                         orientation = LinearLayout.VERTICAL
                         setPadding(dp(18), dp(10), dp(18), dp(16))
                         background = rounded(Color.rgb(10, 17, 39), 18)
-                    }
-                    val dialogHeader = LinearLayout(context).apply {
+                    }                    val dialogHeader = LinearLayout(context).apply {
                         orientation = LinearLayout.HORIZONTAL
                         gravity = android.view.Gravity.CENTER_VERTICAL
                     }
@@ -425,6 +424,16 @@ class CryptoScanner(private val context: Context) {
                         "Результат: " + (if (trade.optDouble("pnl_usdt") >= 0) "+" else "") +
                             formatNumber(trade.optDouble("pnl_usdt"), 3) + " USDT"
                     content.addView(label("Цена: " + formatNumber(trade.optDouble("price"), 8) + " • " + pnlText, 12f, muted))
+                    val closedAt = trade.optString("closed_at", "")
+                    if (closedAt.isNotBlank() && closedAt != "null") {
+                        val closeReason = trade.optString(
+                            "close_reason_label",
+                            trade.optString("reason", "Причина не указана")
+                        )
+                        val closeTime = closedAt.replace("T", " ").removeSuffix("Z")
+                        content.addView(label("Причина закрытия: $closeReason", 12f, dark, true))
+                        content.addView(label("Время закрытия (UTC): $closeTime", 11f, muted))
+                    }
                 }
                 val reloadHistory = Button(context).apply { text = "Обновить историю"; buttonStyle(this, blue); setOnClickListener { refreshPaperServer() } }
                 content.addView(reloadHistory)
@@ -597,8 +606,7 @@ class CryptoScanner(private val context: Context) {
                 content.addView(label("Стартовый депозит $1 000 • комиссия 0,1% на каждую сторону", 12f, muted))
                 content.addView(label("ОТКРЫТЫЕ ПОЗИЦИИ", 14f, dark, true))
                 if (keys.isEmpty()) content.addView(label("Пока нет покупок. Автоматический серверный счёт работает отдельно от ручного тестового счёта.", 13f, muted))
-                keys.forEach { key ->
-                    val p = paperPositions.optJSONObject(key) ?: return@forEach
+                keys.forEach { key ->                    val p = paperPositions.optJSONObject(key) ?: return@forEach
                     val price = livePrices[key] ?: 0.0
                     val qty = p.optDouble("quantity", 0.0)
                     val value = qty * price
@@ -897,8 +905,7 @@ class CryptoScanner(private val context: Context) {
                             11f, dark, true
                         ))
                     }
-                    content.addView(paper)
-                }
+                    content.addView(paper)                }
                 content.addView(label(
                     "Bybit: ${if (y.error == null) y.assets.size.toString() else "ошибка"}",
                     12f, muted
