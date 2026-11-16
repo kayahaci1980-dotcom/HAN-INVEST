@@ -9,6 +9,7 @@ on:
       - fix/test-render-paper-accounting
       - feat/atr-pro-volume-50m-100m
       - feature/manual-buy-analysis-bybit-dark-ui
+      - feature/show-2m-price-change
     paths:
       - "app/**"
       - "server/**"

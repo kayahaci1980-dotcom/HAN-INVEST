@@ -267,12 +267,12 @@ class CryptoScanner(private val context: Context) {
                 "LONG: $longScore/100   |   SHORT: $shortScore/100",
                 12f, muted, true
             ))
-            val change24 = coin.optString("change_24h_pct", coin.optString("price_change_percent_24h", coin.optString("change_24h", "—")))
+            val change2m = coin.optString("change_2m_pct", "—")
             val rsi = coin.optString("rsi_14", coin.optString("rsi", "—"))
             val atrValue = coin.optString("atr_14", coin.optString("atr", "—"))
             val ema20 = coin.optString("ema20", coin.optString("ema_20", coin.optString("ma20", "—")))
             card.addView(label(
-                "Цена: ${if (price.isNaN()) "—" else formatNumber(price, 8)} USDT   •   24 ч.: $change24%",
+                "Цена: ${if (price.isNaN()) "—" else formatNumber(price, 8)} USDT   •   2 мин.: $change2m%",
                 13f, dark
             ))
             val metrics = LinearLayout(context).apply {
@@ -320,7 +320,7 @@ class CryptoScanner(private val context: Context) {
                     dialogContent.addView(label("Оценка: $score / 100", 16f, purple, true))
                     dialogContent.addView(label("Сигнал: $signalText", 13f, dark, true))
                     dialogContent.addView(label("Цена: ${if (price.isNaN()) "—" else formatNumber(price, 8)} USDT", 14f, dark))
-                    dialogContent.addView(label("Изменение за 24 часа: $change24%", 14f, dark))
+                    dialogContent.addView(label("Изменение за 2 минуты: $change2m%", 14f, dark))
                     dialogContent.addView(label("RSI (14): $rsi", 14f, dark))
                     dialogContent.addView(label("ATR (14): $atrValue", 14f, dark))
                     dialogContent.addView(label("EMA20: $ema20", 14f, dark))

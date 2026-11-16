@@ -111,6 +111,21 @@ async def analyze(
         if not math.isfinite(price) or price <= 0:
             return None
 
+        # Short-term price move for the Analysis card: current ticker price
+        # versus the close from two completed one-minute candles ago.
+        change_2m_pct = None
+        try:
+            short_result = await get_json(client, "/v5/market/kline", {
+                "category": "spot", "symbol": symbol, "interval": "1", "limit": "5"
+            })
+            short_rows = list(reversed(short_result.get("list", [])))
+            if len(short_rows) >= 3:
+                price_2m_ago = float(short_rows[-3][4])
+                if math.isfinite(price_2m_ago) and price_2m_ago > 0:
+                    change_2m_pct = round((price / price_2m_ago - 1) * 100, 2)
+        except Exception:
+            logger.warning("Could not calculate 2-minute price change for %s", symbol)
+
         ma20, ma50 = mean(closes[-20:]), mean(closes[-50:])
         change6 = (closes[-1] / closes[-7] - 1) * 100 if closes[-7] else 0.0
         change24_candles = (closes[-1] / closes[-25] - 1) * 100 if closes[-25] else 0.0
@@ -209,6 +224,7 @@ async def analyze(
         return {
             "symbol": symbol, "name": symbol[:-4], "exchange": "Bybit Spot",
             "source": "bybit", "price": price, "change_24h_pct": round(change24, 2),
+            "change_2m_pct": change_2m_pct,
             "momentum_6h_pct": round(change6, 2), "momentum_24h_pct": round(change24_candles, 2),
             "relative_strength_vs_btc_24h_pct": round(change24 - btc_change_24h_pct, 2),
             "quote_volume_24h": round(quote_volume, 2),
