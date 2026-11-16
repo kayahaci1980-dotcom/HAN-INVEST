@@ -297,7 +297,8 @@ class CryptoScanner(private val context: Context) {
                         orientation = LinearLayout.VERTICAL
                         setPadding(dp(18), dp(10), dp(18), dp(16))
                         background = rounded(Color.rgb(10, 17, 39), 18)
-                    }                    val dialogHeader = LinearLayout(context).apply {
+                    }
+                    val dialogHeader = LinearLayout(context).apply {
                         orientation = LinearLayout.HORIZONTAL
                         gravity = android.view.Gravity.CENTER_VERTICAL
                     }
