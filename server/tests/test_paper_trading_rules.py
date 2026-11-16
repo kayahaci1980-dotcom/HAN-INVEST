@@ -360,18 +360,18 @@ class PaperTradingRuleTests(unittest.TestCase):
                 self.assertFalse(paper._is_stablecoin_pair(symbol))
 
     def test_stablecoin_candidate_is_not_filtered_out(self):
-        asset = self.asset(1, 100.0, symbol="USDCUSDT")
+        asset = self.asset(80, 100.0, symbol="USDCUSDT")
         paper._apply_market_data("Bybit", {"assets": [asset]}, False, False)
         self.assertEqual(len(self.positions()), 1)
 
     def test_volume_minimum_three_million_has_no_upper_cap(self):
-        low_edge = self.asset(60, 100.0, symbol="EDGE3USDT", volume=3_000_000)
-        high_volume = self.asset(60, 100.0, symbol="HIGH40USDT", volume=40_000_001)
+        low_edge = self.asset(80, 100.0, symbol="EDGE3USDT", volume=3_000_000)
+        high_volume = self.asset(80, 100.0, symbol="HIGH40USDT", volume=40_000_001)
         paper._apply_market_data("Bybit", {"assets": [low_edge, high_volume]}, True)
         self.assertEqual(len(self.positions()), 2)
 
     def test_volume_below_three_million_is_not_excluded(self):
-        below = self.asset(60, 100.0, symbol="LOWUSDT", volume=2_999_999)
+        below = self.asset(80, 100.0, symbol="LOWUSDT", volume=2_999_999)
         paper._apply_market_data("Bybit", {"assets": [below]}, False, False)
         self.assertEqual(len(self.positions()), 1)
 
