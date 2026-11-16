@@ -64,7 +64,10 @@ def test_duplicate_symbol_is_counted_once():
     assert result["rising_coins"] == 1
     assert result["falling_coins"] == 0
     assert result["unchanged_coins"] == 1
-    assert result["status"] == "WAIT"
+    # One of two unique symbols is rising: exactly 50%, so LONG is allowed.
+    assert result["status"] == "LONG_BIAS"
+    assert result["allow_long_entries"] is True
+    assert result["allow_short_entries"] is False
 
 
 def test_unavailable_when_no_valid_usdt_pairs():
