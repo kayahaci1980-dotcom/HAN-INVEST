@@ -880,6 +880,80 @@ async def disable_paper_trading():
         )
     return _account_snapshot()
 
+
+@router.post("/buy")
+async def buy_paper_position(payload: dict[str, Any] = Body(...)):
+    """Manually open a virtual LONG from the Analysis screen."""
+    exchange = str(payload.get("exchange") or "").strip()
+    symbol = str(payload.get("symbol") or "").strip()
+    try:
+        price = float(payload.get("price") or 0)
+        amount = float(payload.get("amount_usdt") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="price and amount_usdt must be numbers")
+
+    if exchange != "Bybit":
+        raise HTTPException(status_code=400, detail="Ручная покупка доступна только через Bybit Spot.")
+    if not symbol or price <= 0 or amount < 1:
+        raise HTTPException(status_code=422, detail="Укажите монету, корректную цену и сумму не менее 1 USDT.")
+
+    async with _cycle_lock:
+        _init_db()
+        with _connect() as db:
+            account = db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()
+            if account is None:
+                raise HTTPException(status_code=503, detail="Paper account is unavailable.")
+            cash = float(account["cash"])
+            fee = amount * _FEE_RATE
+            total_cost = amount + fee
+            if total_cost > cash + 1e-8:
+                raise HTTPException(status_code=409, detail="Недостаточно свободных USDT с учётом комиссии.")
+            if db.execute(
+                "SELECT 1 FROM paper_positions WHERE exchange=? AND symbol=?",
+                (exchange, symbol),
+            ).fetchone():
+                raise HTTPException(status_code=409, detail="По этой монете уже есть открытая позиция.")
+            open_count = int(db.execute(
+                "SELECT COUNT(*) AS n FROM paper_positions"
+            ).fetchone()["n"])
+            if open_count >= _MAX_POSITIONS:
+                raise HTTPException(status_code=409, detail="Достигнут лимит открытых позиций.")
+            cooldown = db.execute(
+                "SELECT blocked_until FROM paper_loss_cooldowns WHERE exchange=? AND symbol=?",
+                (exchange, symbol),
+            ).fetchone()
+            if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
+                raise HTTPException(status_code=409, detail="Для этой монеты действует защитная блокировка после убытка.")
+
+            quantity = amount / price
+            stop = price * 0.98
+            target = price * 1.10
+            now = _now()
+            db.execute(
+                """INSERT INTO paper_positions
+                   (exchange, symbol, quantity, cost_usdt, entry_price,
+                    stop_loss, take_profit, last_price, opened_at, direction, peak_price)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'LONG', ?)""",
+                (exchange, symbol, quantity, total_cost, price, stop, target, price, now, price),
+            )
+            db.execute(
+                """INSERT INTO paper_position_lots
+                   (exchange, symbol, lot_index, quantity, cost_usdt, entry_price, opened_at)
+                   VALUES (?, ?, 0, ?, ?, ?, ?)""",
+                (exchange, symbol, quantity, total_cost, price, now),
+            )
+            db.execute(
+                "UPDATE paper_account SET cash=cash-?, updated_at=? WHERE id=1",
+                (total_cost, now),
+            )
+            db.execute(
+                """INSERT INTO paper_trades
+                   (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
+                   VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?, NULL, 'MANUAL_BUY_ANALYSIS')""",
+                (now, exchange, symbol, price, quantity, amount, fee),
+            )
+    return _account_snapshot()
+
 @router.post("/sell")
 async def sell_paper_position(payload: dict[str, Any] = Body(...)):
     """Manually close one server-side virtual LONG or SHORT position."""
