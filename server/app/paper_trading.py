@@ -912,7 +912,7 @@ def _apply_market_data(
             if price <= 0: rejects.append("price_missing")
             if atr <= 0: rejects.append("atr_missing")
             if daily_open <= 0: rejects.append("daily_open_missing")
-            if not (3_000_000 <= volume <= 40_000_000): rejects.append(f"volume_outside_3m_40m:{volume:g}")
+            if volume < 3_000_000: rejects.append(f"volume_below_3m:{volume:g}")
             if str(asset.get("atr_timeframe") or "") != "1H": rejects.append("atr_timeframe_not_1H")
             if not asset.get("atr_candle_time"): rejects.append("atr_candle_time_missing")
             if rejects:
@@ -958,7 +958,7 @@ async def _scan_cycle() -> None:
                 scan_crypto(limit=50, universe_limit=200, min_volume=50_000_001,
                             capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
                             fee_rate=_FEE_RATE),
-                scan_bybit(limit=50, min_volume=3_000_000,
+                scan_bybit(limit=100, min_volume=3_000_000,
                            capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
                            fee_rate=_FEE_RATE),
                 scan_coinbase(limit=50, min_volume=50_000_001),
