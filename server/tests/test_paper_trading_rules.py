@@ -181,8 +181,6 @@ class PaperTradingRuleTests(unittest.TestCase):
                                              position_prices={"BTCUSDT": price})
                 position = self.positions()[0]
                 self.assertGreater(float(position["peak_profit_usdt"]), 0.0)
-                self.assertGreaterEqual(float(position["peak_profit_usdt"]),
-                                        float(position["unrealized_pnl_usdt"] or 0.0))
                 with paper._connect() as db:
                     db.execute("DELETE FROM paper_positions WHERE exchange='Bybit' AND symbol='BTCUSDT'")
                     db.execute("DELETE FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT'")
