@@ -385,9 +385,9 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.assertEqual(positions, {"LOWVOLUSDT": "LONG", "SHORTUSDT": "SHORT"})
 
 
-    def test_long_closes_after_110_seconds_of_continuous_negative_pnl_and_blocks_15_minutes(self):
+    def test_long_closes_after_295_seconds_of_continuous_negative_pnl_and_blocks_30_minutes(self):
         self.seed_position("LONG")
-        started = paper._now().timestamp() - 111
+        started = paper._now().timestamp() - 296
         with paper._connect() as db:
             db.execute(
                 "UPDATE paper_positions SET loss_started_at=? WHERE exchange='Bybit' AND symbol='BTCUSDT'",
@@ -402,15 +402,15 @@ class PaperTradingRuleTests(unittest.TestCase):
             trade = db.execute(
                 "SELECT * FROM paper_trades WHERE pnl_usdt IS NOT NULL ORDER BY id DESC LIMIT 1"
             ).fetchone()
-        self.assertEqual(trade["reason"], "CONTINUOUS_LOSS_110S")
+        self.assertEqual(trade["reason"], "CONTINUOUS_LOSS_295S")
         cooldown = self.cooldown()
         remaining = float(cooldown["blocked_until"]) - paper._now().timestamp()
-        self.assertGreater(remaining, 890)
-        self.assertLessEqual(remaining, 900)
+        self.assertGreater(remaining, 1790)
+        self.assertLessEqual(remaining, 1800)
 
-    def test_short_closes_after_110_seconds_of_continuous_negative_pnl_and_blocks_15_minutes(self):
+    def test_short_closes_after_295_seconds_of_continuous_negative_pnl_and_blocks_30_minutes(self):
         self.seed_position("SHORT")
-        started = paper._now().timestamp() - 111
+        started = paper._now().timestamp() - 296
         with paper._connect() as db:
             db.execute(
                 "UPDATE paper_positions SET loss_started_at=? WHERE exchange='Bybit' AND symbol='BTCUSDT'",
@@ -425,11 +425,11 @@ class PaperTradingRuleTests(unittest.TestCase):
             trade = db.execute(
                 "SELECT * FROM paper_trades WHERE side='SHORT_COVER' ORDER BY id DESC LIMIT 1"
             ).fetchone()
-        self.assertEqual(trade["reason"], "CONTINUOUS_LOSS_110S")
+        self.assertEqual(trade["reason"], "CONTINUOUS_LOSS_295S")
         cooldown = self.cooldown()
         remaining = float(cooldown["blocked_until"]) - paper._now().timestamp()
-        self.assertGreater(remaining, 890)
-        self.assertLessEqual(remaining, 900)
+        self.assertGreater(remaining, 1790)
+        self.assertLessEqual(remaining, 1800)
 
 if __name__ == "__main__":
     unittest.main()
