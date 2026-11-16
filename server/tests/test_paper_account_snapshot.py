@@ -16,7 +16,7 @@ def _add_closed_trade(db, pnl, symbol):
     db.execute(
         """INSERT INTO paper_trades
            (time, exchange, symbol, side, price, quantity, value_usdt, fee_usdt, pnl_usdt, reason)
-           VALUES ('2026-01-01T00:00:00Z', 'Binance', ?, 'SELL', 1, 1, 1, 0, ?, 'TEST')""",
+           VALUES ('2026-01-01T00:00:00Z', 'Bybit', ?, 'SELL', 1, 1, 1, 0, ?, 'TEST')""",
         (symbol, pnl),
     )
 
@@ -30,7 +30,7 @@ def test_snapshot_separates_profit_and_loss_and_matches_equity(paper_db):
             """INSERT INTO paper_positions
                (exchange, symbol, quantity, cost_usdt, entry_price, stop_loss,
                 take_profit, last_price, opened_at, direction)
-               VALUES ('Binance', 'BTCUSDT', 1, 100.1, 100, 98, 110, 100,
+               VALUES ('Bybit', 'BTCUSDT', 1, 100.1, 100, 98, 110, 100,
                        '2026-01-01T00:00:00Z', 'LONG')"""
         )
 
@@ -51,7 +51,7 @@ def test_short_snapshot_includes_both_fees(paper_db):
             """INSERT INTO paper_positions
                (exchange, symbol, quantity, cost_usdt, entry_price, stop_loss,
                 take_profit, last_price, opened_at, direction)
-               VALUES ('Binance', 'ETHUSDT', 1, 100.1, 100, 102, 90, 90,
+               VALUES ('Bybit', 'ETHUSDT', 1, 100.1, 100, 102, 90, 90,
                        '2026-01-01T00:00:00Z', 'SHORT')"""
         )
 
