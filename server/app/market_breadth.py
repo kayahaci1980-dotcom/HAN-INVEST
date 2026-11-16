@@ -51,18 +51,26 @@ def summarize_market_breadth(rows: list[dict[str, Any]], *, full_catalogue: bool
     missing = total - len(measured)
     measured_total = len(measured)
 
+    rising_pct = rising / measured_total * 100 if measured_total else 0.0
+    falling_pct = falling / measured_total * 100 if measured_total else 0.0
+    allow_long_entries = measured_total > 0 and rising_pct >= 50.0
+    allow_short_entries = measured_total > 0 and falling_pct >= 50.0
+
     if measured_total == 0:
-        status, allow_new_entries = "UNAVAILABLE", False
+        status = "UNAVAILABLE"
         reason = "Нет достоверных данных по изменению цен за 24 часа."
-    elif rising > measured_total / 2:
-        status, allow_new_entries = "ALLOW_NEW_BUYS", True
-        reason = "Растёт больше половины монет с доступным изменением цены за 24 часа."
-    elif falling > measured_total / 2:
-        status, allow_new_entries = "BLOCK_NEW_BUYS", False
-        reason = "Падает больше половины монет с доступным изменением цены за 24 часа."
+    elif allow_long_entries and allow_short_entries:
+        status = "BALANCED_50_50"
+        reason = "Растущие и падающие монеты одновременно достигли порога 50%; разрешены LONG и SHORT."
+    elif allow_long_entries:
+        status = "LONG_BIAS"
+        reason = "Растут 50% или больше монет с доступным изменением цены за 24 часа; разрешён LONG."
+    elif allow_short_entries:
+        status = "SHORT_BIAS"
+        reason = "Падают 50% или больше монет с доступным изменением цены за 24 часа; разрешён SHORT."
     else:
-        status, allow_new_entries = "WAIT", False
-        reason = "Ни растущие, ни падающие монеты с доступными данными не составляют больше половины."
+        status = "WAIT"
+        reason = "Ни растущие, ни падающие монеты не достигли порога 50%; новые входы заблокированы."
 
     return {
         "available": total > 0,
@@ -89,7 +97,10 @@ def summarize_market_breadth(rows: list[dict[str, Any]], *, full_catalogue: bool
         "falling_pct": round(falling / measured_total * 100, 2) if measured_total else 0.0,
         "unchanged_pct": round(unchanged / measured_total * 100, 2) if measured_total else 0.0,
         "status": status,
-        "allow_new_entries": allow_new_entries,
+        "allow_new_entries": allow_long_entries,
+        "allow_long_entries": allow_long_entries,
+        "allow_short_entries": allow_short_entries,
+        "threshold_pct": 50.0,
         "reason": reason,
     }
 
