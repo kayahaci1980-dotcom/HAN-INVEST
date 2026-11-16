@@ -149,13 +149,23 @@ async def analyze(
         returns = [(closes[i] / closes[i-1] - 1) for i in range(1, len(closes)) if closes[i-1] > 0]
         hourly_volatility = math.sqrt(mean([x*x for x in returns])) * 100
 
-        trend_score = 20 if closes[-1] > ma20 > ma50 else 13 if closes[-1] > ma20 else 5
-        momentum_score = max(0, min(20, round(10 + change24_candles * 0.8)))
-        short_score = max(0, min(20, round(10 + change6 * 1.2)))
+        # Keep the legacy overall score for the market-analysis UI, but calculate
+        # symmetric directional scores for PAPER entry decisions.
+        trend_long_score = 20 if price > ma20 > ma50 else 13 if price > ma20 else 5
+        trend_short_score = 20 if price < ma20 < ma50 else 13 if price < ma20 else 5
+        momentum_long_score = max(0, min(20, round(10 + change24_candles * 0.8)))
+        momentum_short_score = max(0, min(20, round(10 - change24_candles * 0.8)))
+        impulse_long_score = max(0, min(20, round(10 + change6 * 1.2)))
+        impulse_short_score = max(0, min(20, round(10 - change6 * 1.2)))
         liquidity_score = min(20, max(0, round(math.log10(max(quote_volume, 1)) * 2)))
         stability_score = max(0, min(20, round(20 - hourly_volatility * 2)))
         volume_score = 10 if volume_ratio >= 1.2 else 5 if volume_ratio >= 0.8 else 0
-        score = min(100, trend_score + momentum_score + short_score + liquidity_score + stability_score + volume_score)
+        score = min(100, trend_long_score + momentum_long_score + impulse_long_score
+                    + liquidity_score + stability_score + volume_score)
+        long_score = min(100, trend_long_score + momentum_long_score + impulse_long_score
+                         + liquidity_score + stability_score + volume_score)
+        short_score = min(100, trend_short_score + momentum_short_score + impulse_short_score
+                          + liquidity_score + stability_score + volume_score)
 
         volume_confirmed = volume_ratio >= 1.2
         strong_uptrend = price > ma20 > ma50
@@ -218,7 +228,8 @@ async def analyze(
             "take_profit": round(target, 8) if target is not None else None,
             "risk_reward": "1:2" if signal in ("BUY", "SHORT") else None,
             "position_sizing": sizing,
-            "score": score, "signal": signal, "early_signal": early,
+            "score": score, "long_score": long_score, "short_score": short_score,
+            "signal": signal, "early_signal": early,
             "trade_ready": pair_verified, "pair_status": instrument.get("status"),
             "quote_currency": "USDT",
         }
