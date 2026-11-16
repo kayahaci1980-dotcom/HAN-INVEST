@@ -39,7 +39,7 @@ _DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 _STORAGE_PERSISTENT = bool(_DATABASE_URL or os.getenv("PAPER_DB_PATH"))
 _INITIAL_CASH = 1000.0
 _FEE_RATE = 0.001
-_MAX_POSITION_LOSS_PCT = 1.0
+_MAX_POSITION_LOSS_USDT = 1.0
 _RISK_PCT = 1.0
 _MAX_POSITIONS = 10
 _STOP_LOSS_COOLDOWN_SECONDS = 4 * 60 * 60
@@ -390,7 +390,7 @@ def _account_snapshot() -> dict[str, Any]:
         ),
     }
 def _loss_limit_stop_price(db, position) -> float:
-    """Price that limits net loss, including entry and estimated exit fees, to 1% of position cost."""
+    """Price that limits net loss, including entry and estimated exit fees, to a fixed 1 USDT."""
     quantity = float(position["quantity"] or 0)
     cost = float(position["cost_usdt"] or 0)
     entry = float(position["entry_price"] or 0)
@@ -411,12 +411,11 @@ def _loss_limit_stop_price(db, position) -> float:
             entry_notional = entry * quantity
             opening_fee = max(0.0, cost - entry_notional)
         # Net SHORT PnL = entry notional - cover notional - both fees.
-        return max(0.0, (entry_notional - opening_fee +
-                         cost * _MAX_POSITION_LOSS_PCT / 100.0) /
+        return max(0.0, (entry_notional - opening_fee + _MAX_POSITION_LOSS_USDT) /
                    (quantity * (1.0 + _FEE_RATE)))
 
     # Net LONG PnL = sale proceeds after exit fee - entry cost (incl. entry fee).
-    return max(0.0, cost * (1.0 - _MAX_POSITION_LOSS_PCT / 100.0) /
+    return max(0.0, (cost - _MAX_POSITION_LOSS_USDT) /
                (quantity * (1.0 - _FEE_RATE)))
 
 
