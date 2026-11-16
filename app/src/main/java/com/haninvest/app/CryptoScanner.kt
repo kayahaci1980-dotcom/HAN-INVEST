@@ -70,7 +70,7 @@ class CryptoScanner(private val context: Context) {
         }
         section.addView(label("₿ Криптосканер HAN INVEST", 21f, dark, true))
         section.addView(label(
-            "В разделе Рынок LIVE анализируются только Bybit и Coinbase Exchange.",
+            "В разделе Рынок LIVE анализируется только Bybit.",
             13f, muted
         ))
 
@@ -116,9 +116,9 @@ class CryptoScanner(private val context: Context) {
             isFillViewport = true
             addView(content)
         }
-        val status = label("Загрузка данных Bybit и Coinbase Exchange...", 14f, dark)
+        val status = label("Загрузка данных Bybit...", 14f, dark)
         val refresh = Button(context).apply {
-            text = "Обновить обе биржи"
+            text = "Обновить Bybit"
             buttonStyle(this, blue)
         }
         panel.addView(status)
@@ -390,7 +390,7 @@ class CryptoScanner(private val context: Context) {
             content.removeAllViews()
             content.addView(label(
                 when (selectedTab) {
-                    "MARKET" -> "РЫНОК LIVE — BYBIT • COINBASE EXCHANGE"
+                    "MARKET" -> "РЫНОК LIVE — BYBIT"
                     "ANALYSIS" -> "АНАЛИЗ — ТЕХНИЧЕСКИЕ ПОКАЗАТЕЛИ"
                     "PAPER" -> "PAPER TRADING — ВИРТУАЛЬНЫЙ СЧЁТ"
                     "HISTORY" -> "ИСТОРИЯ СДЕЛОК"
@@ -572,10 +572,8 @@ class CryptoScanner(private val context: Context) {
                 ))
                 content.addView(label("ЛОКАЛЬНЫЙ ТЕСТОВЫЙ СЧЁТ (ручной)", 13f, dark, true))
                 val livePrices = mutableMapOf<String, Double>()
-                listOf(binance, bybit, coinbase, okx).filterNotNull().forEach { result ->
-                    result.assets.forEach { coin ->
-                        livePrices[result.exchange + ":" + coin.optString("symbol")] = coin.optDouble("price", 0.0)
-                    }
+                bybit?.assets?.forEach { coin ->
+                    livePrices["Bybit:" + coin.optString("symbol")] = coin.optDouble("price", 0.0)
                 }
                 val keys = paperPositions.keys().asSequence().toList()
                 var holdingsValue = 0.0
@@ -619,12 +617,12 @@ class CryptoScanner(private val context: Context) {
                 content.addView(reset)
             } else {
             val y = bybit
-            val c = coinbase
-            if (y == null || c == null) {
-                content.addView(label("Ожидаем ответы Bybit и Coinbase Exchange.\n${status.text}", 14f, muted))
+            val c = ExchangeResult("Coinbase Exchange", "Отключена: анализ только Bybit", 0, 0, "—", false, emptyList(), "Анализ этой биржи отключён")
+            if (y == null) {
+                content.addView(label("Ожидаем данные Bybit.\n${status.text}", 14f, muted))
             } else {
-            val b = ExchangeResult("Binance", "Отключена в Рынок LIVE", 0, 0, "—", false, emptyList(), "Биржа отключена в этом разделе")
-            val o = ExchangeResult("OKX", "Отключена в Рынок LIVE", 0, 0, "—", false, emptyList(), "Биржа отключена в этом разделе")
+            val b = ExchangeResult("Binance", "Отключена: анализ только Bybit", 0, 0, "—", false, emptyList(), "Анализ этой биржи отключён")
+            val o = ExchangeResult("OKX", "Отключена: анализ только Bybit", 0, 0, "—", false, emptyList(), "Анализ этой биржи отключён")
             val maxRisk = capital * risk / 100.0
             if (selectedTab == "HOME" || selectedTab == "MARKET" || selectedTab == "ANALYSIS") {
                 marketContext?.let { context ->
@@ -665,14 +663,11 @@ class CryptoScanner(private val context: Context) {
                     }
                 }
                 content.addView(label(
-                    "Сравнение Bybit и Coinbase Exchange. В рейтинге учитывается оценка, а не порядок ответа API.",
+                    "Анализируются только торговые пары Bybit.",
                     12f, muted
                 ))
                 val combined = mutableListOf<Pair<JSONObject, ExchangeResult>>()
-                if (b.error == null) b.assets.forEach { combined.add(it to b) }
                 if (y.error == null) y.assets.forEach { combined.add(it to y) }
-                if (c.error == null) c.assets.forEach { combined.add(it to c) }
-                if (o.error == null) o.assets.forEach { combined.add(it to o) }
                 fun baseAssetKey(coin: JSONObject): String {
                     val raw = coin.optString("symbol", "").uppercase().replace("-", "").replace("/", "")
                     return when {
@@ -686,7 +681,7 @@ class CryptoScanner(private val context: Context) {
                         .thenByDescending { it.first.optDouble("volume_ratio", 0.0) }
                 )
                 // Market view counts exchange trading pairs separately (e.g. BTC/USDT on each exchange).
-                // Keep up to 2000 pair listings across Bybit and Coinbase.
+                // Keep up to 2000 Bybit trading pairs.
                 val ranked = rankedAll.take(2000)
                 fun moveValue(coin: JSONObject): Double {
                     return coin.optDouble("change_24h_pct",
@@ -768,8 +763,7 @@ class CryptoScanner(private val context: Context) {
                     content.addView(breadth)
                     content.addView(label("Автоматическое обновление каждые 60 секунд", 11f, muted))
                     val exchangeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-                    listOf("ALL" to "Все", "Bybit" to "Bybit",
-                        "Coinbase Exchange" to "Coinbase").forEach { (key, title) ->
+                    listOf("ALL" to "Все", "Bybit" to "Bybit").forEach { (key, title) ->
                         val filter = Button(context).apply {
                             text = title
                             textSize = 10f
@@ -858,13 +852,13 @@ class CryptoScanner(private val context: Context) {
                     content.addView(paper)
                 }
                 content.addView(label(
-                    "Bybit: ${if (y.error == null) y.assets.size.toString() else "ошибка"} • Coinbase: ${if (c.error == null) c.assets.size.toString() else "ошибка"}",
+                    "Bybit: ${if (y.error == null) y.assets.size.toString() else "ошибка"}",
                     12f, muted
                 ))
-                listOf(y, c).filter { it.error != null }.forEach { failed ->
+                listOf(y).filter { it.error != null }.forEach { failed ->
                     content.addView(label("${failed.exchange}: ${failed.error}", 11f, Color.rgb(245, 95, 95)))
                 }
-                listOf(y, c).filter { it.error == null && it.assets.isEmpty() }.forEach { empty ->
+                listOf(y).filter { it.error == null && it.assets.isEmpty() }.forEach { empty ->
                     content.addView(label("${empty.exchange}: сервер ответил, но список assets пуст.", 11f, Color.rgb(230, 170, 65)))
                 }
             } else {
@@ -1035,23 +1029,14 @@ class CryptoScanner(private val context: Context) {
             // Keep the last successful snapshot visible while the next refresh is running.
             marketContext = null
             fetchMarketContext()
-            loadingCount = 2
-            status.text = "Загружаем Bybit и Coinbase Exchange независимо..."
+            loadingCount = 1
+            status.text = "Загружаем данные Bybit..."
             render()
             fetchExchange("Bybit",
                 "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=1000&min_volume=100000&capital_usdt=$capital&risk_pct=$risk") {
                 bybit = it
                 loadingCount--
-                status.text = if (loadingCount == 0) "Данные Bybit и Coinbase Exchange обновлены."
-                    else "Bybit получен. Загружается Coinbase Exchange..."
-                render()
-            }
-            fetchExchange("Coinbase Exchange",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/coinbase/scan?limit=1000&min_volume=100000") {
-                coinbase = it
-                loadingCount--
-                status.text = if (loadingCount == 0) "Данные Bybit и Coinbase Exchange обновлены."
-                    else "Coinbase Exchange загружается..."
+                status.text = "Данные Bybit обновлены."
                 render()
             }
         }
