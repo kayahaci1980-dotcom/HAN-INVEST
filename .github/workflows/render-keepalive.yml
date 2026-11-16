@@ -1,0 +1,22 @@
+name: Keep Render Free Service Awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Ping HAN INVEST API health endpoint
+        env:
+          HEALTH_URL: https://han-invest-api-test.onrender.com/health
+        run: |
+          curl --fail --silent --show-error --location \
+            --retry 2 --retry-delay 10 --max-time 180 \
+            "$HEALTH_URL"
