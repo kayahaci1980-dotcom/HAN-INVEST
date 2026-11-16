@@ -188,10 +188,7 @@ class CryptoScanner(private val context: Context) {
 
         var capital = 100.0
         var risk = 1.0
-        var binance: ExchangeResult? = null
         var bybit: ExchangeResult? = null
-        var coinbase: ExchangeResult? = null
-        var okx: ExchangeResult? = null
         var marketContext: JSONObject? = null
         var liveMarketTickers: List<JSONObject> = emptyList()
         var liveMarketTotalPairs = 0
@@ -674,12 +671,9 @@ class CryptoScanner(private val context: Context) {
                 }
             } else {
             val y = bybit
-            val c = ExchangeResult("Coinbase Exchange", "Отключена: анализ только Bybit", 0, 0, "—", false, emptyList(), "Анализ этой биржи отключён")
             if (y == null) {
                 content.addView(label("Ожидаем данные Bybit.\n${status.text}", 14f, muted))
             } else {
-            val b = ExchangeResult("Binance", "Отключена: анализ только Bybit", 0, 0, "—", false, emptyList(), "Анализ этой биржи отключён")
-            val o = ExchangeResult("OKX", "Отключена: анализ только Bybit", 0, 0, "—", false, emptyList(), "Анализ этой биржи отключён")
             val maxRisk = capital * risk / 100.0
             if (selectedTab == "HOME" || selectedTab == "MARKET" || selectedTab == "ANALYSIS") {
                 marketContext?.let { context ->
@@ -918,7 +912,7 @@ class CryptoScanner(private val context: Context) {
                     content.addView(label("${empty.exchange}: сервер ответил, но список assets пуст.", 11f, Color.rgb(230, 170, 65)))
                 }
             } else {
-                val result = when (selectedTab) { "BINANCE" -> b; "BYBIT" -> y; "COINBASE" -> c; else -> o }
+                val result = y
                 content.addView(label(
                     "Источник: ${result.source}\nПроверено пар: ${result.scanned} • Подходящих Spot-пар: ${result.eligible}\nBTC market state: ${result.btcState}",
                     12f, muted
@@ -1015,8 +1009,7 @@ class CryptoScanner(private val context: Context) {
                     val array = json.optJSONArray("assets") ?: JSONArray()
                     val list = (0 until array.length()).map { array.getJSONObject(it) }
                     val btc = json.optJSONObject("btc_market_filter")
-                    val source = json.optString("source",
-                        if (exchange == "Binance") "Binance public market data" else "Bybit public market data")
+                    val source = json.optString("source", "Bybit public market data")
                     ExchangeResult(
                         exchange, source, json.optInt("scanned", list.size),
                         json.optInt("eligible_pairs", 0),
