@@ -47,7 +47,7 @@ _STOP_LOSS_COOLDOWN_SECONDS = 4 * 60 * 60
 _TAKE_PROFIT_COOLDOWN_SECONDS = 1 * 60 * 60
 _TRAILING_STOP_COOLDOWN_SECONDS = 2 * 60 * 60
 _CONSECUTIVE_LOSSES_COOLDOWN_SECONDS = 8 * 60 * 60
-_SCAN_INTERVAL_SECONDS = max(60, int(os.getenv("PAPER_SCAN_INTERVAL_SECONDS", "60")))
+_SCAN_INTERVAL_SECONDS = max(10, int(os.getenv("PAPER_SCAN_INTERVAL_SECONDS", "10")))
 _worker_task: asyncio.Task | None = None
 _scan_requested = asyncio.Event()
 _cycle_lock = asyncio.Lock()
@@ -113,6 +113,7 @@ def _init_db() -> None:
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS atr_14_1h DOUBLE PRECISION NOT NULL DEFAULT 0")
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS trailing_stage INTEGER NOT NULL DEFAULT 0")
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS trailing_candle TEXT NOT NULL DEFAULT ''")
+            db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS loss_started_at DOUBLE PRECISION")
             db.execute(
                 """CREATE TABLE IF NOT EXISTS paper_position_lots (
                     exchange TEXT NOT NULL,
@@ -216,6 +217,7 @@ def _init_db() -> None:
             ("atr_14_1h", "REAL NOT NULL DEFAULT 0"),
             ("trailing_stage", "INTEGER NOT NULL DEFAULT 0"),
             ("trailing_candle", "TEXT NOT NULL DEFAULT ''"),
+            ("loss_started_at", "REAL"),
         ):
             if column not in position_columns:
                 db.execute(f"ALTER TABLE paper_positions ADD COLUMN {column} {definition}")
@@ -455,6 +457,7 @@ def _close_position(db, position,
         "STOP_LOSS": _STOP_LOSS_COOLDOWN_SECONDS,
         "TAKE_PROFIT": _TAKE_PROFIT_COOLDOWN_SECONDS,
         "TRAILING_STOP": _TRAILING_STOP_COOLDOWN_SECONDS,
+        "CONTINUOUS_LOSS_55S": 15 * 60,
     }.get(reason, 0)
     if cooldown_seconds:
         blocked_until = _now().timestamp() + cooldown_seconds
@@ -894,6 +897,30 @@ def _apply_market_data(
             # A direct ticker quote is sufficient to enforce the existing stop even
             # when the symbol is outside the capped technical-analysis candidate list.
             # Candle-based trailing updates still require the analyzed 1H candle data.
+            # Close a position after 55 seconds of continuously negative net PnL.
+            # Reset the timer immediately when net PnL returns to zero or above.
+            loss_started_at = current["loss_started_at"] if "loss_started_at" in current.keys() else None
+            now_ts = _now().timestamp()
+            if net_pnl < 0:
+                if loss_started_at is None:
+                    db.execute(
+                        "UPDATE paper_positions SET loss_started_at=? WHERE exchange=? AND symbol=?",
+                        (now_ts, exchange, position["symbol"]),
+                    )
+                    loss_started_at = now_ts
+                elif now_ts - float(loss_started_at) >= 55:
+                    _close_position(db, current, price, "CONTINUOUS_LOSS_55S")
+                    logger.warning(
+                        "PAPER closed %s %s after 55 seconds of continuous negative PnL; 15-minute cooldown",
+                        direction, position["symbol"],
+                    )
+                    continue
+            elif loss_started_at is not None:
+                db.execute(
+                    "UPDATE paper_positions SET loss_started_at=NULL WHERE exchange=? AND symbol=?",
+                    (exchange, position["symbol"]),
+                )
+
             if not asset:
                 continue
 
