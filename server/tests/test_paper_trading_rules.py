@@ -297,16 +297,15 @@ class PaperTradingRuleTests(unittest.TestCase):
         paper._apply_market_data("Bybit", {"assets": [asset]}, True)
         self.assertEqual(len(self.positions()), 0)
 
-    def test_volume_range_includes_five_and_forty_million(self):
-        low_edge = self.asset(1, 100.0, symbol="EDGE5USDT", volume=5_000_000)
-        high_edge = self.asset(1, 100.0, symbol="EDGE40USDT", volume=40_000_000)
-        paper._apply_market_data("Bybit", {"assets": [low_edge, high_edge]}, True)
+    def test_volume_minimum_three_million_has_no_upper_cap(self):
+        low_edge = self.asset(60, 100.0, symbol="EDGE3USDT", volume=3_000_000)
+        high_volume = self.asset(60, 100.0, symbol="HIGH40USDT", volume=40_000_001)
+        paper._apply_market_data("Bybit", {"assets": [low_edge, high_volume]}, True)
         self.assertEqual(len(self.positions()), 2)
 
-    def test_volume_below_five_or_above_forty_million_is_excluded(self):
-        below = self.asset(1, 100.0, symbol="LOWUSDT", volume=4_999_999)
-        above = self.asset(1, 100.0, symbol="HIGHUSDT", volume=40_000_001)
-        paper._apply_market_data("Bybit", {"assets": [below, above]}, True)
+    def test_volume_below_three_million_is_excluded(self):
+        below = self.asset(60, 100.0, symbol="LOWUSDT", volume=2_999_999)
+        paper._apply_market_data("Bybit", {"assets": [below]}, True)
         self.assertEqual(len(self.positions()), 0)
 
 
