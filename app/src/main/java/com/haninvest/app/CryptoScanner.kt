@@ -194,6 +194,10 @@ class CryptoScanner(private val context: Context) {
         var okx: ExchangeResult? = null
         var marketContext: JSONObject? = null
         var liveMarketTickers: List<JSONObject> = emptyList()
+        var liveMarketTotalPairs = 0
+        var liveMarketRisingPairs = 0
+        var liveMarketFallingPairs = 0
+        var liveMarketUnchangedPairs = 0
         var liveMarketLoading = false
         var liveMarketError: String? = null
         var liveMarketUpdatedAt: Long? = null
@@ -627,6 +631,11 @@ class CryptoScanner(private val context: Context) {
                 if (liveMarketLoading && liveMarketTickers.isEmpty()) {
                     content.addView(label("Загружаем Live Market Bybit…", 13f, muted))
                 }
+                if (liveMarketTotalPairs > 0) {
+                    content.addView(label("Всего пар: $liveMarketTotalPairs USDT", 15f, dark, true))
+                    content.addView(label("Растут: $liveMarketRisingPairs", 13f, Color.rgb(20, 190, 115), true))
+                    content.addView(label("Снижаются: $liveMarketFallingPairs", 13f, Color.rgb(235, 85, 85), true))
+                }
                 liveMarketError?.let { content.addView(label("Ошибка загрузки: $it", 12f, Color.RED)) }
                 liveMarketUpdatedAt?.let {
                     content.addView(label("Последнее обновление: " + java.text.SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(java.util.Date(it)), 10f, muted))
@@ -926,6 +935,10 @@ class CryptoScanner(private val context: Context) {
                 render()
                 Thread {
                     var rows: List<JSONObject> = emptyList()
+                    var totalPairs = 0
+                    var risingPairs = 0
+                    var fallingPairs = 0
+                    var unchangedPairs = 0
                     var error: String? = null
                     try {
                         val connection = URL("https://api.bybit.com/v5/market/tickers?category=spot").openConnection() as HttpURLConnection
@@ -941,8 +954,18 @@ class CryptoScanner(private val context: Context) {
                         }
                         if (json.optInt("retCode", -1) != 0) throw Exception(json.optString("retMsg", "Bybit API error"))
                         val list = json.optJSONObject("result")?.optJSONArray("list") ?: JSONArray()
-                        rows = (0 until list.length()).mapNotNull { list.optJSONObject(it) }
+                        val allUsdtPairs = (0 until list.length()).mapNotNull { list.optJSONObject(it) }
                             .filter { it.optString("symbol").endsWith("USDT") }
+                        totalPairs = allUsdtPairs.size
+                        allUsdtPairs.forEach { ticker ->
+                            val change = ticker.optString("price24hPcnt", "0").toDoubleOrNull() ?: 0.0
+                            when {
+                                change > 0.0 -> risingPairs++
+                                change < 0.0 -> fallingPairs++
+                                else -> unchangedPairs++
+                            }
+                        }
+                        rows = allUsdtPairs
                             .sortedByDescending { it.optString("turnover24h", "0").toDoubleOrNull() ?: 0.0 }
                             .take(100)
                     } catch (e: Exception) {
@@ -951,6 +974,10 @@ class CryptoScanner(private val context: Context) {
                     Handler(Looper.getMainLooper()).post {
                         if (rows.isNotEmpty()) {
                             liveMarketTickers = rows
+                            liveMarketTotalPairs = totalPairs
+                            liveMarketRisingPairs = risingPairs
+                            liveMarketFallingPairs = fallingPairs
+                            liveMarketUnchangedPairs = unchangedPairs
                             liveMarketUpdatedAt = System.currentTimeMillis()
                         }
                         liveMarketError = error
