@@ -41,6 +41,7 @@ _DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 _STORAGE_PERSISTENT = bool(_DATABASE_URL or os.getenv("PAPER_DB_PATH"))
 _INITIAL_CASH = 1000.0
 _FEE_RATE = 0.001
+_MAX_POSITION_LOSS_PCT = 1.0
 _RISK_PCT = 1.0
 _MAX_POSITIONS = 10
 _STOP_LOSS_COOLDOWN_SECONDS = 4 * 60 * 60
@@ -390,6 +391,37 @@ def _account_snapshot() -> dict[str, Any]:
             "Бесплатный Render может засыпать; круглосуточная работа не гарантируется."
         ),
     }
+def _loss_limit_stop_price(db, position) -> float:
+    """Price that limits net loss, including entry and estimated exit fees, to 1% of position cost."""
+    quantity = float(position["quantity"] or 0)
+    cost = float(position["cost_usdt"] or 0)
+    entry = float(position["entry_price"] or 0)
+    direction = str(position["direction"] if "direction" in position.keys() else "LONG").upper()
+    if quantity <= 0 or cost <= 0 or entry <= 0:
+        return 0.0
+
+    if direction == "SHORT":
+        lots = db.execute(
+            "SELECT quantity, cost_usdt, entry_price FROM paper_position_lots WHERE exchange=? AND symbol=?",
+            (position["exchange"], position["symbol"]),
+        ).fetchall()
+        if lots:
+            entry_notional = sum(float(lot["entry_price"]) * float(lot["quantity"]) for lot in lots)
+            opening_fee = sum(max(0.0, float(lot["cost_usdt"]) -
+                                  float(lot["entry_price"]) * float(lot["quantity"])) for lot in lots)
+        else:
+            entry_notional = entry * quantity
+            opening_fee = max(0.0, cost - entry_notional)
+        # Net SHORT PnL = entry notional - cover notional - both fees.
+        return max(0.0, (entry_notional - opening_fee +
+                         cost * _MAX_POSITION_LOSS_PCT / 100.0) /
+                   (quantity * (1.0 + _FEE_RATE)))
+
+    # Net LONG PnL = sale proceeds after exit fee - entry cost (incl. entry fee).
+    return max(0.0, cost * (1.0 - _MAX_POSITION_LOSS_PCT / 100.0) /
+               (quantity * (1.0 - _FEE_RATE)))
+
+
 def _close_position(db, position,
                     price: float, reason: str) -> None:
     quantity = float(position["quantity"])
@@ -821,6 +853,24 @@ def _apply_market_data(
             atr_1h = float((asset or {}).get("atr_14_1h") or current["atr_14_1h"] or 0)
             candle_time = str((asset or {}).get("atr_candle_time") or "")
             stop = float(current["stop_loss"] or 0)
+            # Hard account-level loss cap: net realized PnL at the stop includes
+            # both entry and estimated exit fees and cannot exceed 1% of position cost.
+            loss_limit_stop = _loss_limit_stop_price(db, current)
+            protected_stop = (
+                max(stop, loss_limit_stop) if direction == "LONG"
+                else min(stop, loss_limit_stop) if stop > 0
+                else loss_limit_stop
+            )
+            if protected_stop > 0 and abs(protected_stop - stop) > 1e-12:
+                stop = protected_stop
+                db.execute(
+                    "UPDATE paper_positions SET stop_loss=? WHERE exchange=? AND symbol=?",
+                    (stop, exchange, position["symbol"]),
+                )
+                current = db.execute(
+                    "SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
+                    (exchange, position["symbol"]),
+                ).fetchone()
             # Legacy positions may still carry the former unapproved fixed +2R TP.
             # Disable it so it cannot cut off the +2R/+3R trailing stages.
             if float(current["take_profit"] or 0) != 0:
