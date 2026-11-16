@@ -951,11 +951,8 @@ def _apply_market_data(
             counts = diagnostic[bucket]
             counts[reason] = counts.get(reason, 0) + 1
 
-        # Market breadth blocks only new entries. Position exits above always run.
-        if not allow_new_entries and not allow_short_entries:
-            logger.info("PAPER entry diagnostics %s", diagnostic)
-            return
-
+        # Market breadth blocks only new entries. Continue evaluating candidates
+        # for diagnostics; with both directions disabled, no entry condition can pass.
         current_positions = db.execute("SELECT COUNT(*) AS n FROM paper_positions").fetchone()["n"]
         diagnostic["open_positions"] = int(current_positions)
         diagnostic["max_positions"] = _MAX_POSITIONS
