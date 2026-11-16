@@ -210,8 +210,15 @@ async def main() -> None:
                                        return_exceptions=True)
     history = {s: rows for s, rows in zip(symbols, fetched)
                if isinstance(rows, list) and len(rows) >= 100}
+    failures = {s: str(rows)[:240] for s, rows in zip(symbols, fetched)
+                if isinstance(rows, Exception)}
+    short_series = {s: len(rows) for s, rows in zip(symbols, fetched)
+                    if isinstance(rows, list) and len(rows) < 100}
     if len(history) < 3:
-        raise RuntimeError("Недостаточно исторических данных Bybit Spot: доступно меньше 3 пар")
+        raise RuntimeError(
+            "Недостаточно исторических данных Bybit Spot. "
+            f"Получено пар: {len(history)}; короткие ряды: {short_series}; ошибки API: {failures}"
+        )
     # Align series by common timestamps to avoid comparing different market hours.
     common = set.intersection(*(set(c.start for c in rows) for rows in history.values()))
     if len(common) < 100:
