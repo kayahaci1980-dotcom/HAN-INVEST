@@ -906,6 +906,8 @@ def _apply_market_data(
                 daily_open = float(asset.get("daily_open") or 0)
                 volume = float(asset.get("quote_volume_24h") or 0)
                 score = float(asset.get("score") or 0)
+                long_score = float(asset.get("long_score", score) or 0)
+                short_score = float(asset.get("short_score", score) or 0)
             except (TypeError, ValueError):
                 continue
             symbol = str(asset.get("symbol") or "")
@@ -913,7 +915,8 @@ def _apply_market_data(
             if asset.get("trade_ready") is not True: rejects.append("trade_ready=false")
             if not symbol: rejects.append("symbol_missing")
             if symbol and _is_stablecoin_pair(symbol): rejects.append("stablecoin_pair")
-            if score < 60: rejects.append(f"score_below_60:{score:g}")
+            if max(long_score, short_score) < 60:
+                rejects.append(f"both_direction_scores_below_60:LONG={long_score:g},SHORT={short_score:g}")
             if price <= 0: rejects.append("price_missing")
             if atr <= 0: rejects.append("atr_missing")
             if daily_open <= 0: rejects.append("daily_open_missing")
@@ -933,16 +936,18 @@ def _apply_market_data(
             long_daily_ok = price < daily_open + 0.5 * atr
             short_daily_ok = price > daily_open - 0.5 * atr
             opened = False
-            if allow_new_entries and long_trend and long_daily_ok:
+            if allow_new_entries and long_score >= 60 and long_trend and long_daily_ok:
                 opened = _open_position(db, exchange, asset, "AUTO_LONG_ATR_PRO_RR_1_2")
                 if not opened:
-                    logger.info("PAPER LONG %s passed filters but sizing/entry rejected", symbol)
-            elif allow_short_entries and short_trend and short_daily_ok:
+                    logger.info("PAPER LONG %s score=%g passed filters but sizing/entry rejected", symbol, long_score)
+            elif allow_short_entries and short_score >= 60 and short_trend and short_daily_ok:
                 opened = _open_short_position(db, exchange, asset, "AUTO_SHORT_ATR_PRO_RR_1_2")
                 if not opened:
-                    logger.info("PAPER SHORT %s passed filters but sizing/entry rejected", symbol)
+                    logger.info("PAPER SHORT %s score=%g passed filters but sizing/entry rejected", symbol, short_score)
             else:
                 reasons = []
+                if long_score < 60: reasons.append(f"LONG_score_below_60:{long_score:g}")
+                if short_score < 60: reasons.append(f"SHORT_score_below_60:{short_score:g}")
                 if not long_trend: reasons.append("LONG_trend_price>MA20>MA50_not_met")
                 if not long_daily_ok: reasons.append("LONG_daily_open_guard")
                 if not short_trend: reasons.append("SHORT_trend_price<MA20<MA50_not_met")
