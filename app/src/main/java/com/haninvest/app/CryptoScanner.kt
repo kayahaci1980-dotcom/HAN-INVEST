@@ -137,6 +137,7 @@ class CryptoScanner(private val context: Context) {
         var serverPaperLoading = false
         lateinit var refreshPaperServer: () -> Unit
         lateinit var togglePaperServer: (Boolean) -> Unit
+        lateinit var manualServerBuy: (String, String, Double, Double) -> Unit
         fun savePaper() {
             paperPrefs.edit().putFloat("cash_usdt", paperCash.toFloat())
                 .putString("positions", paperPositions.toString())
@@ -292,7 +293,7 @@ class CryptoScanner(private val context: Context) {
             buyButton.setOnClickListener {
                 val amount = amountInput.text.toString().replace(",", ".").toDoubleOrNull()
                 if (amount == null || amount <= 0.0) status.text = "Введите сумму в USDT."
-                else paperTrade(exchange, symbol, price, amount, false)
+                else manualServerBuy(exchange, symbol, price, amount)
             }
             tradeRow.addView(amountInput)
             tradeRow.addView(buyButton)
@@ -636,6 +637,63 @@ class CryptoScanner(private val context: Context) {
                         serverPaperState = state
                         serverPaperError = error
                         serverPaperLoading = false
+                        render()
+                    }
+                }.start()
+            }
+        }
+
+
+        manualServerBuy = { exchange, symbol, price, amount ->
+            if (exchange != "Bybit") {
+                status.text = "Ручная покупка доступна только через Bybit Spot."
+            } else if (!price.isFinite() || price <= 0.0 || amount < 1.0) {
+                status.text = "Проверьте цену и сумму покупки (минимум 1 USDT)."
+            } else {
+                status.text = "Отправляем ручную покупку $symbol на сервер..."
+                Thread {
+                    var state: JSONObject? = null
+                    var error: String? = null
+                    try {
+                        val connection = URL("https://han-invest-api-test.onrender.com/api/v1/paper/buy")
+                            .openConnection() as HttpURLConnection
+                        try {
+                            connection.requestMethod = "POST"
+                            connection.connectTimeout = 15000
+                            connection.readTimeout = 20000
+                            connection.doOutput = true
+                            connection.setRequestProperty("Accept", "application/json")
+                            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                            val payload = JSONObject()
+                                .put("exchange", exchange)
+                                .put("symbol", symbol)
+                                .put("price", price)
+                                .put("amount_usdt", amount)
+                            connection.outputStream.use {
+                                it.write(payload.toString().toByteArray(Charsets.UTF_8))
+                            }
+                            val code = connection.responseCode
+                            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                            val raw = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                            if (code !in 200..299) {
+                                val detail = try { JSONObject(raw).optString("detail", raw) } catch (_: Exception) { raw }
+                                throw Exception("HTTP $code: $detail")
+                            }
+                            state = JSONObject(raw)
+                        } finally {
+                            connection.disconnect()
+                        }
+                    } catch (e: Exception) {
+                        error = e.message ?: "Ошибка соединения"
+                    }
+                    Handler(Looper.getMainLooper()).post {
+                        if (state != null) {
+                            serverPaperState = state
+                            serverPaperError = null
+                            status.text = "Ручная покупка $symbol отправлена в общий серверный Paper Trading."
+                        } else {
+                            status.text = "Ручная покупка не выполнена: $error"
+                        }
                         render()
                     }
                 }.start()
