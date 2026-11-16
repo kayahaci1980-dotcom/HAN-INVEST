@@ -32,6 +32,8 @@ class PaperTradingRuleTests(unittest.TestCase):
             "atr_14_1h": 1.0,
             "atr_candle_time": "2026-11-15T10:00:00Z",
             "score": score,
+            "long_score": 80,
+            "short_score": 80,
             "trade_ready": True,
             "ma20": 99.0,
             "ma50": 98.0,
@@ -64,12 +66,16 @@ class PaperTradingRuleTests(unittest.TestCase):
             self.assertTrue(opened)
             db.execute("UPDATE paper_account SET cash=5000 WHERE id=1")
 
-    def test_score_60_allows_long_entry(self):
-        paper._apply_market_data("Bybit", {"assets": [self.asset(60)]}, True)
-        self.assertEqual(len(self.positions()), 1)
+    def test_long_entry_requires_directional_score_80(self):
+        asset = self.asset()
+        asset["long_score"] = 79
+        paper._apply_market_data("Bybit", {"assets": [asset]}, True)
+        self.assertEqual(len(self.positions()), 0)
 
-    def test_score_below_60_does_not_block_long_entry(self):
-        paper._apply_market_data("Bybit", {"assets": [self.asset(1)]}, False, False)
+    def test_long_entry_opens_at_directional_score_80(self):
+        asset = self.asset()
+        asset["long_score"] = 80
+        paper._apply_market_data("Bybit", {"assets": [asset]}, True)
         self.assertEqual(len(self.positions()), 1)
 
     def test_score_change_does_not_close_existing_position(self):
@@ -263,24 +269,22 @@ class PaperTradingRuleTests(unittest.TestCase):
         paper._apply_market_data("Bybit", {"assets": [asset]}, False, False)
         self.assertEqual(len(self.positions()), 1)
 
-    def test_score_60_allows_short_entry(self):
+    def test_short_entry_requires_directional_score_80(self):
         asset = self.asset(1, 99.9)
         asset["momentum_6h_pct"] = -0.1
-        asset["ma20"], asset["ma50"] = 101.0, 102.0
+        asset["short_score"] = 79
+        paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
+        self.assertEqual(len(self.positions()), 0)
+
+    def test_short_entry_opens_at_directional_score_80(self):
+        asset = self.asset(1, 99.9)
+        asset["momentum_6h_pct"] = -0.1
+        asset["short_score"] = 80
         paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
         positions = self.positions()
         self.assertEqual(len(positions), 1)
         self.assertEqual(positions[0]["direction"], "SHORT")
         self.assertAlmostEqual(float(positions[0]["cost_usdt"]), 100.0, places=5)
-
-    def test_score_below_60_does_not_block_short_entry(self):
-        asset = self.asset(1, 99.9)
-        asset["momentum_6h_pct"] = -0.1
-        asset["ma20"], asset["ma50"] = 0.0, 0.0
-        paper._apply_market_data("Bybit", {"assets": [asset]}, False, False)
-        positions = self.positions()
-        self.assertEqual(len(positions), 1)
-        self.assertEqual(positions[0]["direction"], "SHORT")
 
     def test_adds_equal_initial_tranches_at_each_one_percent_milestone_once(self):
         self.seed_position()
