@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 BASE = "https://api.bybit.com"
 CACHE_TTL = 45
 MIN_PAPER_VOLUME_24H = 3_000_000
-MAX_PAPER_VOLUME_24H = 40_000_000
 _NAME_CACHE_TTL = 21600
 _name_cache: tuple[float, dict[str, str]] = (0.0, {})
 _cache: tuple[float, dict[str, Any]] | None = None
@@ -162,7 +161,7 @@ async def analyze(
         strong_uptrend = price > ma20 > ma50
         strong_downtrend = price < ma20 < ma50
         pair_verified = instrument.get("status") == "Trading" and instrument.get("quoteCoin") == "USDT"
-        liquid_enough = MIN_PAPER_VOLUME_24H <= quote_volume <= MAX_PAPER_VOLUME_24H
+        liquid_enough = quote_volume >= MIN_PAPER_VOLUME_24H
         long_setup = (
             pair_verified and liquid_enough and strong_uptrend and change6 > 0
             and volume_confirmed and (change24 - btc_change_24h_pct) > 0
@@ -255,7 +254,7 @@ async def scan_bybit(
             btc = next((x for x in all_tickers if x.get("symbol") == "BTCUSDT"), None)
             tickers = [
                 x for x in all_tickers
-                if x.get("symbol") in instruments and max(min_volume, MIN_PAPER_VOLUME_24H) <= float(x.get("turnover24h") or 0) <= MAX_PAPER_VOLUME_24H
+                if x.get("symbol") in instruments and float(x.get("turnover24h") or 0) >= max(min_volume, MIN_PAPER_VOLUME_24H)
             ]
             btc_change_24h_pct = float(btc.get("price24hPcnt") or 0) * 100 if btc else 0.0
             btc_state = "UNKNOWN"
