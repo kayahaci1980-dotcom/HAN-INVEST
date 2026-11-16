@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -939,226 +940,102 @@ def _apply_market_data(
             else:
                 _manage_short_scale(db, current, price)
 
-        # Diagnostic counters are observational only; they never alter entry decisions.
-        diagnostic = {
-            "assets": len(assets), "candidates": 0, "opened_long": 0, "opened_short": 0,
-            "common_rejections": {}, "long_rejections": {}, "short_rejections": {},
-            "market_long_allowed": bool(allow_new_entries),
-            "market_short_allowed": bool(allow_short_entries),
-        }
-
-        def count_rejection(bucket: str, reason: str) -> None:
-            counts = diagnostic[bucket]
-            counts[reason] = counts.get(reason, 0) + 1
-
-        # Market breadth blocks only new entries. Continue evaluating candidates
-        # for diagnostics; with both directions disabled, no entry condition can pass.
+        # No technical, score, volume, trend, daily-open, or breadth entry filters.
+        # Operational checks and protective position sizing/stops remain mandatory.
+        diagnostic = {"assets": len(assets), "candidates": 0, "opened_long": 0, "opened_short": 0,
+                      "common_rejections": {}, "long_rejections": {}, "short_rejections": {},
+                      "market_long_allowed": True, "market_short_allowed": True}
+        def reject(reason: str, direction: str | None = None) -> None:
+            bucket = diagnostic["common_rejections"]
+            bucket[reason] = bucket.get(reason, 0) + 1
+            if direction:
+                key = "long_rejections" if direction == "LONG" else "short_rejections"
+                bucket = diagnostic[key]
+                bucket[reason] = bucket.get(reason, 0) + 1
         current_positions = db.execute("SELECT COUNT(*) AS n FROM paper_positions").fetchone()["n"]
         diagnostic["open_positions"] = int(current_positions)
         diagnostic["max_positions"] = _MAX_POSITIONS
-        if current_positions >= _MAX_POSITIONS:
-            diagnostic["position_limit_blocked"] = True
-            logger.info("PAPER entry diagnostics %s", diagnostic)
-            return
-        candidates = sorted(
-            (x for x in assets if isinstance(x, dict)),
-            key=lambda x: float(x.get("quote_volume_24h") or 0), reverse=True,
-        )
+        candidates = sorted((x for x in assets if isinstance(x, dict)),
+                            key=lambda x: float(x.get("quote_volume_24h") or 0), reverse=True)
         diagnostic["candidates"] = len(candidates)
         for asset in candidates:
             if current_positions >= _MAX_POSITIONS:
                 diagnostic["position_limit_blocked"] = True
                 break
+            symbol = str(asset.get("symbol") or "").strip().upper()
             try:
                 price = float(asset.get("price") or 0)
                 atr = float(asset.get("atr_14_1h") or 0)
-                ma20 = float(asset.get("ma20") or asset.get("ema20") or 0)
-                ma50 = float(asset.get("ma50") or 0)
-                daily_open = float(asset.get("daily_open") or 0)
-                volume = float(asset.get("quote_volume_24h") or 0)
-                score = float(asset.get("score") or 0)
-                long_score = float(asset.get("long_score", score) or 0)
-                short_score = float(asset.get("short_score", score) or 0)
+                candle_time = str(asset.get("atr_candle_time") or "")
+                momentum = float(asset.get("momentum_6h_pct") or 0)
             except (TypeError, ValueError):
-                count_rejection("common_rejections", "invalid_numeric_data")
-                count_rejection("long_rejections", "invalid_numeric_data")
-                count_rejection("short_rejections", "invalid_numeric_data")
-                logger.info("PAPER candidate %s rejected: invalid_numeric_data",
-                            str(asset.get("symbol") or "UNKNOWN"))
+                reject("invalid_numeric_data")
                 continue
-            symbol = str(asset.get("symbol") or "")
-            rejects = []
-            if asset.get("trade_ready") is not True: rejects.append("trade_ready=false")
-            if not symbol: rejects.append("symbol_missing")
-            if symbol and _is_stablecoin_pair(symbol): rejects.append("stablecoin_pair")
-            if max(long_score, short_score) < 60:
-                rejects.append(f"both_direction_scores_below_60:LONG={long_score:g},SHORT={short_score:g}")
-            if price <= 0: rejects.append("price_missing")
-            if atr <= 0: rejects.append("atr_missing")
-            if daily_open <= 0: rejects.append("daily_open_missing")
-            if volume < 3_000_000: rejects.append(f"volume_below_3m:{volume:g}")
-            if str(asset.get("atr_timeframe") or "") != "1H": rejects.append("atr_timeframe_not_1H")
-            if not asset.get("atr_candle_time"): rejects.append("atr_candle_time_missing")
-            if rejects:
-                for reason in rejects:
-                    count_rejection("common_rejections", reason)
-                    count_rejection("long_rejections", reason)
-                    count_rejection("short_rejections", reason)
-                logger.info("PAPER candidate %s rejected: %s", symbol or "UNKNOWN", ",".join(rejects))
+            # Valid price and ATR candle are essential to attach the existing protective stop.
+            if not symbol:
+                reject("symbol_missing")
+                continue
+            if price <= 0 or not math.isfinite(price):
+                reject("price_missing")
+                continue
+            if atr <= 0 or not math.isfinite(atr) or not candle_time:
+                reject("protective_atr_data_missing")
+                continue
+            if db.execute("SELECT 1 FROM paper_positions WHERE exchange=? AND symbol=?",
+                          (exchange, symbol)).fetchone():
+                reject("position_already_open")
                 continue
             cooldown = db.execute("SELECT blocked_until FROM paper_loss_cooldowns WHERE exchange=? AND symbol=?",
                                   (exchange, symbol)).fetchone()
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
-                count_rejection("common_rejections", "cooldown_active")
-                count_rejection("long_rejections", "cooldown_active")
-                count_rejection("short_rejections", "cooldown_active")
-                logger.info("PAPER candidate %s rejected: cooldown_active", symbol)
+                reject("cooldown_active")
                 continue
-            long_trend = ma20 > 0 and ma50 > 0 and price > ma20 > ma50
-            short_trend = ma20 > 0 and ma50 > 0 and price < ma20 < ma50
-            long_daily_ok = price < daily_open + 0.5 * atr
-            short_daily_ok = price > daily_open - 0.5 * atr
-            # Record every directional blocker, including market breadth, separately.
-            if not allow_new_entries: count_rejection("long_rejections", "market_breadth_blocked")
-            if long_score < 60: count_rejection("long_rejections", "score_below_60")
-            if not long_trend: count_rejection("long_rejections", "MA20_MA50_trend_not_met")
-            if not long_daily_ok: count_rejection("long_rejections", "daily_open_guard")
-            if not allow_short_entries: count_rejection("short_rejections", "market_breadth_blocked")
-            if short_score < 60: count_rejection("short_rejections", "score_below_60")
-            if not short_trend: count_rejection("short_rejections", "MA20_MA50_trend_not_met")
-            if not short_daily_ok: count_rejection("short_rejections", "daily_open_guard")
-            opened = False
-            if allow_new_entries and long_score >= 60 and long_trend and long_daily_ok:
-                opened = _open_position(db, exchange, asset, "AUTO_LONG_ATR_PRO_RR_1_2")
-                if not opened:
-                    logger.info("PAPER LONG %s score=%g passed filters but sizing/entry rejected", symbol, long_score)
-            elif allow_short_entries and short_score >= 60 and short_trend and short_daily_ok:
-                opened = _open_short_position(db, exchange, asset, "AUTO_SHORT_ATR_PRO_RR_1_2")
-                if not opened:
-                    logger.info("PAPER SHORT %s score=%g passed filters but sizing/entry rejected", symbol, short_score)
-            else:
-                reasons = []
-                if long_score < 60: reasons.append(f"LONG_score_below_60:{long_score:g}")
-                if short_score < 60: reasons.append(f"SHORT_score_below_60:{short_score:g}")
-                if not long_trend: reasons.append("LONG_trend_price>MA20>MA50_not_met")
-                if not long_daily_ok: reasons.append("LONG_daily_open_guard")
-                if not short_trend: reasons.append("SHORT_trend_price<MA20<MA50_not_met")
-                if not short_daily_ok: reasons.append("SHORT_daily_open_guard")
-                logger.info("PAPER candidate %s no entry: %s", symbol, ",".join(reasons))
+            # Momentum chooses direction only; it does not block an entry.
+            direction = "LONG" if momentum >= 0 else "SHORT"
+            reason = "AUTO_LONG_NO_ENTRY_FILTERS" if direction == "LONG" else "AUTO_SHORT_NO_ENTRY_FILTERS"
+            opened = _open_position(db, exchange, asset, reason) if direction == "LONG" else _open_short_position(db, exchange, asset, reason)
             if opened:
-                if allow_new_entries and long_score >= 60 and long_trend and long_daily_ok:
-                    diagnostic["opened_long"] += 1
-                else:
-                    diagnostic["opened_short"] += 1
-                logger.info("PAPER opened %s", symbol)
+                diagnostic["opened_long" if direction == "LONG" else "opened_short"] += 1
                 current_positions += 1
+                logger.info("PAPER opened %s %s without entry filters", direction, symbol)
+            else:
+                reject("protected_position_creation_rejected", direction)
         logger.info("PAPER entry diagnostics %s", diagnostic)
 
-
 async def _scan_cycle() -> None:
-    global _last_market_breadth
     async with _cycle_lock:
         try:
-            # Bybit Live Market is the only market-data source used by HAN INVEST.
-            gathered = await asyncio.gather(
-                get_market_breadth(),
-                scan_bybit(limit=100, min_volume=3_000_000,
-                           capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
-                           fee_rate=_FEE_RATE),
-                return_exceptions=True,
-            )
-            breadth_result, bybit_payload = gathered
+            # Bybit Spot only. Breadth is not used; both entry directions are enabled.
+            bybit_payload = await scan_bybit(limit=500, min_volume=0, capital_usdt=_INITIAL_CASH,
+                                             risk_pct=_RISK_PCT, fee_rate=_FEE_RATE)
             errors = []
-            if isinstance(breadth_result, BaseException) or not isinstance(breadth_result, dict):
-                # Fail closed for new entries when the 50% market-breadth
-                # filter cannot be calculated. Existing positions are still
-                # managed and protective exits continue to run.
-                allow_new_entries = False
-                allow_short_entries = False
-                _last_market_breadth = {
-                    "available": False, "status": "UNAVAILABLE",
-                    "allow_new_entries": False,
-                    "allow_long_entries": False,
-                    "allow_short_entries": False,
-                    "threshold_pct": 50.0,
-                    "fallback": "BLOCK_NEW_ENTRIES",
-                    "reason": "Глобальные данные недоступны; новые входы заблокированы до восстановления фильтра 50%.",
-                }
-                errors.append("Market breadth unavailable; new entries blocked")
-                logger.warning("Market breadth unavailable; blocking new entries")
-            else:
-                _last_market_breadth = dict(breadth_result)
-                # Global 50% market-breadth gate is directional:
-                # rising >= 50% enables LONG only; falling >= 50% enables SHORT only.
-                # Each Bybit symbol must still pass its own technical and risk filters.
-                allow_new_entries = (
-                    breadth_result.get("allow_long_entries") is True
-                    if "allow_long_entries" in breadth_result
-                    else False
-                )
-                allow_short_entries = breadth_result.get("allow_short_entries") is True
-                logger.info(
-                    "Market breadth %s: rising=%.2f%% falling=%.2f%%; LONG=%s SHORT=%s",
-                    breadth_result.get("status"),
-                    float(breadth_result.get("rising_pct") or 0),
-                    float(breadth_result.get("falling_pct") or 0),
-                    "allowed" if allow_new_entries else "blocked",
-                    "allowed" if allow_short_entries else "blocked",
-                )
-            # Bybit Spot is the only supported market-data and PAPER-trading venue.
-            successes = 0
-            if isinstance(bybit_payload, BaseException):
-                errors.append("Bybit: " + type(bybit_payload).__name__)
-                bybit_payload = None
-            elif isinstance(bybit_payload, dict):
-                successes = 1
-            else:
-                errors.append("Bybit: invalid response")
+            with _connect() as db:
+                open_symbols = [str(row["symbol"]) for row in db.execute(
+                    "SELECT symbol FROM paper_positions WHERE exchange='Bybit'").fetchall()]
             try:
-                with _connect() as db:
-                    open_symbols = [
-                        str(row["symbol"]) for row in db.execute(
-                            "SELECT symbol FROM paper_positions WHERE exchange='Bybit'"
-                        ).fetchall()
-                    ]
                 live_quotes = await fetch_spot_ticker_prices(open_symbols)
             except Exception as quote_error:
                 live_quotes = {}
-                logger.warning("Direct Bybit quotes unavailable for open positions: %s",
-                               type(quote_error).__name__)
+                logger.warning("Direct Bybit quotes unavailable for open positions: %s", type(quote_error).__name__)
             if isinstance(bybit_payload, dict):
-                bybit_assets = bybit_payload.get("assets") or []
-                logger.info(
-                    "PAPER cycle Bybit payload assets=%d long_entries=%s short_entries=%s",
-                    len(bybit_assets) if isinstance(bybit_assets, list) else -1,
-                    allow_new_entries, allow_short_entries,
-                )
-                _apply_market_data("Bybit", bybit_payload, allow_new_entries=allow_new_entries,
-                                   allow_short_entries=allow_short_entries,
-                                   position_prices=live_quotes)
+                assets = bybit_payload.get("assets") or []
+                logger.info("PAPER cycle Bybit assets=%d LONG=enabled SHORT=enabled",
+                            len(assets) if isinstance(assets, list) else -1)
+                _apply_market_data("Bybit", bybit_payload, allow_new_entries=True,
+                                   allow_short_entries=True, position_prices=live_quotes)
             else:
-                # Even if technical analysis fails, keep managing exits using direct
-                # ticker quotes. Empty assets disable all new entries in this fallback.
                 errors.append("Bybit analysis unavailable; existing positions checked using direct quotes")
                 _apply_market_data("Bybit", {"assets": []}, allow_new_entries=False,
                                    allow_short_entries=False, position_prices=live_quotes)
             logger.info("Market-data source and PAPER trading venue: Bybit Spot only")
             with _connect() as db:
-                db.execute(
-                    """UPDATE paper_account SET last_scan_at=?, last_error=?, updated_at=?
-                       WHERE id=1""",
-                    (_now(), "; ".join(errors) if errors else None, _now()),
-                )
-            if successes == 0:
-                logger.warning("HAN INVEST paper scan failed: %s", "; ".join(errors))
+                db.execute("""UPDATE paper_account SET last_scan_at=?, last_error=?, updated_at=? WHERE id=1""",
+                           (_now(), "; ".join(errors) if errors else None, _now()))
         except Exception as exc:
             logger.exception("HAN INVEST paper trading cycle failed")
             with _connect() as db:
-                db.execute(
-                    "UPDATE paper_account SET last_error=?, updated_at=? WHERE id=1",
-                    (type(exc).__name__, _now()),
-                )
-
+                db.execute("UPDATE paper_account SET last_error=?, updated_at=? WHERE id=1",
+                           (type(exc).__name__, _now()))
 
 async def _worker() -> None:
     _init_db()
