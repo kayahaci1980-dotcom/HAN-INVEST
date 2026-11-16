@@ -1036,21 +1036,22 @@ async def _scan_cycle() -> None:
             breadth_result, *results = gathered
             errors = []
             if isinstance(breadth_result, BaseException) or not isinstance(breadth_result, dict):
-                # Fail open only for the optional global breadth overlay:
-                # Bybit's own per-symbol trend, volume, ATR, RR and daily-open
-                # filters still decide whether a LONG or SHORT may be opened.
-                # Position management and protective exits run independently above.
-                allow_new_entries = True
-                allow_short_entries = True
+                # Fail closed for new entries when the 50% market-breadth
+                # filter cannot be calculated. Existing positions are still
+                # managed and protective exits continue to run.
+                allow_new_entries = False
+                allow_short_entries = False
                 _last_market_breadth = {
                     "available": False, "status": "UNAVAILABLE",
-                    "allow_new_entries": True,
-                    "allow_short_entries": True,
-                    "fallback": "BYBIT_ONLY",
-                    "reason": "Глобальные данные недоступны; входы проверяются по локальным фильтрам Bybit.",
+                    "allow_new_entries": False,
+                    "allow_long_entries": False,
+                    "allow_short_entries": False,
+                    "threshold_pct": 50.0,
+                    "fallback": "BLOCK_NEW_ENTRIES",
+                    "reason": "Глобальные данные недоступны; новые входы заблокированы до восстановления фильтра 50%.",
                 }
-                errors.append("Market breadth: unavailable; using Bybit-only entry filters")
-                logger.warning("Market breadth unavailable; falling back to Bybit-only entry filters")
+                errors.append("Market breadth unavailable; new entries blocked")
+                logger.warning("Market breadth unavailable; blocking new entries")
             else:
                 _last_market_breadth = dict(breadth_result)
                 # Global 50% market-breadth gate is directional:
