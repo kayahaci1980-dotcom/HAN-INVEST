@@ -21,7 +21,7 @@ async def _refresh_snapshot() -> None:
     async with _scan_lock:
         try:
             payload = await scan_bybit(
-                limit=1000,
+                limit=100,
                 min_volume=100_000,
                 capital_usdt=100.0,
                 risk_pct=1.0,
