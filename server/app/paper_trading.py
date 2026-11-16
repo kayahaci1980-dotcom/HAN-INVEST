@@ -1017,9 +1017,18 @@ def _apply_market_data(
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
                 reject("cooldown_active")
                 continue
-            # Momentum chooses direction only; it does not block an entry.
+            # Directional score threshold applies symmetrically to LONG and SHORT.
             direction = "LONG" if momentum >= 0 else "SHORT"
-            reason = "AUTO_LONG_NO_ENTRY_FILTERS" if direction == "LONG" else "AUTO_SHORT_NO_ENTRY_FILTERS"
+            score_key = "long_score" if direction == "LONG" else "short_score"
+            try:
+                directional_score = float(asset.get(score_key, asset.get("score", 0)) or 0)
+            except (TypeError, ValueError):
+                reject("invalid_directional_score", direction)
+                continue
+            if not math.isfinite(directional_score) or directional_score < 80:
+                reject("score_below_80", direction)
+                continue
+            reason = "AUTO_LONG_SCORE_80" if direction == "LONG" else "AUTO_SHORT_SCORE_80"
             opened = _open_position(db, exchange, asset, reason) if direction == "LONG" else _open_short_position(db, exchange, asset, reason)
             if opened:
                 diagnostic["opened_long" if direction == "LONG" else "opened_short"] += 1
