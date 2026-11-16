@@ -178,6 +178,34 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.assertEqual(trade["reason"], "STOP_LOSS")
         self.assertIsNotNone(self.cooldown())
 
+    def test_direct_live_quote_closes_long_even_when_symbol_is_outside_analysis_universe(self):
+        self.seed_position("LONG")
+        paper._apply_market_data(
+            "Bybit", {"assets": []}, False, False,
+            position_prices={"BTCUSDT": 98.5},
+        )
+        self.assertEqual(len(self.positions()), 0)
+        with paper._connect() as db:
+            trade = db.execute(
+                "SELECT * FROM paper_trades WHERE pnl_usdt IS NOT NULL ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(trade["reason"], "STOP_LOSS")
+        self.assertIsNotNone(self.cooldown())
+
+    def test_direct_live_quote_closes_short_even_when_symbol_is_outside_analysis_universe(self):
+        self.seed_position("SHORT")
+        paper._apply_market_data(
+            "Bybit", {"assets": []}, False, False,
+            position_prices={"BTCUSDT": 101.5},
+        )
+        self.assertEqual(len(self.positions()), 0)
+        with paper._connect() as db:
+            trade = db.execute(
+                "SELECT * FROM paper_trades WHERE side='SHORT_COVER' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(trade["reason"], "STOP_LOSS")
+        self.assertIsNotNone(self.cooldown())
+
     def test_two_consecutive_losses_block_only_same_symbol_for_eight_hours(self):
         with paper._connect() as db:
             for _ in range(2):
