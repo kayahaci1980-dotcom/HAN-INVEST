@@ -818,8 +818,8 @@ def _apply_market_data(
                 net_pnl = quantity * price * (1.0 - _FEE_RATE) - cost
             loss_pct = (net_pnl / cost * 100.0) if cost > 0 else 0.0
             initial_risk = float(current["initial_risk"] or 0)
-            atr_1h = float(asset.get("atr_14_1h") or current["atr_14_1h"] or 0)
-            candle_time = str(asset.get("atr_candle_time") or "")
+            atr_1h = float((asset or {}).get("atr_14_1h") or current["atr_14_1h"] or 0)
+            candle_time = str((asset or {}).get("atr_candle_time") or "")
             stop = float(current["stop_loss"] or 0)
             # Legacy positions may still carry the former unapproved fixed +2R TP.
             # Disable it so it cannot cut off the +2R/+3R trailing stages.
