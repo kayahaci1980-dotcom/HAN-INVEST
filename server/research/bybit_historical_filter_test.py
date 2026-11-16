@@ -170,9 +170,9 @@ def simulate_variant(history: dict[str, list[Candle]], direction_mode: str, atr_
             qty = TICKET / entry
             # Solve for a stop whose estimated round-trip net loss is $1.
             if side == "LONG":
-                stop = (TICKET - STOP_NET) / (qty * (1 - FEE))
+                stop = (TICKET * (1 + FEE) - STOP_NET) / (qty * (1 - FEE))
             else:
-                stop = (TICKET + STOP_NET) / (qty * (1 + FEE))
+                stop = (TICKET * (1 - FEE) + STOP_NET) / (qty * (1 + FEE))
             positions[symbol] = {"side": side, "entry": entry, "qty": qty,
                                  "stop": stop, "entry_index": i + 1}
     net_values = [x["net"] for x in trades]
@@ -191,7 +191,7 @@ def simulate_variant(history: dict[str, list[Candle]], direction_mode: str, atr_
         "win_rate_pct": round(100 * wins / len(trades), 2) if trades else 0.0,
         "max_drawdown_pct": round(max_dd * 100, 2),
         "stop_loss_count": sum(x["reason"] == "STOP_LOSS" for x in trades),
-        "method_note": "hourly OHLC approximation; intrabar stop assumed first",
+        "method_note": "hourly OHLC; stop-first; closed-trade drawdown; static 10-pair breadth proxy",
     }
 
 
