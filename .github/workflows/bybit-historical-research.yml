@@ -1,6 +1,12 @@
 name: Bybit Spot historical filter research
 
 on:
+  push:
+    branches:
+      - feat/atr-pro-volume-50m-100m
+    paths:
+      - "server/research/bybit_historical_filter_test.py"
+      - ".github/workflows/bybit-historical-research.yml"
   workflow_dispatch:
     inputs:
       days:
