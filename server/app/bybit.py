@@ -236,6 +236,92 @@ async def analyze(
 
 
 @router.get("/api/v1/crypto/bybit/scan")
+_paper_market_cache: tuple[float, dict[str, Any]] | None = None
+
+
+async def get_paper_market_data(
+    limit: int = 500, capital_usdt: float | None = None,
+    risk_pct: float = 1.0, fee_rate: float = 0.001,
+) -> dict[str, Any]:
+    """Independent Bybit Spot market feed for PAPER; never calls scan_bybit()."""
+    global _paper_market_cache
+    cache_key = (min(max(int(limit), 1), 500), capital_usdt, risk_pct, fee_rate)
+    if (_paper_market_cache and time.time() - _paper_market_cache[0] < 45
+            and _paper_market_cache[1].get("cache_key") == cache_key):
+        return _paper_market_cache[1]
+
+    try:
+        async with httpx.AsyncClient(timeout=20, headers={"User-Agent": "HAN-INVEST-PAPER/1.0"}) as client:
+            instruments_data, tickers_data = await asyncio.gather(
+                get_json(client, "/v5/market/instruments-info", {"category": "spot", "limit": "1000"}),
+                get_json(client, "/v5/market/tickers", {"category": "spot"}),
+            )
+            instruments = {
+                item.get("symbol"): item for item in instruments_data.get("list", [])
+                if item.get("quoteCoin") == "USDT" and item.get("status") == "Trading"
+            }
+            all_tickers = tickers_data.get("list", [])
+            btc = next((item for item in all_tickers if item.get("symbol") == "BTCUSDT"), None)
+            tickers = [item for item in all_tickers if item.get("symbol") in instruments]
+            btc_change = float(btc.get("price24hPcnt") or 0) * 100 if btc else 0.0
+            btc_state = "UNKNOWN"
+            if btc:
+                btc_data = await get_json(client, "/v5/market/kline", {
+                    "category": "spot", "symbol": "BTCUSDT", "interval": "60", "limit": "60"
+                })
+                btc_rows = list(reversed(btc_data.get("list", [])))[:-1]
+                btc_closes = [float(row[4]) for row in btc_rows]
+                if len(btc_closes) >= 50:
+                    btc_ma20, btc_ma50 = mean(btc_closes[-20:]), mean(btc_closes[-50:])
+                    btc_price = float(btc.get("lastPrice") or btc_closes[-1])
+                    btc_state = ("BULLISH" if btc_price > btc_ma20 > btc_ma50
+                                 else "BEARISH" if btc_price < btc_ma20 < btc_ma50
+                                 else "SIDEWAYS")
+
+            candidate_limit = min(max(int(limit), 1), 500)
+            selected = sorted(
+                tickers, key=lambda item: float(item.get("turnover24h") or 0), reverse=True
+            )[:candidate_limit]
+            semaphore = asyncio.Semaphore(5)
+
+            async def analyze_candidate(item):
+                async with semaphore:
+                    return await analyze(
+                        client, item, instruments[item["symbol"]], btc_state,
+                        capital_usdt, risk_pct, fee_rate, btc_change,
+                    )
+
+            analysed = await asyncio.gather(*(analyze_candidate(item) for item in selected))
+            assets = [item for item in analysed if item]
+            assets.sort(key=lambda item: item["score"], reverse=True)
+            for rank, asset in enumerate(assets, 1):
+                asset["name"] = str(asset.get("symbol") or "").removesuffix("USDT")
+                asset["market_rank"] = rank
+
+            payload = {
+                "source": "PAPER independent Bybit Spot market feed",
+                "exchange": "Bybit Spot", "scanned": len(assets),
+                "eligible_pairs": len(instruments),
+                "diagnostics": {
+                    "exchange_pairs": len(instruments),
+                    "analysis_candidates": len(tickers),
+                    "analysis_attempted": len(selected),
+                    "analysis_succeeded": len(assets),
+                    "analysis_skipped": len(selected) - len(assets),
+                },
+                "btc_market_filter": {"available": btc_state != "UNKNOWN",
+                                      "market_state": btc_state},
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "assets": assets, "limit": candidate_limit,
+                "cache_key": cache_key,
+            }
+            _paper_market_cache = (time.time(), payload)
+            return payload
+    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+        logger.warning("Independent PAPER Bybit feed unavailable: %s", type(exc).__name__)
+        raise
+
+
 async def scan_bybit(
     limit: int = Query(500, ge=1, le=1000),
     min_volume: float = Query(1_000_000, ge=0),
