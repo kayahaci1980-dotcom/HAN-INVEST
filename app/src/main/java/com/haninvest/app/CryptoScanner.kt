@@ -352,6 +352,54 @@ class CryptoScanner(private val context: Context) {
                 }
             }
             card.addView(detailsButton)
+            if (selectedTab == "ANALYSIS") {
+                val manualBuyButton = Button(context).apply {
+                    text = "Купить вручную • Bybit Spot"
+                    textSize = 12f
+                    buttonStyle(this, Color.rgb(20, 145, 90))
+                    setOnClickListener {
+                        isEnabled = false
+                        text = "Покупка..."
+                        Thread {
+                            var response: JSONObject? = null
+                            var error: String? = null
+                            try {
+                                val connection = URL("https://han-invest-api-test.onrender.com/api/v1/paper/buy").openConnection() as HttpURLConnection
+                                try {
+                                    connection.requestMethod = "POST"
+                                    connection.connectTimeout = 15000
+                                    connection.readTimeout = 30000
+                                    connection.doOutput = true
+                                    connection.setRequestProperty("Content-Type", "application/json")
+                                    connection.setRequestProperty("Accept", "application/json")
+                                    val body = JSONObject().put("exchange", "Bybit").put("symbol", symbol).toString()
+                                    connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                                    val code = connection.responseCode
+                                    val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                                    val raw = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                                    if (code !in 200..299) throw Exception("HTTP $code: $raw")
+                                    response = JSONObject(raw)
+                                } finally {
+                                    connection.disconnect()
+                                }
+                            } catch (e: Exception) {
+                                error = e.message ?: "Ошибка ручной покупки"
+                            }
+                            Handler(Looper.getMainLooper()).post {
+                                if (response != null) {
+                                    serverPaperState = response
+                                    serverPaperError = null
+                                    status.text = "Ручная виртуальная покупка $symbol через Bybit Spot выполнена."
+                                } else {
+                                    status.text = "Покупка не выполнена: " + (error ?: "неизвестная ошибка")
+                                }
+                                render()
+                            }
+                        }.start()
+                    }
+                }
+                card.addView(manualBuyButton)
+            }
             card.addView(label(
                 "MA20: ${coin.optString("ma20", "—")}   |   MA50: ${coin.optString("ma50", "—")}   |   ATR(14): ${coin.optString("atr_14_1d", coin.optString("atr_14", "—"))}",
                 11f, muted
