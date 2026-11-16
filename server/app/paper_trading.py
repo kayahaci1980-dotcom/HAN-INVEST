@@ -1155,6 +1155,48 @@ async def disable_paper_trading():
         )
     return _account_snapshot()
 
+@router.post("/buy")
+async def buy_paper_position(payload: dict[str, Any] = Body(...)):
+    """Manually open a virtual LONG using fresh Bybit Spot analysis only."""
+    exchange = str(payload.get("exchange") or "").strip()
+    symbol = str(payload.get("symbol") or "").strip().upper().replace("-", "").replace("/", "")
+    if exchange.lower() != "bybit":
+        raise HTTPException(status_code=400, detail="Manual PAPER purchases are restricted to Bybit Spot")
+    if not symbol or not symbol.endswith("USDT") or len(symbol) <= 4:
+        raise HTTPException(status_code=422, detail="A valid Bybit Spot USDT symbol is required")
+
+    async with _cycle_lock:
+        _init_db()
+        try:
+            market = await scan_bybit(limit=500, min_volume=0, capital_usdt=_INITIAL_CASH,
+                                      risk_pct=_RISK_PCT, fee_rate=_FEE_RATE)
+        except Exception as exc:
+            logger.exception("Manual Bybit PAPER market scan failed")
+            raise HTTPException(status_code=503, detail="Bybit Spot market data is temporarily unavailable") from exc
+
+        assets = market.get("assets", []) if isinstance(market, dict) else []
+        asset = next((item for item in assets
+                      if str(item.get("symbol") or "").upper().replace("-", "").replace("/", "") == symbol), None)
+        if asset is None:
+            raise HTTPException(status_code=404, detail="This pair is not currently available on Bybit Spot")
+
+        with _connect() as db:
+            account = db.execute("SELECT cash FROM paper_account WHERE id=1").fetchone()
+            if account is None or float(account["cash"]) < 10:
+                raise HTTPException(status_code=409, detail="Insufficient PAPER balance")
+            opened = _open_position(db, "Bybit", asset, "MANUAL_BUY")
+            if not opened:
+                existing = db.execute(
+                    "SELECT 1 FROM paper_positions WHERE exchange=? AND symbol=?",
+                    ("Bybit", str(asset.get("symbol") or symbol)),
+                ).fetchone()
+                if existing:
+                    raise HTTPException(status_code=409, detail="A Bybit PAPER position for this coin is already open")
+                raise HTTPException(status_code=409, detail="Manual buy blocked: valid price, ATR or risk sizing is unavailable")
+    logger.info("PAPER manual Bybit Spot buy opened for %s", symbol)
+    return _account_snapshot()
+
+
 @router.post("/sell")
 async def sell_paper_position(payload: dict[str, Any] = Body(...)):
     """Manually close one server-side virtual LONG or SHORT position."""

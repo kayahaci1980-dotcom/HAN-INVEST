@@ -8,6 +8,7 @@ on:
       - auto-paper-rules-coinbase-okx
       - fix/test-render-paper-accounting
       - feat/atr-pro-volume-50m-100m
+      - feature/manual-buy-analysis-bybit-dark-ui
     paths:
       - "app/**"
       - "server/**"
