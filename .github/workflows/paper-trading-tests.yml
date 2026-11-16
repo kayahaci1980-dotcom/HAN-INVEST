@@ -5,6 +5,7 @@ on:
     branches:
       - feature/paper-scale-in-0-5-stop
       - feat/atr-pro-volume-50m-100m
+      - feat/paper-profit-trailing-stop-1usdt
       - diagnostics/paper-entry-filters
       - paper-no-entry-filters
     paths:
