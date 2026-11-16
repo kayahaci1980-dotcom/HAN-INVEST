@@ -45,7 +45,7 @@ _RISK_PCT = 1.0
 _MAX_POSITIONS = 10
 _STOP_LOSS_COOLDOWN_SECONDS = 4 * 60 * 60
 _TAKE_PROFIT_COOLDOWN_SECONDS = 1 * 60 * 60
-_TRAILING_STOP_COOLDOWN_SECONDS = 2 * 60 * 60
+_TRAILING_STOP_COOLDOWN_SECONDS = 10 * 60
 _CONSECUTIVE_LOSSES_COOLDOWN_SECONDS = 8 * 60 * 60
 _SCAN_INTERVAL_SECONDS = max(10, int(os.getenv("PAPER_SCAN_INTERVAL_SECONDS", "10")))
 _worker_task: asyncio.Task | None = None
@@ -113,6 +113,7 @@ def _init_db() -> None:
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS atr_14_1h DOUBLE PRECISION NOT NULL DEFAULT 0")
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS trailing_stage INTEGER NOT NULL DEFAULT 0")
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS trailing_candle TEXT NOT NULL DEFAULT ''")
+            db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS peak_profit_usdt DOUBLE PRECISION NOT NULL DEFAULT 0")
             db.execute("ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS loss_started_at DOUBLE PRECISION")
             db.execute(
                 """CREATE TABLE IF NOT EXISTS paper_position_lots (
@@ -217,6 +218,7 @@ def _init_db() -> None:
             ("atr_14_1h", "REAL NOT NULL DEFAULT 0"),
             ("trailing_stage", "INTEGER NOT NULL DEFAULT 0"),
             ("trailing_candle", "TEXT NOT NULL DEFAULT ''"),
+            ("peak_profit_usdt", "REAL NOT NULL DEFAULT 0"),
             ("loss_started_at", "REAL"),
         ):
             if column not in position_columns:
@@ -885,18 +887,60 @@ def _apply_market_data(
                 ).fetchone()
             target = 0.0
 
-            previous_candle = str(current["trailing_candle"] or "")
-            is_new_candle = bool(candle_time and candle_time != previous_candle)
-            # First check the live quote. If it is beyond the stop, simulate a fill
-            # at the stop price (or current price when a gap has passed it).
+            # Profit-based trailing stop: retain the highest net PnL reached.
+            # The stop is exactly 1 USDT below that peak and is evaluated on every
+            # fresh quote, independently of the 1H analysis candle.
+            lots = db.execute(
+                "SELECT quantity, cost_usdt, entry_price FROM paper_position_lots WHERE exchange=? AND symbol=?",
+                (exchange, position["symbol"]),
+            ).fetchall()
+            if direction == "SHORT":
+                if lots:
+                    opening_fee = sum(max(0.0, float(lot["cost_usdt"]) -
+                                          float(lot["entry_price"]) * float(lot["quantity"]))
+                                      for lot in lots)
+                    gross_pnl = sum((float(lot["entry_price"]) - price) * float(lot["quantity"])
+                                    for lot in lots)
+                else:
+                    opening_fee = max(0.0, cost - entry * quantity)
+                    gross_pnl = (entry - price) * quantity
+                net_pnl = gross_pnl - opening_fee - price * quantity * _FEE_RATE
+            else:
+                net_pnl = quantity * price * (1.0 - _FEE_RATE) - cost
+
+            extreme = float(current["peak_price"] or entry)
+            extreme = max(extreme, price) if direction == "LONG" else min(extreme, price)
+            peak_profit = max(float(current["peak_profit_usdt"] or 0.0), net_pnl)
+            db.execute(
+                """UPDATE paper_positions
+                   SET peak_price=?, peak_profit_usdt=?
+                   WHERE exchange=? AND symbol=?""",
+                (extreme, peak_profit, exchange, position["symbol"]),
+            )
+            current = db.execute(
+                "SELECT * FROM paper_positions WHERE exchange=? AND symbol=?",
+                (exchange, position["symbol"]),
+            ).fetchone()
+
+            # Keep the existing hard loss protection separate from profit trailing.
+            stop = float(current["stop_loss"] or 0)
             if stop > 0 and (price <= stop if direction == "LONG" else price >= stop):
-                stop_reason = "TRAILING_STOP" if int(current["trailing_stage"] or 0) > 0 else "STOP_LOSS"
-                _close_position(db, current, min(price, stop) if direction == "LONG" else max(price, stop), stop_reason)
+                _close_position(
+                    db, current,
+                    min(price, stop) if direction == "LONG" else max(price, stop),
+                    "STOP_LOSS",
+                )
                 continue
 
-            # A direct ticker quote is sufficient to enforce the existing stop even
-            # when the symbol is outside the capped technical-analysis candidate list.
-            # Candle-based trailing updates still require the analyzed 1H candle data.
+            trailing_floor = peak_profit - 1.0
+            if peak_profit > 0 and net_pnl <= trailing_floor + 1e-9:
+                _close_position(db, current, price, "TRAILING_STOP")
+                logger.info(
+                    "PAPER %s %s closed by profit trailing stop: peak %.4f USDT, current %.4f USDT, giveback 1.00 USDT",
+                    direction, position["symbol"], peak_profit, net_pnl,
+                )
+                continue
+
             # Close a position after 110 seconds of continuously negative net PnL.
             # Reset the timer immediately when net PnL returns to zero or above.
             loss_started_at = current["loss_started_at"] if "loss_started_at" in current.keys() else None
@@ -921,47 +965,6 @@ def _apply_market_data(
                     (exchange, position["symbol"]),
                 )
 
-            if not asset:
-                continue
-
-            # Also inspect the just-completed 1H candle for a stop wick that may
-            # have crossed and recovered between 60-second quote scans.
-            candle_low = float(asset.get("candle_low_1h") or 0)
-            candle_high = float(asset.get("candle_high_1h") or 0)
-            crossed_in_candle = (
-                candle_low > 0 and candle_low <= stop if direction == "LONG" and stop > 0
-                else candle_high >= stop if direction == "SHORT" and stop > 0
-                else False
-            )
-            if is_new_candle and crossed_in_candle:
-                stop_reason = "TRAILING_STOP" if int(current["trailing_stage"] or 0) > 0 else "STOP_LOSS"
-                _close_position(db, current, stop, stop_reason)
-                continue
-
-            # Track the favorable extreme of the latest completed 1H candle.
-            extreme = float(current["peak_price"] or entry)
-            candle_extreme = float(asset.get("candle_high_1h" if direction == "LONG" else "candle_low_1h") or price)
-            extreme = max(extreme, candle_extreme) if direction == "LONG" else min(extreme, candle_extreme)
-            db.execute("UPDATE paper_positions SET peak_price=? WHERE exchange=? AND symbol=?",
-                       (extreme, exchange, position["symbol"]))
-            # Recalculate only when a new completed 1H candle is available.
-            if initial_risk > 0 and atr_1h > 0 and candle_time and candle_time != previous_candle:
-                favorable = (extreme - entry) if direction == "LONG" else (entry - extreme)
-                r_multiple = max(0.0, favorable / initial_risk)
-                stage = int(current["trailing_stage"] or 0)
-                candidate, new_stage = stop, stage
-                if r_multiple >= 3.0:
-                    candidate = extreme - 1.5 * atr_1h if direction == "LONG" else extreme + 1.5 * atr_1h
-                    new_stage = 3
-                elif r_multiple >= 2.0:
-                    candidate = extreme - 2.0 * atr_1h if direction == "LONG" else extreme + 2.0 * atr_1h
-                    new_stage = max(stage, 2)
-                elif r_multiple >= 1.5:
-                    candidate, new_stage = entry, max(stage, 1)
-                tightened = max(stop, candidate) if direction == "LONG" else min(stop, candidate)
-                db.execute("""UPDATE paper_positions SET stop_loss=?, peak_price=?, atr_14_1h=?,
-                    trailing_stage=?, trailing_candle=? WHERE exchange=? AND symbol=?""",
-                    (tightened, extreme, atr_1h, new_stage, candle_time, exchange, position["symbol"]))
             if direction == "LONG":
                 _manage_long_scale(db, current, price)
             else:
