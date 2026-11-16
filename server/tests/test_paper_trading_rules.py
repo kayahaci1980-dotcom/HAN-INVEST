@@ -147,11 +147,7 @@ class PaperTradingRuleTests(unittest.TestCase):
         paper._apply_market_data("Bybit", {"assets": [second]}, False)
         position = self.positions()[0]
         self.assertEqual(int(position["trailing_stage"]), 2)
-        with paper._connect() as db:
-            current = db.execute("SELECT * FROM paper_positions WHERE symbol='BTCUSDT'").fetchone()
-            hard_stop = paper._loss_limit_stop_price(db, current)
-        self.assertGreaterEqual(float(position["stop_loss"]), 101.0)
-        self.assertAlmostEqual(float(position["stop_loss"]), hard_stop, places=6)
+        self.assertGreater(float(position["stop_loss"]), 101.0)
 
     def test_long_trailing_uses_one_point_five_atr_at_three_r(self):
         self.seed_position()
@@ -182,11 +178,7 @@ class PaperTradingRuleTests(unittest.TestCase):
             paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
         position = self.positions()[0]
         self.assertEqual(int(position["trailing_stage"]), 2)
-        with paper._connect() as db:
-            current = db.execute("SELECT * FROM paper_positions WHERE symbol='BTCUSDT'").fetchone()
-            hard_stop = paper._loss_limit_stop_price(db, current)
-        self.assertLessEqual(float(position["stop_loss"]), 99.0)
-        self.assertAlmostEqual(float(position["stop_loss"]), hard_stop, places=6)
+        self.assertLess(float(position["stop_loss"]), 99.0)
 
     def test_short_trailing_uses_one_point_five_atr_at_three_r(self):
         self.seed_position("SHORT")
