@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app.bybit import scan_bybit
 
@@ -68,7 +68,16 @@ async def stop_analysis_worker() -> None:
 
 
 @router.get("/api/v1/crypto/bybit/analysis-latest")
-async def latest_bybit_analysis():
+async def latest_bybit_analysis(
+    capital_usdt: float = Query(100.0, gt=0),
+    risk_pct: float = Query(1.0, ge=0.1, le=5.0),
+):
+    if capital_usdt != 100.0 or risk_pct != 1.0:
+        try:
+            return await scan_bybit(limit=1000, min_volume=100_000,
+                                    capital_usdt=capital_usdt, risk_pct=risk_pct)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Данные Bybit Spot временно недоступны.") from exc
     if _latest_snapshot is None:
         raise HTTPException(
             status_code=503,
