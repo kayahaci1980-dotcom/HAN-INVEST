@@ -193,6 +193,11 @@ class CryptoScanner(private val context: Context) {
         var coinbase: ExchangeResult? = null
         var okx: ExchangeResult? = null
         var marketContext: JSONObject? = null
+        var liveMarketTickers: List<JSONObject> = emptyList()
+        var liveMarketLoading = false
+        var liveMarketError: String? = null
+        var liveMarketUpdatedAt: Long? = null
+        lateinit var refreshLiveMarket: () -> Unit
         var marketExchangeFilter = "ALL"
         var marketMoveFilter = "ALL"
         var loadingCount = 0
@@ -216,6 +221,7 @@ class CryptoScanner(private val context: Context) {
                     selectedTab = key
                     render()
                     if (key == "PAPER" || key == "HISTORY") refreshPaperServer()
+                    if (key == "MARKET") refreshLiveMarket()
                 }
             }
             tabs.addView(b)
@@ -383,14 +389,14 @@ class CryptoScanner(private val context: Context) {
         render = {
             tabs.removeAllViews()
             addTab("Главная", "HOME", purple)
-            addTab("Рынок LIVE", "MARKET", blue)
+            addTab("Live Market Bybit", "MARKET", blue)
             addTab("Анализ", "ANALYSIS", blue)
             addTab("PAPER", "PAPER", Color.rgb(20, 145, 90))
             addTab("История", "HISTORY", purple)
             content.removeAllViews()
             content.addView(label(
                 when (selectedTab) {
-                    "MARKET" -> "РЫНОК LIVE — BYBIT"
+                    "MARKET" -> "LIVE MARKET BYBIT"
                     "ANALYSIS" -> "АНАЛИЗ — ТЕХНИЧЕСКИЕ ПОКАЗАТЕЛИ"
                     "PAPER" -> "PAPER TRADING — ВИРТУАЛЬНЫЙ СЧЁТ"
                     "HISTORY" -> "ИСТОРИЯ СДЕЛОК"
@@ -615,6 +621,39 @@ class CryptoScanner(private val context: Context) {
                     render()
                 }
                 content.addView(reset)
+            } else if (selectedTab == "MARKET") {
+                content.addView(label("BYBIT SPOT • LIVE MARKET DATA", 13f, dark, true))
+                content.addView(label("Реальные рыночные котировки Bybit. Обновление каждые 60 секунд.", 11f, muted))
+                if (liveMarketLoading && liveMarketTickers.isEmpty()) {
+                    content.addView(label("Загружаем Live Market Bybit…", 13f, muted))
+                }
+                liveMarketError?.let { content.addView(label("Ошибка загрузки: $it", 12f, Color.RED)) }
+                liveMarketUpdatedAt?.let {
+                    content.addView(label("Последнее обновление: " + java.text.SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(java.util.Date(it)), 10f, muted))
+                }
+                if (liveMarketTickers.isEmpty() && !liveMarketLoading && liveMarketError == null) {
+                    content.addView(label("Ожидаем котировки Bybit…", 13f, muted))
+                }
+                liveMarketTickers.forEach { ticker ->
+                    val symbol = ticker.optString("symbol", "—")
+                    val price = ticker.optString("lastPrice", "0").toDoubleOrNull() ?: 0.0
+                    val changePct = (ticker.optString("price24hPcnt", "0").toDoubleOrNull() ?: 0.0) * 100.0
+                    val turnover = ticker.optString("turnover24h", "0").toDoubleOrNull() ?: 0.0
+                    val high = ticker.optString("highPrice24h", "0").toDoubleOrNull() ?: 0.0
+                    val low = ticker.optString("lowPrice24h", "0").toDoubleOrNull() ?: 0.0
+                    val card = LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(12), dp(11), dp(12), dp(11))
+                        background = rounded(Color.rgb(20, 29, 59), 12)
+                    }
+                    card.addView(label("$symbol • BYBIT SPOT", 15f, dark, true))
+                    card.addView(label("Цена: " + formatNumber(price, 8) + " USDT", 13f, dark, true))
+                    card.addView(label("Изменение 24 ч.: " + (if (changePct >= 0) "+" else "") + formatNumber(changePct, 2) + "%", 12f, if (changePct >= 0) Color.rgb(20, 190, 115) else Color.rgb(235, 85, 85), true))
+                    card.addView(label("Оборот 24 ч.: " + formatNumber(turnover, 0) + " USDT", 11f, muted))
+                    card.addView(label("Макс.: " + formatNumber(high, 8) + "  •  Мин.: " + formatNumber(low, 8), 11f, muted))
+                    content.addView(card)
+                    content.addView(View(context).apply { layoutParams = LinearLayout.LayoutParams(1, dp(7)) })
+                }
             } else {
             val y = bybit
             val c = ExchangeResult("Coinbase Exchange", "Отключена: анализ только Bybit", 0, 0, "—", false, emptyList(), "Анализ этой биржи отключён")
@@ -880,6 +919,48 @@ class CryptoScanner(private val context: Context) {
             }
         }
 
+        refreshLiveMarket = {
+            if (!liveMarketLoading) {
+                liveMarketLoading = true
+                liveMarketError = null
+                render()
+                Thread {
+                    var rows: List<JSONObject> = emptyList()
+                    var error: String? = null
+                    try {
+                        val connection = URL("https://api.bybit.com/v5/market/tickers?category=spot").openConnection() as HttpURLConnection
+                        val json = try {
+                            connection.requestMethod = "GET"
+                            connection.connectTimeout = 15000
+                            connection.readTimeout = 20000
+                            connection.setRequestProperty("Accept", "application/json")
+                            if (connection.responseCode !in 200..299) throw Exception("HTTP ${connection.responseCode}")
+                            JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+                        } finally {
+                            connection.disconnect()
+                        }
+                        if (json.optInt("retCode", -1) != 0) throw Exception(json.optString("retMsg", "Bybit API error"))
+                        val list = json.optJSONObject("result")?.optJSONArray("list") ?: JSONArray()
+                        rows = (0 until list.length()).mapNotNull { list.optJSONObject(it) }
+                            .filter { it.optString("symbol").endsWith("USDT") }
+                            .sortedByDescending { it.optString("turnover24h", "0").toDoubleOrNull() ?: 0.0 }
+                            .take(100)
+                    } catch (e: Exception) {
+                        error = e.message ?: "Ошибка соединения с Bybit"
+                    }
+                    Handler(Looper.getMainLooper()).post {
+                        if (rows.isNotEmpty()) {
+                            liveMarketTickers = rows
+                            liveMarketUpdatedAt = System.currentTimeMillis()
+                        }
+                        liveMarketError = error
+                        liveMarketLoading = false
+                        render()
+                    }
+                }.start()
+            }
+        }
+
         fun fetchExchange(exchange: String, address: String, done: (ExchangeResult) -> Unit) {
             Thread {
                 val result = try {
@@ -1051,6 +1132,7 @@ class CryptoScanner(private val context: Context) {
             override fun run() {
                 if (!section.isAttachedToWindow) return
                 loadAll()
+                if (selectedTab == "MARKET") refreshLiveMarket()
                 if (selectedTab == "HOME" || selectedTab == "PAPER" || selectedTab == "HISTORY") {
                     refreshPaperServer()
                 }
