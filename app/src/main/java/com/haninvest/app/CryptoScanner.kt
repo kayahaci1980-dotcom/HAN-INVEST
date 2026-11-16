@@ -1142,7 +1142,7 @@ class CryptoScanner(private val context: Context) {
             status.text = "Загружаем данные Bybit..."
             render()
             fetchExchange("Bybit",
-                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/scan?limit=1000&min_volume=100000&capital_usdt=$capital&risk_pct=$risk") {
+                "https://han-invest-api-test.onrender.com/api/v1/crypto/bybit/analysis-latest?capital_usdt=$capital&risk_pct=$risk") {
                 bybit = it
                 loadingCount--
                 status.text = "Данные Bybit обновлены."
