@@ -12,7 +12,7 @@ from psycopg.rows import dict_row
 
 from fastapi import APIRouter, Body, HTTPException
 
-from app.bybit import fetch_spot_ticker_prices, scan_bybit
+from app.bybit import fetch_spot_ticker_prices, get_paper_market_data
 from app.market_breadth import get_market_breadth
 
 logger = logging.getLogger(__name__)
@@ -970,11 +970,11 @@ def _apply_market_data(
             else:
                 _manage_short_scale(db, current, price)
 
-        # No technical, score, volume, trend, daily-open, or breadth entry filters.
-        # Operational checks and protective position sizing/stops remain mandatory.
+        # Existing positions above are always protected; market breadth gates new entries only.
         diagnostic = {"assets": len(assets), "candidates": 0, "opened_long": 0, "opened_short": 0,
                       "common_rejections": {}, "long_rejections": {}, "short_rejections": {},
-                      "market_long_allowed": True, "market_short_allowed": True}
+                      "market_long_allowed": bool(allow_new_entries),
+                      "market_short_allowed": bool(allow_short_entries)}
         def reject(reason: str, direction: str | None = None) -> None:
             bucket = diagnostic["common_rejections"]
             bucket[reason] = bucket.get(reason, 0) + 1
@@ -1023,6 +1023,12 @@ def _apply_market_data(
             # Momentum selects direction; each direction must meet score >= 80.
             # Existing positions are managed above and are not closed when score falls.
             direction = "LONG" if momentum >= 0 else "SHORT"
+            if direction == "LONG" and not allow_new_entries:
+                reject("market_breadth_long_blocked", direction)
+                continue
+            if direction == "SHORT" and not allow_short_entries:
+                reject("market_breadth_short_blocked", direction)
+                continue
             score_key = "long_score" if direction == "LONG" else "short_score"
             raw_score = asset.get(score_key, asset.get("score"))
             try:
@@ -1044,39 +1050,80 @@ def _apply_market_data(
         logger.info("PAPER entry diagnostics %s", diagnostic)
 
 async def _scan_cycle() -> None:
+    global _last_market_breadth
     async with _cycle_lock:
+        errors: list[str] = []
+        with _connect() as db:
+            open_symbols = [str(row["symbol"]) for row in db.execute(
+                "SELECT symbol FROM paper_positions WHERE exchange='Bybit'").fetchall()]
+
+        # Always obtain direct live quotes for every open position. These are used
+        # for protective exits even when analysis or market breadth is unavailable.
         try:
-            # Bybit Spot only. Breadth is not used; both entry directions are enabled.
-            bybit_payload = await scan_bybit(limit=500, min_volume=0, capital_usdt=_INITIAL_CASH,
-                                             risk_pct=_RISK_PCT, fee_rate=_FEE_RATE)
-            errors = []
-            with _connect() as db:
-                open_symbols = [str(row["symbol"]) for row in db.execute(
-                    "SELECT symbol FROM paper_positions WHERE exchange='Bybit'").fetchall()]
-            try:
-                live_quotes = await fetch_spot_ticker_prices(open_symbols)
-            except Exception as quote_error:
-                live_quotes = {}
-                logger.warning("Direct Bybit quotes unavailable for open positions: %s", type(quote_error).__name__)
-            if isinstance(bybit_payload, dict):
-                assets = bybit_payload.get("assets") or []
-                logger.info("PAPER cycle Bybit assets=%d LONG=enabled SHORT=enabled",
-                            len(assets) if isinstance(assets, list) else -1)
-                _apply_market_data("Bybit", bybit_payload, allow_new_entries=True,
-                                   allow_short_entries=True, position_prices=live_quotes)
-            else:
-                errors.append("Bybit analysis unavailable; existing positions checked using direct quotes")
-                _apply_market_data("Bybit", {"assets": []}, allow_new_entries=False,
-                                   allow_short_entries=False, position_prices=live_quotes)
-            logger.info("Market-data source and PAPER trading venue: Bybit Spot only")
-            with _connect() as db:
-                db.execute("""UPDATE paper_account SET last_scan_at=?, last_error=?, updated_at=? WHERE id=1""",
-                           (_now(), "; ".join(errors) if errors else None, _now()))
-        except Exception as exc:
-            logger.exception("HAN INVEST paper trading cycle failed")
-            with _connect() as db:
-                db.execute("UPDATE paper_account SET last_error=?, updated_at=? WHERE id=1",
-                           (type(exc).__name__, _now()))
+            live_quotes = await fetch_spot_ticker_prices(open_symbols)
+        except Exception as quote_error:
+            live_quotes = {}
+            logger.warning("Direct Bybit quotes unavailable for open positions: %s",
+                           type(quote_error).__name__)
+
+        # PAPER obtains its own Bybit Spot universe and per-coin technical analysis.
+        # This function does not call the general /crypto/bybit/scan endpoint.
+        try:
+            bybit_payload = await get_paper_market_data(
+                limit=500, capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT, fee_rate=_FEE_RATE
+            )
+        except Exception as market_error:
+            bybit_payload = None
+            errors.append("PAPER Bybit market analysis unavailable")
+            logger.warning("PAPER independent Bybit market feed failed: %s",
+                           type(market_error).__name__)
+
+        # Breadth is an independent market-wide filter, not the coin scanner.
+        try:
+            breadth = await get_market_breadth()
+            if not isinstance(breadth, dict) or not breadth.get("available"):
+                raise ValueError("Market breadth unavailable")
+            _last_market_breadth = dict(breadth)
+            allow_long = bool(breadth.get("allow_long_entries"))
+            allow_short = bool(breadth.get("allow_short_entries"))
+        except Exception as breadth_error:
+            _last_market_breadth = {
+                "available": False, "status": "UNAVAILABLE",
+                "allow_new_entries": False, "allow_long_entries": False,
+                "allow_short_entries": False,
+                "reason": "Данные Bybit Market Breadth недоступны; новые входы заблокированы.",
+            }
+            allow_long = False
+            allow_short = False
+            errors.append("Market breadth unavailable; new entries blocked")
+            logger.warning("PAPER market breadth unavailable: %s",
+                           type(breadth_error).__name__)
+
+        if isinstance(bybit_payload, dict):
+            assets = bybit_payload.get("assets") or []
+            logger.info(
+                "PAPER independent Bybit feed assets=%d LONG=%s SHORT=%s breadth=%s",
+                len(assets) if isinstance(assets, list) else -1,
+                "enabled" if allow_long else "blocked",
+                "enabled" if allow_short else "blocked",
+                _last_market_breadth.get("status", "UNAVAILABLE"),
+            )
+            _apply_market_data(
+                "Bybit", bybit_payload, allow_new_entries=allow_long,
+                allow_short_entries=allow_short, position_prices=live_quotes
+            )
+        else:
+            # No fresh analysis means no entries; existing positions still receive
+            # direct ticker quotes and all existing protective exit processing.
+            _apply_market_data(
+                "Bybit", {"assets": []}, allow_new_entries=False,
+                allow_short_entries=False, position_prices=live_quotes
+            )
+
+        logger.info("PAPER market-data source and trading venue: Bybit Spot only")
+        with _connect() as db:
+            db.execute("""UPDATE paper_account SET last_scan_at=?, last_error=?, updated_at=? WHERE id=1""",
+                       (_now(), "; ".join(errors) if errors else None, _now()))
 
 async def _worker() -> None:
     _init_db()
