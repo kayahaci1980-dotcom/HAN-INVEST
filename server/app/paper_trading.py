@@ -12,7 +12,7 @@ from psycopg.rows import dict_row
 from fastapi import APIRouter, Body, HTTPException
 
 from app.crypto import scan_crypto
-from app.bybit import scan_bybit
+from app.bybit import fetch_spot_ticker_prices, scan_bybit
 from app.exchange_scanners import scan_coinbase, scan_okx
 from app.market_breadth import get_market_breadth
 
@@ -757,7 +757,7 @@ def _manage_short_scale(db, position, price: float) -> None:
 
 def _apply_market_data(
     exchange: str, payload: dict[str, Any], allow_new_entries: bool = False,
-    allow_short_entries: bool = False,
+    allow_short_entries: bool = False, position_prices: dict[str, float] | None = None,
 ) -> None:
     assets = payload.get("assets") or []
     if not isinstance(assets, list):
@@ -782,12 +782,14 @@ def _apply_market_data(
         open_positions = db.execute(
             "SELECT * FROM paper_positions WHERE exchange=?", (exchange,)
         ).fetchall()
+        live_position_prices = position_prices or {}
         for position in open_positions:
             asset = by_symbol.get(position["symbol"])
-            if not asset:
-                continue
             try:
-                price = float(asset.get("price") or 0)
+                # Prefer a fresh direct Bybit ticker quote. The analysis universe is
+                # intentionally capped, but protective exits must cover every open position.
+                price = float(live_position_prices.get(position["symbol"]) or
+                              ((asset or {}).get("price") or 0))
                 entry = float(position["entry_price"])
             except (TypeError, ValueError):
                 continue
@@ -839,6 +841,12 @@ def _apply_market_data(
             if stop > 0 and (price <= stop if direction == "LONG" else price >= stop):
                 stop_reason = "TRAILING_STOP" if int(current["trailing_stage"] or 0) > 0 else "STOP_LOSS"
                 _close_position(db, current, min(price, stop) if direction == "LONG" else max(price, stop), stop_reason)
+                continue
+
+            # A direct ticker quote is sufficient to enforce the existing stop even
+            # when the symbol is outside the capped technical-analysis candidate list.
+            # Candle-based trailing updates still require the analyzed 1H candle data.
+            if not asset:
                 continue
 
             # Also inspect the just-completed 1H candle for a stop wick that may
@@ -1027,8 +1035,21 @@ async def _scan_cycle() -> None:
                     len(bybit_assets) if isinstance(bybit_assets, list) else -1,
                     allow_new_entries, allow_short_entries,
                 )
+                try:
+                    with _connect() as db:
+                        open_symbols = [
+                            str(row["symbol"]) for row in db.execute(
+                                "SELECT symbol FROM paper_positions WHERE exchange='Bybit'"
+                            ).fetchall()
+                        ]
+                    live_quotes = await fetch_spot_ticker_prices(open_symbols)
+                except Exception as quote_error:
+                    live_quotes = {}
+                    logger.warning("Direct Bybit quotes unavailable for open positions: %s",
+                                   type(quote_error).__name__)
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=allow_new_entries,
-                                   allow_short_entries=allow_short_entries)
+                                   allow_short_entries=allow_short_entries,
+                                   position_prices=live_quotes)
             else:
                 errors.append("Bybit: trading skipped because Bybit market data is unavailable")
             # Binance, Coinbase Exchange and OKX are analysis-only feeds.
