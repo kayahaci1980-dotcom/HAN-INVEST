@@ -1028,6 +1028,18 @@ async def _scan_cycle() -> None:
                     successes += 1
 
             bybit_payload = exchange_payloads.get("Bybit")
+            try:
+                with _connect() as db:
+                    open_symbols = [
+                        str(row["symbol"]) for row in db.execute(
+                            "SELECT symbol FROM paper_positions WHERE exchange='Bybit'"
+                        ).fetchall()
+                    ]
+                live_quotes = await fetch_spot_ticker_prices(open_symbols)
+            except Exception as quote_error:
+                live_quotes = {}
+                logger.warning("Direct Bybit quotes unavailable for open positions: %s",
+                               type(quote_error).__name__)
             if isinstance(bybit_payload, dict):
                 bybit_assets = bybit_payload.get("assets") or []
                 logger.info(
@@ -1035,23 +1047,15 @@ async def _scan_cycle() -> None:
                     len(bybit_assets) if isinstance(bybit_assets, list) else -1,
                     allow_new_entries, allow_short_entries,
                 )
-                try:
-                    with _connect() as db:
-                        open_symbols = [
-                            str(row["symbol"]) for row in db.execute(
-                                "SELECT symbol FROM paper_positions WHERE exchange='Bybit'"
-                            ).fetchall()
-                        ]
-                    live_quotes = await fetch_spot_ticker_prices(open_symbols)
-                except Exception as quote_error:
-                    live_quotes = {}
-                    logger.warning("Direct Bybit quotes unavailable for open positions: %s",
-                                   type(quote_error).__name__)
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=allow_new_entries,
                                    allow_short_entries=allow_short_entries,
                                    position_prices=live_quotes)
             else:
-                errors.append("Bybit: trading skipped because Bybit market data is unavailable")
+                # Even if technical analysis fails, keep managing exits using direct
+                # ticker quotes. Empty assets disable all new entries in this fallback.
+                errors.append("Bybit analysis unavailable; existing positions checked using direct quotes")
+                _apply_market_data("Bybit", {"assets": []}, allow_new_entries=False,
+                                   allow_short_entries=False, position_prices=live_quotes)
             # Binance, Coinbase Exchange and OKX are analysis-only feeds.
             # Never pass their payloads to the PAPER position manager.
             logger.info("Paper trading venue: Bybit Spot only; Binance/Coinbase/OKX analysis-only")
