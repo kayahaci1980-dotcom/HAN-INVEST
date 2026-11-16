@@ -762,6 +762,11 @@ def _apply_market_data(
     assets = payload.get("assets") or []
     if not isinstance(assets, list):
         return
+    logger.info(
+        "PAPER scan input exchange=%s assets=%d trade_ready=%d",
+        exchange, len(assets),
+        sum(1 for item in assets if isinstance(item, dict) and item.get("trade_ready") is True),
+    )
     by_symbol = {
         str(asset.get("symbol")): asset
         for asset in assets
@@ -1011,6 +1016,12 @@ async def _scan_cycle() -> None:
 
             bybit_payload = exchange_payloads.get("Bybit")
             if isinstance(bybit_payload, dict):
+                bybit_assets = bybit_payload.get("assets") or []
+                logger.info(
+                    "PAPER cycle Bybit payload assets=%d long_entries=%s short_entries=%s",
+                    len(bybit_assets) if isinstance(bybit_assets, list) else -1,
+                    allow_new_entries, allow_short_entries,
+                )
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=allow_new_entries,
                                    allow_short_entries=allow_short_entries)
             else:
