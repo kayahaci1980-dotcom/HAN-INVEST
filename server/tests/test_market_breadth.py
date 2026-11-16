@@ -1,58 +1,78 @@
 from app.market_breadth import summarize_market_breadth
 
 
-def coin(coin_id, symbol, change):
-    return {"id": coin_id, "symbol": symbol, "quotes": {"USD": {"percent_change_24h": change}}}
+def ticker(symbol, change):
+    return {"symbol": symbol, "price24hPcnt": change}
 
 
-def test_deduplicates_by_id_and_excludes_stablecoins():
-    rows = [coin("btc", "BTC", 2), coin("btc", "BTC", 2), coin("eth", "ETH", 1),
-            coin("sol", "SOL", -1), coin("usdt", "USDT", 0.1)]
+def test_deduplicates_by_symbol_and_excludes_stablecoin_pairs():
+    rows = [
+        ticker("BTCUSDT", "0.02"),
+        ticker("BTCUSDT", "0.02"),
+        ticker("ETHUSDT", "0.01"),
+        ticker("SOLUSDT", "-0.01"),
+        ticker("USDCUSDT", "0.001"),
+    ]
     result = summarize_market_breadth(rows)
     assert (result["total_coins"], result["rising_coins"], result["falling_coins"]) == (3, 2, 1)
-    assert result["status"] == "ALLOW_NEW_BUYS"
-    assert result["allow_new_entries"] is True
-    assert result["plan_mode"] == "free_up_to_2000"
-    assert result["full_catalogue_coverage"] is False
+    assert result["status"] == "LONG_BIAS"
+    assert result["allow_long_entries"] is True
+    assert result["allow_short_entries"] is False
+    assert result["source"].startswith("Bybit Live Market")
 
 
-def test_falling_majority_blocks_new_entries():
-    rows = [coin("btc", "BTC", -2), coin("eth", "ETH", -1), coin("sol", "SOL", 1)]
+def test_falling_majority_enables_short_only():
+    rows = [ticker("BTCUSDT", "-0.02"), ticker("ETHUSDT", "-0.01"), ticker("SOLUSDT", "0.01")]
     result = summarize_market_breadth(rows)
-    assert result["status"] == "BLOCK_NEW_BUYS"
-    assert result["allow_new_entries"] is False
+    assert result["status"] == "SHORT_BIAS"
+    assert result["allow_long_entries"] is False
+    assert result["allow_short_entries"] is True
 
 
 def test_exact_half_or_neutral_market_waits():
-    rows = [coin("btc", "BTC", 1), coin("eth", "ETH", -1),
-            coin("sol", "SOL", 0), coin("ada", "ADA", 0)]
+    rows = [
+        ticker("BTCUSDT", "0.01"),
+        ticker("ETHUSDT", "-0.01"),
+        ticker("SOLUSDT", "0"),
+        ticker("ADAUSDT", "0"),
+    ]
     result = summarize_market_breadth(rows)
     assert result["status"] == "WAIT"
-    assert result["allow_new_entries"] is False
+    assert result["allow_long_entries"] is False
+    assert result["allow_short_entries"] is False
 
 
-def test_missing_and_non_finite_data_is_ignored():
-    rows = [coin("btc", "BTC", None), coin("eth", "ETH", float("nan")),
-            coin("sol", "SOL", 2)]
+def test_missing_and_non_finite_changes_are_not_measured():
+    rows = [
+        ticker("BTCUSDT", None),
+        ticker("ETHUSDT", "nan"),
+        ticker("SOLUSDT", "0.02"),
+    ]
     result = summarize_market_breadth(rows)
-    assert result["total_coins"] == 1
-    assert result["allow_new_entries"] is True
+    assert result["total_coins"] == 3
+    assert result["measured_coins"] == 1
+    assert result["missing_change_coins"] == 2
+    assert result["rising_coins"] == 1
+    assert result["falling_coins"] == 0
+    assert result["allow_long_entries"] is True
 
 
-def test_duplicate_id_is_counted_once_even_if_duplicate_value_differs():
-    rows = [coin("same", "AAA", 1), coin("same", "AAA", -1), coin("other", "BBB", 0)]
+def test_duplicate_symbol_is_counted_once():
+    rows = [ticker("AAAUSDT", "0.01"), ticker("AAAUSDT", "-0.01"), ticker("BBBUSDT", "0")]
     result = summarize_market_breadth(rows)
     assert result["total_coins"] == 2
     assert result["rising_coins"] == 1
     assert result["falling_coins"] == 0
     assert result["unchanged_coins"] == 1
-    assert result["status"] == "WAIT"
+    # One of two unique symbols is rising: exactly 50%, so LONG is allowed.
+    assert result["status"] == "LONG_BIAS"
+    assert result["allow_long_entries"] is True
+    assert result["allow_short_entries"] is False
 
 
-
-def test_paid_plan_reports_full_catalogue_mode():
-    rows = [coin("btc", "BTC", 1), coin("eth", "ETH", -1)]
-    result = summarize_market_breadth(rows, full_catalogue=True)
-    assert result["plan_mode"] == "paid_all_available"
-    assert result["full_catalogue_coverage"] is True
-    assert "весь доступный каталог" in result["coverage_note"]
+def test_unavailable_when_no_valid_usdt_pairs():
+    result = summarize_market_breadth([ticker("USDCUSDT", "0.01"), ticker("BTCUSD", "0.01")])
+    assert result["available"] is False
+    assert result["status"] == "UNAVAILABLE"
+    assert result["allow_long_entries"] is False
+    assert result["allow_short_entries"] is False

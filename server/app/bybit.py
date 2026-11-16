@@ -12,32 +12,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 BASE = "https://api.bybit.com"
 CACHE_TTL = 45
-_NAME_CACHE_TTL = 21600
-_name_cache: tuple[float, dict[str, str]] = (0.0, {})
 _cache: tuple[float, dict[str, Any]] | None = None
-
-
-async def get_coin_names(client: httpx.AsyncClient) -> dict[str, str]:
-    global _name_cache
-    if time.time() - _name_cache[0] < _NAME_CACHE_TTL and _name_cache[1]:
-        return _name_cache[1]
-    try:
-        response = await client.get(
-            "https://api.coingecko.com/api/v3/coins/markets",
-            params={"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": 1, "sparkline": "false"},
-            headers={"accept": "application/json"},
-        )
-        response.raise_for_status()
-        names = {}
-        for coin in response.json():
-            symbol = str(coin.get("symbol") or "").upper()
-            name = str(coin.get("name") or "").strip()
-            if symbol and name:
-                names.setdefault(symbol, name)
-        _name_cache = (time.time(), names)
-        return names
-    except (httpx.HTTPError, ValueError, TypeError):
-        return _name_cache[1]
 
 
 def mean(values: list[float]) -> float:
@@ -89,6 +64,30 @@ async def get_json(client: httpx.AsyncClient, path: str, params: dict):
     return data.get("result", {})
 
 
+async def fetch_spot_ticker_prices(symbols: list[str]) -> dict[str, float]:
+    """Fetch fresh Bybit Spot quotes for every currently open PAPER position."""
+    requested = {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
+    if not requested:
+        return {}
+    async with httpx.AsyncClient(timeout=15, headers={"User-Agent": "HAN-INVEST/1.0"}) as client:
+        result = await get_json(client, "/v5/market/tickers", {"category": "spot"})
+    prices: dict[str, float] = {}
+    for ticker in result.get("list", []):
+        symbol = str(ticker.get("symbol") or "").upper()
+        if symbol not in requested:
+            continue
+        try:
+            price = float(ticker.get("lastPrice") or 0)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(price) and price > 0:
+            prices[symbol] = price
+    missing = requested - prices.keys()
+    if missing:
+        logger.warning("Bybit live quotes missing for open PAPER positions: %s", ",".join(sorted(missing)))
+    return prices
+
+
 async def analyze(
     client: httpx.AsyncClient, ticker: dict, instrument: dict, btc_state: str,
     capital_usdt: float | None, risk_pct: float, fee_rate: float,
@@ -127,7 +126,9 @@ async def analyze(
         daily_result = await get_json(client, "/v5/market/kline", {
             "category": "spot", "symbol": symbol, "interval": "D", "limit": "20"
         })
-        daily_rows = list(reversed(daily_result.get("list", [])))[:-1]
+        daily_all_rows = list(reversed(daily_result.get("list", [])))
+        daily_open = float(daily_all_rows[-1][1]) if daily_all_rows else 0.0
+        daily_rows = daily_all_rows[:-1]
         daily_closes = [float(row[4]) for row in daily_rows]
         daily_highs = [float(row[2]) for row in daily_rows]
         daily_lows = [float(row[3]) for row in daily_rows]
@@ -146,29 +147,60 @@ async def analyze(
         returns = [(closes[i] / closes[i-1] - 1) for i in range(1, len(closes)) if closes[i-1] > 0]
         hourly_volatility = math.sqrt(mean([x*x for x in returns])) * 100
 
-        trend_score = 20 if closes[-1] > ma20 > ma50 else 13 if closes[-1] > ma20 else 5
-        momentum_score = max(0, min(20, round(10 + change24_candles * 0.8)))
-        short_score = max(0, min(20, round(10 + change6 * 1.2)))
+        # Keep the legacy overall score for the market-analysis UI, but calculate
+        # symmetric directional scores for PAPER entry decisions.
+        trend_long_score = 20 if price > ma20 > ma50 else 13 if price > ma20 else 5
+        trend_short_score = 20 if price < ma20 < ma50 else 13 if price < ma20 else 5
+        momentum_long_score = max(0, min(20, round(10 + change24_candles * 0.8)))
+        momentum_short_score = max(0, min(20, round(10 - change24_candles * 0.8)))
+        impulse_long_score = max(0, min(20, round(10 + change6 * 1.2)))
+        impulse_short_score = max(0, min(20, round(10 - change6 * 1.2)))
         liquidity_score = min(20, max(0, round(math.log10(max(quote_volume, 1)) * 2)))
         stability_score = max(0, min(20, round(20 - hourly_volatility * 2)))
         volume_score = 10 if volume_ratio >= 1.2 else 5 if volume_ratio >= 0.8 else 0
-        score = min(100, trend_score + momentum_score + short_score + liquidity_score + stability_score + volume_score)
+        score = min(100, trend_long_score + momentum_long_score + impulse_long_score
+                    + liquidity_score + stability_score + volume_score)
+        long_score = min(100, trend_long_score + momentum_long_score + impulse_long_score
+                         + liquidity_score + stability_score + volume_score)
+        short_score = min(100, trend_short_score + momentum_short_score + impulse_short_score
+                          + liquidity_score + stability_score + volume_score)
 
         volume_confirmed = volume_ratio >= 1.2
         strong_uptrend = price > ma20 > ma50
+        strong_downtrend = price < ma20 < ma50
         pair_verified = instrument.get("status") == "Trading" and instrument.get("quoteCoin") == "USDT"
-        setup = (
-            pair_verified and score >= 80 and strong_uptrend and change6 >= 1.0
-            and volume_confirmed and quote_volume >= 1_000_000
-            and (change24 - btc_change_24h_pct) > 0
-            and atr > 0 and math.isfinite(atr)
+        long_setup = (
+            pair_verified and strong_uptrend and change6 > 0
+            and volume_confirmed and (change24 - btc_change_24h_pct) > 0
+            and atr_14_1h > 0 and math.isfinite(atr_14_1h)
         )
-        signal = "BUY" if setup and btc_state == "BULLISH" else "WATCH" if score >= 55 else "HOLD"
-        early = "EARLY BUY" if setup and btc_state == "SIDEWAYS" else None
+        short_setup = (
+            pair_verified and strong_downtrend and change6 < 0
+            and volume_confirmed and (change24 - btc_change_24h_pct) < 0
+            and atr_14_1h > 0 and math.isfinite(atr_14_1h)
+        )
+        signal = (
+            "BUY" if long_setup and btc_state == "BULLISH"
+            else "SHORT" if short_setup and btc_state == "BEARISH"
+            else "WATCH" if strong_uptrend or strong_downtrend else "HOLD"
+        )
+        early = (
+            "EARLY BUY" if long_setup and btc_state == "SIDEWAYS"
+            else "EARLY SHORT" if short_setup and btc_state == "SIDEWAYS"
+            else None
+        )
 
-        entry = price if signal == "BUY" else None
-        stop = price - 1.5 * atr if signal == "BUY" else None
-        target = price + 3.0 * atr if signal == "BUY" else None
+        entry = price if signal in ("BUY", "SHORT") else None
+        stop = (
+            price - 1.5 * atr_14_1h if signal == "BUY"
+            else price + 1.5 * atr_14_1h if signal == "SHORT"
+            else None
+        )
+        target = (
+            price + 3.0 * atr_14_1h if signal == "BUY"
+            else price - 3.0 * atr_14_1h if signal == "SHORT"
+            else None
+        )
         sizing = (
             calculate_position_sizing(entry, stop, target, capital_usdt, risk_pct, fee_rate)
             if signal == "BUY" and capital_usdt is not None else None
@@ -181,16 +213,20 @@ async def analyze(
             "relative_strength_vs_btc_24h_pct": round(change24 - btc_change_24h_pct, 2),
             "quote_volume_24h": round(quote_volume, 2),
             "volume_ratio": round(volume_ratio, 2), "volume_confirmed": volume_confirmed,
-            "ma20": round(ma20, 8), "ma50": round(ma50, 8), "atr_14": round(atr, 8),
+            "ma20": round(ma20, 8), "ma50": round(ma50, 8), "atr_14": round(atr_14_1h, 8),
             "atr_14_1d": round(atr, 8), "atr_14_1h": round(atr_14_1h, 8),
-            "atr_timeframe": "1D",
+            "atr_candle_time": str(rows[-1][0]),
+            "candle_high_1h": float(rows[-1][2]), "candle_low_1h": float(rows[-1][3]),
+            "daily_open": daily_open,
+            "atr_timeframe": "1H",
             "hourly_volatility_pct": round(hourly_volatility, 3),
             "entry_price": round(entry, 8) if entry is not None else None,
             "stop_loss": round(stop, 8) if stop is not None else None,
             "take_profit": round(target, 8) if target is not None else None,
-            "risk_reward": "1:2" if signal == "BUY" else None,
+            "risk_reward": "1:2" if signal in ("BUY", "SHORT") else None,
             "position_sizing": sizing,
-            "score": score, "signal": signal, "early_signal": early,
+            "score": score, "long_score": long_score, "short_score": short_score,
+            "signal": signal, "early_signal": early,
             "trade_ready": pair_verified, "pair_status": instrument.get("status"),
             "quote_currency": "USDT",
         }
@@ -201,7 +237,7 @@ async def analyze(
 
 @router.get("/api/v1/crypto/bybit/scan")
 async def scan_bybit(
-    limit: int = Query(30, ge=1, le=1000),
+    limit: int = Query(500, ge=1, le=1000),
     min_volume: float = Query(1_000_000, ge=0),
     capital_usdt: float | None = Query(None, gt=0),
     risk_pct: float = Query(1.0, ge=0.1, le=5.0),
@@ -220,11 +256,14 @@ async def scan_bybit(
                 x.get("symbol"): x for x in instruments_data.get("list", [])
                 if x.get("quoteCoin") == "USDT" and x.get("status") == "Trading"
             }
+            all_tickers = tickers_data.get("list", [])
+            # BTC is a market benchmark, not a trade candidate: do not apply
+            # the 3–40M USDT candidate liquidity band to BTC market context.
+            btc = next((x for x in all_tickers if x.get("symbol") == "BTCUSDT"), None)
             tickers = [
-                x for x in tickers_data.get("list", [])
-                if x.get("symbol") in instruments and float(x.get("turnover24h") or 0) >= min_volume
+                x for x in all_tickers
+                if x.get("symbol") in instruments
             ]
-            btc = next((x for x in tickers if x.get("symbol") == "BTCUSDT"), None)
             btc_change_24h_pct = float(btc.get("price24hPcnt") or 0) * 100 if btc else 0.0
             btc_state = "UNKNOWN"
             btc_info = {"available": False, "buy_allowed": False, "market_state": "UNKNOWN"}
@@ -243,7 +282,8 @@ async def scan_bybit(
                         "market_state": btc_state, "price": price,
                         "ma20": round(ma20, 2), "ma50": round(ma50, 2),
                     }
-            selected = sorted(tickers, key=lambda x: float(x.get("turnover24h") or 0), reverse=True)[:limit]
+            candidate_limit = min(limit, 500)
+            selected = sorted(tickers, key=lambda x: float(x.get("turnover24h") or 0), reverse=True)[:candidate_limit]
             semaphore = asyncio.Semaphore(5)
 
             async def limited(item):
@@ -254,10 +294,8 @@ async def scan_bybit(
                     )
 
             assets = [x for x in await asyncio.gather(*(limited(x) for x in selected)) if x]
-            coin_names = await get_coin_names(client)
             for asset in assets:
-                base_symbol = str(asset.get("symbol") or "").removesuffix("USDT")
-                asset["name"] = coin_names.get(base_symbol, base_symbol)
+                asset["name"] = str(asset.get("symbol") or "").removesuffix("USDT")
             assets.sort(key=lambda x: x["score"], reverse=True)
             for rank, asset in enumerate(assets, 1):
                 asset["market_rank"] = rank
@@ -268,12 +306,13 @@ async def scan_bybit(
                     "exchange_pairs": len(instruments),
                     "volume_qualified_candidates": len(tickers),
                     "analysis_attempted": len(selected),
+                    "candidate_limit": candidate_limit,
                     "analysis_succeeded": len(assets),
                     "analysis_skipped": len(selected) - len(assets),
                     "skip_reason": "Недостаточно свечей, ошибка API или некорректные данные; детали в логах сервера.",
                 },
                 "btc_market_filter": btc_info, "updated_at": datetime.now(timezone.utc).isoformat(),
-                "assets": assets, "limit": limit,
+                "assets": assets, "limit": candidate_limit, "candidate_limit": candidate_limit,
                 "cache_key": (limit, min_volume, capital_usdt, risk_pct, fee_rate),
                 "notice": (
                     "Только спотовые пары Bybit USDT. MA20, MA50 и объём рассчитаны по закрытым часовым свечам; ATR(14) для Stop Loss и Take Profit — по 14 завершённым дневным свечам (1D). "

@@ -10,11 +10,10 @@ from urllib.parse import quote_plus
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
-from app.crypto import router as crypto_router
 from app.bybit import router as bybit_router
 from app.market_context import router as market_context_router
 from app.paper_trading import router as paper_router, start_paper_worker, stop_paper_worker
-from app.exchange_scanners import router as exchange_router
+from app.analysis_worker import router as analysis_router, start_analysis_worker, stop_analysis_worker
 from app.market_breadth import router as market_breadth_router
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -22,9 +21,11 @@ from fastapi.middleware.cors import CORSMiddleware
 async def lifespan(app: FastAPI):
     # Run virtual trading on the server, independently of the Android app.
     start_paper_worker()
+    start_analysis_worker()
     try:
         yield
     finally:
+        await stop_analysis_worker()
         await stop_paper_worker()
 
 
@@ -35,11 +36,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.include_router(crypto_router)
 app.include_router(bybit_router)
 app.include_router(market_context_router)
 app.include_router(paper_router)
-app.include_router(exchange_router)
+app.include_router(analysis_router)
 app.include_router(market_breadth_router)
 
 app.add_middleware(
