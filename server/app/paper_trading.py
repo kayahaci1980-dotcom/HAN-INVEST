@@ -1053,15 +1053,22 @@ async def _scan_cycle() -> None:
                 logger.warning("Market breadth unavailable; falling back to Bybit-only entry filters")
             else:
                 _last_market_breadth = dict(breadth_result)
-                # Global market breadth is informational only. Each Bybit symbol
-                # must still pass its own direction-specific trend and risk filters.
-                allow_new_entries = breadth_result.get("available") is True
-                allow_short_entries = breadth_result.get("available") is True
+                # Global 50% market-breadth gate is directional:
+                # rising >= 50% enables LONG only; falling >= 50% enables SHORT only.
+                # Each Bybit symbol must still pass its own technical and risk filters.
+                allow_new_entries = (
+                    breadth_result.get("allow_long_entries") is True
+                    if "allow_long_entries" in breadth_result
+                    else False
+                )
+                allow_short_entries = breadth_result.get("allow_short_entries") is True
                 logger.info(
-                    "Market breadth %s: rising=%s falling=%s total=%s; new entries=%s",
-                    breadth_result.get("status"), breadth_result.get("rising_coins"),
-                    breadth_result.get("falling_coins"), breadth_result.get("total_coins"),
+                    "Market breadth %s: rising=%.2f%% falling=%.2f%%; LONG=%s SHORT=%s",
+                    breadth_result.get("status"),
+                    float(breadth_result.get("rising_pct") or 0),
+                    float(breadth_result.get("falling_pct") or 0),
                     "allowed" if allow_new_entries else "blocked",
+                    "allowed" if allow_short_entries else "blocked",
                 )
             # All four exchanges provide market analysis, but Bybit Spot is the
             # ONLY exchange allowed to open or close paper-trading positions.
