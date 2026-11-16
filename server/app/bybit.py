@@ -90,6 +90,30 @@ async def get_json(client: httpx.AsyncClient, path: str, params: dict):
     return data.get("result", {})
 
 
+async def fetch_spot_ticker_prices(symbols: list[str]) -> dict[str, float]:
+    """Fetch fresh Bybit Spot quotes for every currently open PAPER position."""
+    requested = {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
+    if not requested:
+        return {}
+    async with httpx.AsyncClient(timeout=15, headers={"User-Agent": "HAN-INVEST/1.0"}) as client:
+        result = await get_json(client, "/v5/market/tickers", {"category": "spot"})
+    prices: dict[str, float] = {}
+    for ticker in result.get("list", []):
+        symbol = str(ticker.get("symbol") or "").upper()
+        if symbol not in requested:
+            continue
+        try:
+            price = float(ticker.get("lastPrice") or 0)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(price) and price > 0:
+            prices[symbol] = price
+    missing = requested - prices.keys()
+    if missing:
+        logger.warning("Bybit live quotes missing for open PAPER positions: %s", ",".join(sorted(missing)))
+    return prices
+
+
 async def analyze(
     client: httpx.AsyncClient, ticker: dict, instrument: dict, btc_state: str,
     capital_usdt: float | None, risk_pct: float, fee_rate: float,
