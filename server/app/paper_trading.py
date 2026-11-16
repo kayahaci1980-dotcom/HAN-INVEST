@@ -980,6 +980,11 @@ def _apply_market_data(
                 long_score = float(asset.get("long_score", score) or 0)
                 short_score = float(asset.get("short_score", score) or 0)
             except (TypeError, ValueError):
+                count_rejection("common_rejections", "invalid_numeric_data")
+                count_rejection("long_rejections", "invalid_numeric_data")
+                count_rejection("short_rejections", "invalid_numeric_data")
+                logger.info("PAPER candidate %s rejected: invalid_numeric_data",
+                            str(asset.get("symbol") or "UNKNOWN"))
                 continue
             symbol = str(asset.get("symbol") or "")
             rejects = []
