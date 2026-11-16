@@ -1017,14 +1017,25 @@ def _apply_market_data(
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
                 reject("cooldown_active")
                 continue
-            # Momentum chooses direction only; it does not block an entry.
+            # Momentum selects direction; each direction must meet score >= 80.
+            # Existing positions are managed above and are not closed when score falls.
             direction = "LONG" if momentum >= 0 else "SHORT"
-            reason = "AUTO_LONG_NO_ENTRY_FILTERS" if direction == "LONG" else "AUTO_SHORT_NO_ENTRY_FILTERS"
+            score_key = "long_score" if direction == "LONG" else "short_score"
+            raw_score = asset.get(score_key, asset.get("score"))
+            try:
+                directional_score = float(raw_score)
+            except (TypeError, ValueError):
+                reject("directional_score_missing_or_invalid", direction)
+                continue
+            if not math.isfinite(directional_score) or directional_score < 80:
+                reject("directional_score_below_80", direction)
+                continue
+            reason = "AUTO_LONG_SCORE_80" if direction == "LONG" else "AUTO_SHORT_SCORE_80"
             opened = _open_position(db, exchange, asset, reason) if direction == "LONG" else _open_short_position(db, exchange, asset, reason)
             if opened:
                 diagnostic["opened_long" if direction == "LONG" else "opened_short"] += 1
                 current_positions += 1
-                logger.info("PAPER opened %s %s without entry filters", direction, symbol)
+                logger.info("PAPER opened %s %s with score %.1f/100", direction, symbol, directional_score)
             else:
                 reject("protected_position_creation_rejected", direction)
         logger.info("PAPER entry diagnostics %s", diagnostic)
