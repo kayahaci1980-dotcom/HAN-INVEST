@@ -128,68 +128,64 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.assertEqual(trade["reason"], "STOP_LOSS")
         self.assertAlmostEqual(float(trade["pnl_usdt"]) / 100.0, -0.01, places=5)
 
-    def test_long_trailing_moves_to_breakeven_at_one_point_five_r(self):
-        self.seed_position()
-        asset = self.asset(price=102.25)
-        asset["atr_candle_time"] = "2026-11-15T11:00:00Z"
-        paper._apply_market_data("Bybit", {"assets": [asset]}, False)
+    def test_long_profit_trailing_closes_after_one_usdt_giveback_and_blocks_ten_minutes(self):
+        self.seed_position("LONG")
+        paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                 position_prices={"BTCUSDT": 104.0})
         position = self.positions()[0]
-        self.assertEqual(int(position["trailing_stage"]), 1)
-        self.assertAlmostEqual(float(position["stop_loss"]), 100.0, places=6)
+        self.assertGreater(float(position["peak_profit_usdt"]), 3.0)
+        paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                 position_prices={"BTCUSDT": 103.5})
+        self.assertEqual(len(self.positions()), 1)
+        paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                 position_prices={"BTCUSDT": 102.9})
+        self.assertEqual(len(self.positions()), 0)
+        with paper._connect() as db:
+            trade = db.execute(
+                "SELECT * FROM paper_trades WHERE pnl_usdt IS NOT NULL ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(trade["reason"], "TRAILING_STOP")
+        cooldown = self.cooldown()
+        remaining = float(cooldown["blocked_until"]) - paper._now().timestamp()
+        self.assertGreater(remaining, 590)
+        self.assertLessEqual(remaining, 600)
 
-    def test_long_trailing_uses_two_atr_at_two_r(self):
-        self.seed_position()
-        first = self.asset(price=102.25)
-        first["atr_candle_time"] = "2026-11-15T11:00:00Z"
-        paper._apply_market_data("Bybit", {"assets": [first]}, False)
-        second = self.asset(price=103.0)
-        second["atr_candle_time"] = "2026-11-15T12:00:00Z"
-        paper._apply_market_data("Bybit", {"assets": [second]}, False)
-        position = self.positions()[0]
-        self.assertEqual(int(position["trailing_stage"]), 2)
-        self.assertGreater(float(position["stop_loss"]), 101.0)
-
-    def test_long_trailing_uses_one_point_five_atr_at_three_r(self):
-        self.seed_position()
-        for hour, price in ((11, 102.25), (12, 103.0), (13, 104.5)):
-            asset = self.asset(price=price)
-            asset["atr_candle_time"] = f"2026-11-15T{hour:02d}:00:00Z"
-            paper._apply_market_data("Bybit", {"assets": [asset]}, False)
-        position = self.positions()[0]
-        self.assertEqual(int(position["trailing_stage"]), 3)
-        self.assertAlmostEqual(float(position["stop_loss"]), 103.0, places=6)
-
-    def test_short_trailing_moves_to_breakeven_at_one_point_five_r(self):
+    def test_short_profit_trailing_closes_after_one_usdt_giveback_and_blocks_ten_minutes(self):
         self.seed_position("SHORT")
-        asset = self.asset(price=97.75)
-        asset["ma20"], asset["ma50"] = 101.0, 102.0
-        asset["atr_candle_time"] = "2026-11-15T11:00:00Z"
-        paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
+        paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                 position_prices={"BTCUSDT": 96.0})
         position = self.positions()[0]
-        self.assertEqual(int(position["trailing_stage"]), 1)
-        self.assertAlmostEqual(float(position["stop_loss"]), 100.0, places=6)
+        self.assertGreater(float(position["peak_profit_usdt"]), 3.0)
+        paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                 position_prices={"BTCUSDT": 96.5})
+        self.assertEqual(len(self.positions()), 1)
+        paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                 position_prices={"BTCUSDT": 97.1})
+        self.assertEqual(len(self.positions()), 0)
+        with paper._connect() as db:
+            trade = db.execute(
+                "SELECT * FROM paper_trades WHERE side='SHORT_COVER' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(trade["reason"], "TRAILING_STOP")
+        cooldown = self.cooldown()
+        remaining = float(cooldown["blocked_until"]) - paper._now().timestamp()
+        self.assertGreater(remaining, 590)
+        self.assertLessEqual(remaining, 600)
 
-    def test_short_trailing_uses_two_atr_at_two_r(self):
-        self.seed_position("SHORT")
-        for hour, price in ((11, 97.75), (12, 97.0)):
-            asset = self.asset(price=price)
-            asset["ma20"], asset["ma50"] = 101.0, 102.0
-            asset["atr_candle_time"] = f"2026-11-15T{hour:02d}:00:00Z"
-            paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
-        position = self.positions()[0]
-        self.assertEqual(int(position["trailing_stage"]), 2)
-        self.assertLess(float(position["stop_loss"]), 99.0)
-
-    def test_short_trailing_uses_one_point_five_atr_at_three_r(self):
-        self.seed_position("SHORT")
-        for hour, price in ((11, 97.75), (12, 97.0), (13, 95.5)):
-            asset = self.asset(price=price)
-            asset["ma20"], asset["ma50"] = 101.0, 102.0
-            asset["atr_candle_time"] = f"2026-11-15T{hour:02d}:00:00Z"
-            paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
-        position = self.positions()[0]
-        self.assertEqual(int(position["trailing_stage"]), 3)
-        self.assertAlmostEqual(float(position["stop_loss"]), 97.0, places=6)
+    def test_profit_trailing_peak_never_moves_backwards_for_long_or_short(self):
+        for direction, prices in (("LONG", (104.0, 103.5)), ("SHORT", (96.0, 96.5))):
+            with self.subTest(direction=direction):
+                self.seed_position(direction)
+                for price in prices:
+                    paper._apply_market_data("Bybit", {"assets": []}, False, False,
+                                             position_prices={"BTCUSDT": price})
+                position = self.positions()[0]
+                self.assertGreater(float(position["peak_profit_usdt"]), 0.0)
+                self.assertGreaterEqual(float(position["peak_profit_usdt"]),
+                                        float(position["unrealized_pnl_usdt"] or 0.0))
+                with paper._connect() as db:
+                    db.execute("DELETE FROM paper_positions WHERE exchange='Bybit' AND symbol='BTCUSDT'")
+                    db.execute("DELETE FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT'")
 
     def test_long_stop_loss_closes_at_initial_atr_stop_and_starts_four_hour_cooldown(self):
         self.seed_position()
