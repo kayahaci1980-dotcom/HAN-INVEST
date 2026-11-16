@@ -77,23 +77,28 @@ class PaperTradingRuleTests(unittest.TestCase):
         paper._apply_market_data("Bybit", {"assets": [self.asset(1, 100.0)]}, False)
         self.assertEqual(len(self.positions()), 1)
 
-    def test_initial_long_stop_caps_net_loss_at_one_percent_including_fees(self):
+    def test_initial_long_stop_limits_net_loss_to_fixed_one_usdt_including_fees(self):
         self.seed_position()
         with paper._connect() as db:
             position = db.execute("SELECT * FROM paper_positions").fetchone()
             stop = paper._loss_limit_stop_price(db, position)
-            self.assertAlmostEqual(float(position["stop_loss"]), 98.5, places=6)
-            self.assertAlmostEqual(stop, 99.198, places=2)
+            net_pnl_at_stop = float(position["quantity"]) * stop * (1.0 - paper._FEE_RATE) - float(position["cost_usdt"])
+            self.assertAlmostEqual(net_pnl_at_stop, -1.0, places=6)
+            self.assertGreater(stop, float(position["stop_loss"]))
         self.assertAlmostEqual(float(position["initial_risk"]), 1.5, places=6)
         self.assertEqual(float(position["take_profit"]), 0.0)
 
-    def test_initial_short_stop_caps_net_loss_at_one_percent_including_fees(self):
+    def test_initial_short_stop_limits_net_loss_to_fixed_one_usdt_including_fees(self):
         self.seed_position("SHORT")
         with paper._connect() as db:
             position = db.execute("SELECT * FROM paper_positions").fetchone()
             stop = paper._loss_limit_stop_price(db, position)
-            self.assertAlmostEqual(float(position["stop_loss"]), 101.5, places=6)
-            self.assertAlmostEqual(stop, 100.8, places=2)
+            lots = db.execute("SELECT quantity, cost_usdt, entry_price FROM paper_position_lots WHERE exchange=? AND symbol=?", ("Bybit", "BTCUSDT")).fetchall()
+            entry_notional = sum(float(lot["entry_price"]) * float(lot["quantity"]) for lot in lots)
+            opening_fee = sum(max(0.0, float(lot["cost_usdt"]) - float(lot["entry_price"]) * float(lot["quantity"])) for lot in lots)
+            net_pnl_at_stop = entry_notional - opening_fee - stop * float(position["quantity"]) * (1.0 + paper._FEE_RATE)
+            self.assertAlmostEqual(net_pnl_at_stop, -1.0, places=6)
+            self.assertLess(stop, float(position["stop_loss"]))
         self.assertAlmostEqual(float(position["initial_risk"]), 1.5, places=6)
         self.assertEqual(float(position["take_profit"]), 0.0)
 
