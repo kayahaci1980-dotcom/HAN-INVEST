@@ -69,8 +69,8 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.assertEqual(len(self.positions()), 1)
 
     def test_score_below_60_does_not_block_long_entry(self):
-        paper._apply_market_data("Bybit", {"assets": [self.asset(59)]}, True)
-        self.assertEqual(len(self.positions()), 0)
+        paper._apply_market_data("Bybit", {"assets": [self.asset(1)]}, False, False)
+        self.assertEqual(len(self.positions()), 1)
 
     def test_score_change_does_not_close_existing_position(self):
         self.seed_position()
