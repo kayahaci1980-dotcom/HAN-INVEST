@@ -11,9 +11,7 @@ from psycopg.rows import dict_row
 
 from fastapi import APIRouter, Body, HTTPException
 
-from app.crypto import scan_crypto
 from app.bybit import fetch_spot_ticker_prices, scan_bybit
-from app.exchange_scanners import scan_coinbase, scan_okx
 from app.market_breadth import get_market_breadth
 
 logger = logging.getLogger(__name__)
@@ -1020,20 +1018,15 @@ async def _scan_cycle() -> None:
     global _last_market_breadth
     async with _cycle_lock:
         try:
-            # Each exchange is scanned independently. All requests are public market data only.
+            # Bybit Live Market is the only market-data source used by HAN INVEST.
             gathered = await asyncio.gather(
                 get_market_breadth(),
-                scan_crypto(limit=50, universe_limit=200, min_volume=50_000_001,
-                            capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
-                            fee_rate=_FEE_RATE),
                 scan_bybit(limit=100, min_volume=3_000_000,
                            capital_usdt=_INITIAL_CASH, risk_pct=_RISK_PCT,
                            fee_rate=_FEE_RATE),
-                scan_coinbase(limit=50, min_volume=50_000_001),
-                scan_okx(limit=50, min_volume=50_000_001),
                 return_exceptions=True,
             )
-            breadth_result, *results = gathered
+            breadth_result, bybit_payload = gathered
             errors = []
             if isinstance(breadth_result, BaseException) or not isinstance(breadth_result, dict):
                 # Fail closed for new entries when the 50% market-breadth
@@ -1071,21 +1064,15 @@ async def _scan_cycle() -> None:
                     "allowed" if allow_new_entries else "blocked",
                     "allowed" if allow_short_entries else "blocked",
                 )
-            # All four exchanges provide market analysis, but Bybit Spot is the
-            # ONLY exchange allowed to open or close paper-trading positions.
-            exchange_payloads = dict(zip(
-                ("Binance", "Bybit", "Coinbase Exchange", "OKX"), results
-            ))
+            # Bybit Spot is the only supported market-data and PAPER-trading venue.
             successes = 0
-            for exchange, payload in exchange_payloads.items():
-                if isinstance(payload, BaseException):
-                    errors.append(exchange + ": " + type(payload).__name__)
-                elif not isinstance(payload, dict):
-                    errors.append(exchange + ": invalid response")
-                else:
-                    successes += 1
-
-            bybit_payload = exchange_payloads.get("Bybit")
+            if isinstance(bybit_payload, BaseException):
+                errors.append("Bybit: " + type(bybit_payload).__name__)
+                bybit_payload = None
+            elif isinstance(bybit_payload, dict):
+                successes = 1
+            else:
+                errors.append("Bybit: invalid response")
             try:
                 with _connect() as db:
                     open_symbols = [
@@ -1114,9 +1101,7 @@ async def _scan_cycle() -> None:
                 errors.append("Bybit analysis unavailable; existing positions checked using direct quotes")
                 _apply_market_data("Bybit", {"assets": []}, allow_new_entries=False,
                                    allow_short_entries=False, position_prices=live_quotes)
-            # Binance, Coinbase Exchange and OKX are analysis-only feeds.
-            # Never pass their payloads to the PAPER position manager.
-            logger.info("Paper trading venue: Bybit Spot only; Binance/Coinbase/OKX analysis-only")
+            logger.info("Market-data source and PAPER trading venue: Bybit Spot only")
             with _connect() as db:
                 db.execute(
                     """UPDATE paper_account SET last_scan_at=?, last_error=?, updated_at=?
