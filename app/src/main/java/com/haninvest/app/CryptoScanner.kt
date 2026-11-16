@@ -246,6 +246,8 @@ class CryptoScanner(private val context: Context) {
             val coinName = coin.optString("name").takeIf { it.isNotBlank() } ?: shortSymbol
             val price = coin.optDouble("price", Double.NaN)
             val score = coin.optInt("score", 0)
+            val longScore = coin.optInt("long_score", 0)
+            val shortScore = coin.optInt("short_score", 0)
             val serverSignal = coin.optString("signal", "WATCH")
             val buyAllowed = score >= 83 && tradeReady(coin, result, maxRisk)
             val early = coin.optString("early_signal") == "EARLY BUY"
@@ -260,6 +262,10 @@ class CryptoScanner(private val context: Context) {
             card.addView(label(
                 "Оценка: $score/100   |   Сигнал: $signalText",
                 13f, if (buyAllowed) Color.rgb(20, 145, 90) else muted, true
+            ))
+            card.addView(label(
+                "LONG: $longScore/100   |   SHORT: $shortScore/100",
+                12f, muted, true
             ))
             val change24 = coin.optString("change_24h_pct", coin.optString("price_change_percent_24h", coin.optString("change_24h", "—")))
             val rsi = coin.optString("rsi_14", coin.optString("rsi", "—"))
