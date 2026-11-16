@@ -939,19 +939,38 @@ def _apply_market_data(
             else:
                 _manage_short_scale(db, current, price)
 
+        # Diagnostic counters are observational only; they never alter entry decisions.
+        diagnostic = {
+            "assets": len(assets), "candidates": 0, "opened_long": 0, "opened_short": 0,
+            "common_rejections": {}, "long_rejections": {}, "short_rejections": {},
+            "market_long_allowed": bool(allow_new_entries),
+            "market_short_allowed": bool(allow_short_entries),
+        }
+
+        def count_rejection(bucket: str, reason: str) -> None:
+            counts = diagnostic[bucket]
+            counts[reason] = counts.get(reason, 0) + 1
+
         # Market breadth blocks only new entries. Position exits above always run.
         if not allow_new_entries and not allow_short_entries:
+            logger.info("PAPER entry diagnostics %s", diagnostic)
             return
 
         current_positions = db.execute("SELECT COUNT(*) AS n FROM paper_positions").fetchone()["n"]
+        diagnostic["open_positions"] = int(current_positions)
+        diagnostic["max_positions"] = _MAX_POSITIONS
         if current_positions >= _MAX_POSITIONS:
+            diagnostic["position_limit_blocked"] = True
+            logger.info("PAPER entry diagnostics %s", diagnostic)
             return
         candidates = sorted(
             (x for x in assets if isinstance(x, dict)),
             key=lambda x: float(x.get("quote_volume_24h") or 0), reverse=True,
         )
+        diagnostic["candidates"] = len(candidates)
         for asset in candidates:
             if current_positions >= _MAX_POSITIONS:
+                diagnostic["position_limit_blocked"] = True
                 break
             try:
                 price = float(asset.get("price") or 0)
@@ -979,17 +998,33 @@ def _apply_market_data(
             if str(asset.get("atr_timeframe") or "") != "1H": rejects.append("atr_timeframe_not_1H")
             if not asset.get("atr_candle_time"): rejects.append("atr_candle_time_missing")
             if rejects:
+                for reason in rejects:
+                    count_rejection("common_rejections", reason)
+                    count_rejection("long_rejections", reason)
+                    count_rejection("short_rejections", reason)
                 logger.info("PAPER candidate %s rejected: %s", symbol or "UNKNOWN", ",".join(rejects))
                 continue
             cooldown = db.execute("SELECT blocked_until FROM paper_loss_cooldowns WHERE exchange=? AND symbol=?",
                                   (exchange, symbol)).fetchone()
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
+                count_rejection("common_rejections", "cooldown_active")
+                count_rejection("long_rejections", "cooldown_active")
+                count_rejection("short_rejections", "cooldown_active")
                 logger.info("PAPER candidate %s rejected: cooldown_active", symbol)
                 continue
             long_trend = ma20 > 0 and ma50 > 0 and price > ma20 > ma50
             short_trend = ma20 > 0 and ma50 > 0 and price < ma20 < ma50
             long_daily_ok = price < daily_open + 0.5 * atr
             short_daily_ok = price > daily_open - 0.5 * atr
+            # Record every directional blocker, including market breadth, separately.
+            if not allow_new_entries: count_rejection("long_rejections", "market_breadth_blocked")
+            if long_score < 60: count_rejection("long_rejections", "score_below_60")
+            if not long_trend: count_rejection("long_rejections", "MA20_MA50_trend_not_met")
+            if not long_daily_ok: count_rejection("long_rejections", "daily_open_guard")
+            if not allow_short_entries: count_rejection("short_rejections", "market_breadth_blocked")
+            if short_score < 60: count_rejection("short_rejections", "score_below_60")
+            if not short_trend: count_rejection("short_rejections", "MA20_MA50_trend_not_met")
+            if not short_daily_ok: count_rejection("short_rejections", "daily_open_guard")
             opened = False
             if allow_new_entries and long_score >= 60 and long_trend and long_daily_ok:
                 opened = _open_position(db, exchange, asset, "AUTO_LONG_ATR_PRO_RR_1_2")
@@ -1009,8 +1044,13 @@ def _apply_market_data(
                 if not short_daily_ok: reasons.append("SHORT_daily_open_guard")
                 logger.info("PAPER candidate %s no entry: %s", symbol, ",".join(reasons))
             if opened:
+                if allow_new_entries and long_score >= 60 and long_trend and long_daily_ok:
+                    diagnostic["opened_long"] += 1
+                else:
+                    diagnostic["opened_short"] += 1
                 logger.info("PAPER opened %s", symbol)
                 current_positions += 1
+        logger.info("PAPER entry diagnostics %s", diagnostic)
 
 
 async def _scan_cycle() -> None:
