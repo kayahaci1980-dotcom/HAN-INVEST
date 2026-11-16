@@ -223,7 +223,8 @@ async def analyze(
 
         return {
             "symbol": symbol, "name": symbol[:-4], "exchange": "Bybit Spot",
-            "source": "bybit", "price": price, "change_24h_pct": round(change24, 2),\n            "change_2m_pct": change_2m_pct,
+            "source": "bybit", "price": price, "change_24h_pct": round(change24, 2),
+            "change_2m_pct": change_2m_pct,
             "momentum_6h_pct": round(change6, 2), "momentum_24h_pct": round(change24_candles, 2),
             "relative_strength_vs_btc_24h_pct": round(change24 - btc_change_24h_pct, 2),
             "quote_volume_24h": round(quote_volume, 2),
