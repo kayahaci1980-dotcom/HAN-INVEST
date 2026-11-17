@@ -459,7 +459,6 @@ def _close_position(db, position,
         "STOP_LOSS": _STOP_LOSS_COOLDOWN_SECONDS,
         "TAKE_PROFIT": _TAKE_PROFIT_COOLDOWN_SECONDS,
         "TRAILING_STOP": _TRAILING_STOP_COOLDOWN_SECONDS,
-        "CONTINUOUS_LOSS_295S": 30 * 60,
     }.get(reason, 0)
     if cooldown_seconds:
         blocked_until = _now().timestamp() + cooldown_seconds
@@ -940,30 +939,6 @@ def _apply_market_data(
                     direction, position["symbol"], peak_profit, net_pnl,
                 )
                 continue
-
-            # Close a position after 295 seconds of continuously negative net PnL.
-            # Reset the timer immediately when net PnL returns to zero or above.
-            loss_started_at = current["loss_started_at"] if "loss_started_at" in current.keys() else None
-            now_ts = _now().timestamp()
-            if net_pnl < 0:
-                if loss_started_at is None:
-                    db.execute(
-                        "UPDATE paper_positions SET loss_started_at=? WHERE exchange=? AND symbol=?",
-                        (now_ts, exchange, position["symbol"]),
-                    )
-                    loss_started_at = now_ts
-                elif now_ts - float(loss_started_at) >= 295:
-                    _close_position(db, current, price, "CONTINUOUS_LOSS_295S")
-                    logger.warning(
-                        "PAPER closed %s %s after 295 seconds of continuous negative PnL; 30-minute cooldown",
-                        direction, position["symbol"],
-                    )
-                    continue
-            elif loss_started_at is not None:
-                db.execute(
-                    "UPDATE paper_positions SET loss_started_at=NULL WHERE exchange=? AND symbol=?",
-                    (exchange, position["symbol"]),
-                )
 
             if direction == "LONG":
                 _manage_long_scale(db, current, price)
