@@ -207,6 +207,28 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
             response.raise_for_status()
             parsed = _extract_json(response.json())
         _latest = _validated_result(parsed, candidates, model)
+    except httpx.HTTPStatusError as exc:
+        # Log only the HTTP status and retry hint. Never log provider bodies or credentials.
+        status_code = exc.response.status_code
+        retry_after = exc.response.headers.get("retry-after")
+        logger.warning(
+            "Gemini market analysis failed: HTTP status=%s retry_after=%s",
+            status_code,
+            retry_after or "not-provided",
+        )
+        _latest = {
+            "available": False,
+            "mode": "SHADOW",
+            "provider": "Google Gemini",
+            "model": model,
+            "status": "ERROR",
+            "error_http_status": status_code,
+            "retry_after": retry_after,
+            "market_bias": "WAIT",
+            "recommendations": [],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "message": f"Gemini API вернул HTTP {status_code}; рекомендации не обновлены.",
+        }
     except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
         # Never expose provider response bodies or credentials in logs/API output.
         logger.warning("Gemini market analysis failed: %s", type(exc).__name__)
