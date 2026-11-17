@@ -14,6 +14,7 @@ from fastapi import APIRouter, Body, HTTPException
 
 from app.bybit import fetch_spot_ticker_prices, scan_bybit
 from app.market_breadth import get_market_breadth
+from app.ai_advisor import get_ai_advisor_state
 
 logger = logging.getLogger(__name__)
 
@@ -792,6 +793,7 @@ def _manage_short_scale(db, position, price: float) -> None:
 def _apply_market_data(
     exchange: str, payload: dict[str, Any], allow_new_entries: bool = False,
     allow_short_entries: bool = False, position_prices: dict[str, float] | None = None,
+    ai_advisor: dict[str, Any] | None = None,
 ) -> None:
     assets = payload.get("assets") or []
     if not isinstance(assets, list):
@@ -950,6 +952,25 @@ def _apply_market_data(
         diagnostic = {"assets": len(assets), "candidates": 0, "opened_long": 0, "opened_short": 0,
                       "common_rejections": {}, "long_rejections": {}, "short_rejections": {},
                       "market_long_allowed": True, "market_short_allowed": True}
+        advisor_decisions: dict[str, dict[str, Any]] = {}
+        advisor_ready = ai_advisor is not None
+        if advisor_ready:
+            try:
+                updated_at = datetime.fromisoformat(str(ai_advisor.get("updated_at") or "").replace("Z", "+00:00"))
+                age_seconds = (_now() - updated_at).total_seconds()
+                advisor_ready = (ai_advisor.get("available") is True and ai_advisor.get("status") == "OK"
+                                 and str(ai_advisor.get("mode") or "").upper() == "SHADOW"
+                                 and -5 <= age_seconds <= 150)
+                if advisor_ready:
+                    advisor_decisions = {str(item.get("symbol") or "").upper(): item
+                                         for item in ai_advisor.get("recommendations", [])
+                                         if isinstance(item, dict) and item.get("symbol")}
+            except (TypeError, ValueError):
+                advisor_ready = False
+            diagnostic["gemini_gate"] = "READY" if advisor_ready else "UNAVAILABLE_OR_STALE"
+            diagnostic["gemini_min_confidence"] = 80
+        else:
+            diagnostic["gemini_gate"] = "NOT_SUPPLIED"
         def reject(reason: str, direction: str | None = None) -> None:
             bucket = diagnostic["common_rejections"]
             bucket[reason] = bucket.get(reason, 0) + 1
@@ -995,9 +1016,36 @@ def _apply_market_data(
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
                 reject("cooldown_active")
                 continue
-            # Momentum selects direction; each direction must meet score >= 80.
-            # Existing positions are managed above and are not closed when score falls.
-            direction = "LONG" if momentum >= 0 else "SHORT"
+            # Production supplies fresh Gemini advice. Missing, stale, failed, WAIT,
+            # or low-confidence advice blocks new entries; existing exits above remain active.
+            confidence = 0
+            if ai_advisor is not None:
+                if not advisor_ready:
+                    reject("gemini_unavailable_or_stale")
+                    continue
+                decision = advisor_decisions.get(symbol)
+                if not decision:
+                    reject("gemini_decision_missing")
+                    continue
+                ai_action = str(decision.get("action") or "WAIT").upper()
+                try:
+                    confidence = int(decision.get("confidence") or 0)
+                except (TypeError, ValueError):
+                    confidence = 0
+                if ai_action not in {"LONG", "SHORT"}:
+                    reject("gemini_wait")
+                    continue
+                if confidence < 80:
+                    reject("gemini_confidence_below_80", ai_action)
+                    continue
+                direction = ai_action
+                if direction == "SHORT" and not allow_short_entries:
+                    reject("short_entries_disabled", direction)
+                    continue
+            else:
+                # Backward-compatible internal calls without an advisor snapshot.
+                direction = "LONG" if momentum >= 0 else "SHORT"
+            # Gemini chooses direction; technical score is a second independent filter.
             score_key = "long_score" if direction == "LONG" else "short_score"
             raw_score = asset.get(score_key, asset.get("score"))
             try:
@@ -1008,7 +1056,7 @@ def _apply_market_data(
             if not math.isfinite(directional_score) or directional_score < 80:
                 reject("directional_score_below_80", direction)
                 continue
-            reason = "AUTO_LONG_SCORE_80" if direction == "LONG" else "AUTO_SHORT_SCORE_80"
+            reason = (f"AUTO_{direction}_GEMINI_CONF_{confidence}" if ai_advisor is not None else ("AUTO_LONG_SCORE_80" if direction == "LONG" else "AUTO_SHORT_SCORE_80"))
             opened = _open_position(db, exchange, asset, reason) if direction == "LONG" else _open_short_position(db, exchange, asset, reason)
             if opened:
                 diagnostic["opened_long" if direction == "LONG" else "opened_short"] += 1
@@ -1035,10 +1083,12 @@ async def _scan_cycle() -> None:
                 logger.warning("Direct Bybit quotes unavailable for open positions: %s", type(quote_error).__name__)
             if isinstance(bybit_payload, dict):
                 assets = bybit_payload.get("assets") or []
-                logger.info("PAPER cycle Bybit assets=%d LONG=enabled SHORT=enabled",
-                            len(assets) if isinstance(assets, list) else -1)
+                advisor = get_ai_advisor_state()
+                logger.info("PAPER cycle Bybit assets=%d LONG=enabled SHORT=enabled Gemini=%s",
+                            len(assets) if isinstance(assets, list) else -1, advisor.get("status", "UNKNOWN"))
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=True,
-                                   allow_short_entries=True, position_prices=live_quotes)
+                                   allow_short_entries=True, position_prices=live_quotes,
+                                   ai_advisor=advisor)
             else:
                 errors.append("Bybit analysis unavailable; existing positions checked using direct quotes")
                 _apply_market_data("Bybit", {"assets": []}, allow_new_entries=False,

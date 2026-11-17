@@ -73,6 +73,49 @@ class PaperTradingRuleTests(unittest.TestCase):
         paper._apply_market_data("Bybit", {"assets": [self.asset(80)]}, True)
         self.assertEqual(len(self.positions()), 1)
 
+    def _gemini_advice(self, action="LONG", confidence=90, symbol="BTCUSDT", age_seconds=0):
+        from datetime import timedelta
+        return {
+            "available": True, "mode": "SHADOW", "status": "OK",
+            "updated_at": (paper._now() - timedelta(seconds=age_seconds)).isoformat(),
+            "recommendations": [{"symbol": symbol, "action": action, "confidence": confidence, "reason": "test"}],
+        }
+
+    def test_gemini_wait_blocks_new_paper_entry(self):
+        paper._apply_market_data("Bybit", {"assets": [self.asset(90)]}, True, True,
+                                 ai_advisor=self._gemini_advice("WAIT", 95))
+        self.assertEqual(len(self.positions()), 0)
+
+    def test_gemini_high_confidence_long_allows_paper_entry(self):
+        paper._apply_market_data("Bybit", {"assets": [self.asset(90)]}, True, True,
+                                 ai_advisor=self._gemini_advice("LONG", 85))
+        positions = self.positions()
+        self.assertEqual(len(positions), 1)
+        self.assertEqual(positions[0]["direction"], "LONG")
+
+    def test_gemini_high_confidence_short_allows_paper_entry(self):
+        asset = self.asset(90)
+        asset["momentum_6h_pct"] = 0.5
+        paper._apply_market_data("Bybit", {"assets": [asset]}, True, True,
+                                 ai_advisor=self._gemini_advice("SHORT", 85))
+        positions = self.positions()
+        self.assertEqual(len(positions), 1)
+        self.assertEqual(positions[0]["direction"], "SHORT")
+
+    def test_gemini_low_confidence_or_stale_advice_blocks_entry(self):
+        for advice in (self._gemini_advice("LONG", 79), self._gemini_advice("LONG", 95, age_seconds=151)):
+            with self.subTest(advice=advice):
+                paper._apply_market_data("Bybit", {"assets": [self.asset(90)]}, True, True,
+                                         ai_advisor=advice)
+                self.assertEqual(len(self.positions()), 0)
+
+    def test_existing_position_stop_is_managed_when_gemini_is_unavailable(self):
+        self.seed_position("LONG")
+        paper._apply_market_data("Bybit", {"assets": []}, True, True,
+                                 position_prices={"BTCUSDT": 98.5},
+                                 ai_advisor={"available": False, "status": "ERROR", "mode": "SHADOW"})
+        self.assertEqual(len(self.positions()), 0)
+
     def test_score_change_does_not_close_existing_position(self):
         self.seed_position()
         paper._apply_market_data("Bybit", {"assets": [self.asset(1, 100.0)]}, False)
