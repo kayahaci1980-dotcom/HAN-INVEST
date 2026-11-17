@@ -11,6 +11,7 @@ on:
       - feature/manual-buy-analysis-bybit-dark-ui
       - feature/show-2m-price-change
       - feature/remove-continuous-loss-295s
+      - feature/analysis-1h-price-change
     paths:
       - "app/**"
       - "server/**"
