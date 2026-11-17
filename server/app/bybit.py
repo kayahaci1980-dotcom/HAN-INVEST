@@ -194,28 +194,16 @@ async def analyze(
             and volume_confirmed and (change24 - btc_change_24h_pct) < 0
             and atr_14_1h > 0 and math.isfinite(atr_14_1h)
         )
+        # HAN INVEST is configured for SHORT-only operation: never emit BUY signals.
         signal = (
-            "BUY" if long_setup and btc_state == "BULLISH"
-            else "SHORT" if short_setup and btc_state == "BEARISH"
-            else "WATCH" if strong_uptrend or strong_downtrend else "HOLD"
+            "SHORT" if short_setup and btc_state == "BEARISH"
+            else "WATCH" if strong_downtrend else "HOLD"
         )
-        early = (
-            "EARLY BUY" if long_setup and btc_state == "SIDEWAYS"
-            else "EARLY SHORT" if short_setup and btc_state == "SIDEWAYS"
-            else None
-        )
+        early = "EARLY SHORT" if short_setup and btc_state == "SIDEWAYS" else None
 
-        entry = price if signal in ("BUY", "SHORT") else None
-        stop = (
-            price - 1.5 * atr_14_1h if signal == "BUY"
-            else price + 1.5 * atr_14_1h if signal == "SHORT"
-            else None
-        )
-        target = (
-            price + 3.0 * atr_14_1h if signal == "BUY"
-            else price - 3.0 * atr_14_1h if signal == "SHORT"
-            else None
-        )
+        entry = price if signal == "SHORT" else None
+        stop = price + 1.5 * atr_14_1h if signal == "SHORT" else None
+        target = price - 3.0 * atr_14_1h if signal == "SHORT" else None
         sizing = (
             calculate_position_sizing(entry, stop, target, capital_usdt, risk_pct, fee_rate)
             if signal == "BUY" and capital_usdt is not None else None
@@ -239,7 +227,7 @@ async def analyze(
             "entry_price": round(entry, 8) if entry is not None else None,
             "stop_loss": round(stop, 8) if stop is not None else None,
             "take_profit": round(target, 8) if target is not None else None,
-            "risk_reward": "1:2" if signal in ("BUY", "SHORT") else None,
+            "risk_reward": "1:2" if signal == "SHORT" else None,
             "position_sizing": sizing,
             "score": score, "long_score": long_score, "short_score": short_score,
             "signal": signal, "early_signal": early,
