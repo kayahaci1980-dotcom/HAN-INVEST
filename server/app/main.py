@@ -15,6 +15,7 @@ from app.market_context import router as market_context_router
 from app.paper_trading import router as paper_router, start_paper_worker, stop_paper_worker
 from app.analysis_worker import router as analysis_router, start_analysis_worker, stop_analysis_worker
 from app.market_breadth import router as market_breadth_router
+from app.ai_advisor import router as ai_advisor_router
 from fastapi.middleware.cors import CORSMiddleware
 
 @asynccontextmanager
@@ -41,6 +42,7 @@ app.include_router(market_context_router)
 app.include_router(paper_router)
 app.include_router(analysis_router)
 app.include_router(market_breadth_router)
+app.include_router(ai_advisor_router)
 
 app.add_middleware(
     CORSMiddleware,
