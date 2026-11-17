@@ -43,6 +43,15 @@ class GeminiAdvisorTests(unittest.TestCase):
         }
         self.assertEqual(ai_advisor._extract_json(response)["market_bias"], "WAIT")
 
+    def test_retry_delay_prefers_retry_after_and_is_bounded(self):
+        self.assertEqual(ai_advisor._retry_delay_seconds("3", 0), 3.0)
+        self.assertEqual(ai_advisor._retry_delay_seconds("999", 0), 15.0)
+        self.assertEqual(ai_advisor._retry_delay_seconds(None, 0), 2.0)
+        self.assertEqual(ai_advisor._retry_delay_seconds(None, 1), 4.0)
+
+    def test_retryable_status_codes_cover_rate_limit_and_server_overload(self):
+        self.assertEqual(ai_advisor._RETRYABLE_STATUS_CODES, {429, 500, 502, 503, 504})
+
     def test_missing_api_key_disables_advisor_without_network_call(self):
         async def run():
             with patch.dict("os.environ", {"GEMINI_API_KEY": ""}, clear=False):

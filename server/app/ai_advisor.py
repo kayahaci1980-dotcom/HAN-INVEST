@@ -1,7 +1,9 @@
+import asyncio
 import json
 import logging
 import os
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -13,6 +15,8 @@ router = APIRouter(prefix="/api/v1/ai/advisor", tags=["ai-advisor"])
 _DEFAULT_MODEL = "gemini-3.5-flash-lite"
 _API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 _TIMEOUT_SECONDS = 25
+_MAX_RETRIES = 2
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _MAX_ASSETS = 12
 _latest: dict[str, Any] = {
     "available": False,
@@ -118,6 +122,23 @@ def _validated_result(raw: dict[str, Any], candidates: list[dict[str, Any]],
     }
 
 
+def _retry_delay_seconds(retry_after: str | None, attempt: int) -> float:
+    """Return a bounded delay, preferring Google's Retry-After hint."""
+    if retry_after:
+        try:
+            return min(15.0, max(0.5, float(retry_after)))
+        except (TypeError, ValueError):
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+                return min(15.0, max(0.5, seconds))
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return min(15.0, float(2 ** (attempt + 1)))
+
+
 async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
     """Ask Gemini for shadow LONG/SHORT/WAIT advice; never execute trades."""
     global _latest
@@ -199,13 +220,36 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
     url = f"{_API_ROOT}/{model}:generateContent"
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                url,
-                headers={"x-goog-api-key": api_key},
-                json=body,
-            )
-            response.raise_for_status()
-            parsed = _extract_json(response.json())
+            for attempt in range(_MAX_RETRIES + 1):
+                try:
+                    response = await client.post(
+                        url,
+                        headers={"x-goog-api-key": api_key},
+                        json=body,
+                    )
+                    response.raise_for_status()
+                    parsed = _extract_json(response.json())
+                    break
+                except httpx.HTTPStatusError as exc:
+                    status_code = exc.response.status_code
+                    if status_code not in _RETRYABLE_STATUS_CODES or attempt >= _MAX_RETRIES:
+                        raise
+                    retry_after = exc.response.headers.get("retry-after")
+                    delay = _retry_delay_seconds(retry_after, attempt)
+                    logger.warning(
+                        "Gemini temporary HTTP status=%s; retry %s/%s in %.1fs",
+                        status_code, attempt + 1, _MAX_RETRIES, delay,
+                    )
+                    await asyncio.sleep(delay)
+                except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                    if attempt >= _MAX_RETRIES:
+                        raise
+                    delay = _retry_delay_seconds(None, attempt)
+                    logger.warning(
+                        "Gemini temporary network error=%s; retry %s/%s in %.1fs",
+                        type(exc).__name__, attempt + 1, _MAX_RETRIES, delay,
+                    )
+                    await asyncio.sleep(delay)
         _latest = _validated_result(parsed, candidates, model)
     except httpx.HTTPStatusError as exc:
         # Log only the HTTP status and retry hint. Never log provider bodies or credentials.
