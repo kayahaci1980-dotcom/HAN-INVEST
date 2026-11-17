@@ -229,7 +229,7 @@ async def analyze(
             "take_profit": round(target, 8) if target is not None else None,
             "risk_reward": "1:2" if signal == "SHORT" else None,
             "position_sizing": sizing,
-            "score": score, "long_score": long_score, "short_score": short_score,
+            "score": short_score, "long_score": long_score, "short_score": short_score,
             "signal": signal, "early_signal": early,
             "trade_ready": pair_verified, "pair_status": instrument.get("status"),
             "quote_currency": "USDT",
