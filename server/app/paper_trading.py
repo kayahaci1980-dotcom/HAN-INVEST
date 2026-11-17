@@ -970,7 +970,7 @@ def _apply_market_data(
             diagnostic["gemini_gate"] = "READY" if advisor_ready else "UNAVAILABLE_OR_STALE"
             diagnostic["gemini_min_confidence"] = 80
         else:
-            diagnostic["gemini_gate"] = "NOT_SUPPLIED"
+            diagnostic["gemini_gate"] = "BYPASSED_BYBIT_ONLY"
         def reject(reason: str, direction: str | None = None) -> None:
             bucket = diagnostic["common_rejections"]
             bucket[reason] = bucket.get(reason, 0) + 1
@@ -1083,12 +1083,13 @@ async def _scan_cycle() -> None:
                 logger.warning("Direct Bybit quotes unavailable for open positions: %s", type(quote_error).__name__)
             if isinstance(bybit_payload, dict):
                 assets = bybit_payload.get("assets") or []
-                advisor = get_ai_advisor_state()
-                logger.info("PAPER cycle Bybit assets=%d LONG=enabled SHORT=enabled Gemini=%s",
-                            len(assets) if isinstance(assets, list) else -1, advisor.get("status", "UNKNOWN"))
+                logger.info("PAPER cycle Bybit assets=%d LONG=enabled SHORT=enabled; Gemini is not an entry dependency",
+                            len(assets) if isinstance(assets, list) else -1)
+                # PAPER decisions use Bybit Spot prices, candles, momentum and directional scores.
+                # Gemini remains available separately for advisory display, but cannot block PAPER.
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=True,
                                    allow_short_entries=True, position_prices=live_quotes,
-                                   ai_advisor=advisor)
+                                   ai_advisor=None)
             else:
                 errors.append("Bybit analysis unavailable; existing positions checked using direct quotes")
                 _apply_market_data("Bybit", {"assets": []}, allow_new_entries=False,
