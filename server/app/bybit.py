@@ -196,13 +196,13 @@ async def analyze(
         )
         # Emit both directional signals when asset and BTC trend agree.
         signal = (
-            "BUY" if long_setup and btc_state == "BULLISH"
-            else "SHORT" if short_setup and btc_state == "BEARISH"
+            "BUY" if long_setup and long_score >= 85 and btc_state == "BULLISH"
+            else "SHORT" if short_setup and short_score >= 85 and btc_state == "BEARISH"
             else "WATCH" if strong_uptrend or strong_downtrend else "HOLD"
         )
         early = (
-            "EARLY BUY" if long_setup and btc_state == "SIDEWAYS"
-            else "EARLY SHORT" if short_setup and btc_state == "SIDEWAYS" else None
+            "EARLY BUY" if long_setup and long_score >= 85 and btc_state == "SIDEWAYS"
+            else "EARLY SHORT" if short_setup and short_score >= 85 and btc_state == "SIDEWAYS" else None
         )
 
         entry = price if signal in {"BUY", "SHORT"} else None
