@@ -792,7 +792,8 @@ def _manage_short_scale(db, position, price: float) -> None:
 
 def _apply_market_data(
     exchange: str, payload: dict[str, Any], allow_new_entries: bool = False,
-    allow_short_entries: bool = False, position_prices: dict[str, float] | None = None,
+    allow_short_entries: bool = False, allow_long_entries: bool = False,
+    position_prices: dict[str, float] | None = None,
     ai_advisor: dict[str, Any] | None = None,
 ) -> None:
     assets = payload.get("assets") or []
@@ -951,7 +952,8 @@ def _apply_market_data(
         # Operational checks and protective position sizing/stops remain mandatory.
         diagnostic = {"assets": len(assets), "candidates": 0, "opened_long": 0, "opened_short": 0,
                       "common_rejections": {}, "long_rejections": {}, "short_rejections": {},
-                      "market_long_allowed": False, "market_short_allowed": True}
+                      "market_long_allowed": bool(allow_long_entries),
+                      "market_short_allowed": bool(allow_short_entries)}
         advisor_decisions: dict[str, dict[str, Any]] = {}
         advisor_ready = ai_advisor is not None
         if advisor_ready:
@@ -1032,25 +1034,37 @@ def _apply_market_data(
                     confidence = int(decision.get("confidence") or 0)
                 except (TypeError, ValueError):
                     confidence = 0
-                if ai_action != "SHORT":
-                    reject("long_entries_disabled" if ai_action == "LONG" else "gemini_wait",
-                           "LONG" if ai_action == "LONG" else None)
+                if ai_action not in {"LONG", "SHORT"}:
+                    reject("gemini_wait")
                     continue
+                direction = ai_action
                 if confidence < 80:
-                    reject("gemini_confidence_below_80", "SHORT")
+                    reject("gemini_confidence_below_80", direction)
                     continue
-                direction = "SHORT"
-                if not allow_short_entries:
+                if direction == "LONG" and not allow_long_entries:
+                    reject("long_entries_disabled", direction)
+                    continue
+                if direction == "SHORT" and not allow_short_entries:
                     reject("short_entries_disabled", direction)
                     continue
             else:
-                # SHORT-only mode: Bybit momentum/score is evaluated for SHORT entries only.
-                direction = "SHORT"
-                if not allow_short_entries:
-                    reject("short_entries_disabled", direction)
+                # Select the stronger direction when its Bybit score reaches 80.
+                try:
+                    long_score = float(asset.get("long_score", 0) or 0)
+                    short_score = float(asset.get("short_score", 0) or 0)
+                except (TypeError, ValueError):
+                    reject("directional_score_missing_or_invalid")
                     continue
-            # SHORT is the only permitted entry direction in PAPER.
-            score_key = "short_score"
+                eligible = []
+                if allow_long_entries and math.isfinite(long_score) and long_score >= 80:
+                    eligible.append(("LONG", long_score))
+                if allow_short_entries and math.isfinite(short_score) and short_score >= 80:
+                    eligible.append(("SHORT", short_score))
+                if not eligible:
+                    reject("directional_score_below_80")
+                    continue
+                direction, _ = max(eligible, key=lambda item: item[1])
+            score_key = "long_score" if direction == "LONG" else "short_score"
             raw_score = asset.get(score_key, asset.get("score"))
             try:
                 directional_score = float(raw_score)
@@ -1060,8 +1074,10 @@ def _apply_market_data(
             if not math.isfinite(directional_score) or directional_score < 80:
                 reject("directional_score_below_80", direction)
                 continue
-            reason = (f"AUTO_SHORT_GEMINI_CONF_{confidence}" if ai_advisor is not None else "AUTO_SHORT_SCORE_80")
-            opened = _open_short_position(db, exchange, asset, reason)
+            reason = (f"AUTO_{direction}_GEMINI_CONF_{confidence}" if ai_advisor is not None
+                      else f"AUTO_{direction}_SCORE_80")
+            opened = (_open_position(db, exchange, asset, reason) if direction == "LONG"
+                      else _open_short_position(db, exchange, asset, reason))
             if opened:
                 diagnostic["opened_long" if direction == "LONG" else "opened_short"] += 1
                 current_positions += 1
@@ -1087,12 +1103,13 @@ async def _scan_cycle() -> None:
                 logger.warning("Direct Bybit quotes unavailable for open positions: %s", type(quote_error).__name__)
             if isinstance(bybit_payload, dict):
                 assets = bybit_payload.get("assets") or []
-                logger.info("PAPER cycle Bybit assets=%d LONG=disabled SHORT=enabled; Gemini is not an entry dependency",
+                logger.info("PAPER cycle Bybit assets=%d LONG=enabled SHORT=enabled; Gemini is not an entry dependency",
                             len(assets) if isinstance(assets, list) else -1)
                 # PAPER decisions use Bybit Spot prices, candles, momentum and directional scores.
                 # Gemini remains available separately for advisory display, but cannot block PAPER.
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=True,
-                                   allow_short_entries=True, position_prices=live_quotes,
+                                   allow_long_entries=True, allow_short_entries=True,
+                                   position_prices=live_quotes,
                                    ai_advisor=None)
             else:
                 errors.append("Bybit analysis unavailable; existing positions checked using direct quotes")
@@ -1187,8 +1204,7 @@ async def disable_paper_trading():
 
 @router.post("/buy")
 async def buy_paper_position(payload: dict[str, Any] = Body(...)):
-    """LONG entries are disabled in SHORT-only mode."""
-    raise HTTPException(status_code=409, detail="LONG entries are disabled. HAN INVEST is in SHORT-only mode.")
+    """Manually open a virtual LONG position using Bybit Spot market data."""
     exchange = str(payload.get("exchange") or "").strip()
     symbol = str(payload.get("symbol") or "").strip().upper().replace("-", "").replace("/", "")
     if exchange.lower() != "bybit":
