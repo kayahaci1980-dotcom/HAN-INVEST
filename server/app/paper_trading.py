@@ -940,16 +940,16 @@ def _apply_market_data(
                 )
                 continue
 
+            # SHORT entries and scale-ins are paused. Existing SHORT positions
+            # remain managed by their protective stop and profit-trailing exits.
             if direction == "LONG":
                 _manage_long_scale(db, current, price)
-            else:
-                _manage_short_scale(db, current, price)
 
         # No technical, score, volume, trend, daily-open, or breadth entry filters.
         # Operational checks and protective position sizing/stops remain mandatory.
         diagnostic = {"assets": len(assets), "candidates": 0, "opened_long": 0, "opened_short": 0,
                       "common_rejections": {}, "long_rejections": {}, "short_rejections": {},
-                      "market_long_allowed": True, "market_short_allowed": True}
+                      "market_long_allowed": True, "market_short_allowed": False}
         def reject(reason: str, direction: str | None = None) -> None:
             bucket = diagnostic["common_rejections"]
             bucket[reason] = bucket.get(reason, 0) + 1
@@ -995,10 +995,14 @@ def _apply_market_data(
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
                 reject("cooldown_active")
                 continue
-            # Momentum selects direction; each direction must meet score >= 80.
-            # Existing positions are managed above and are not closed when score falls.
+            # LONG-only mode: negative momentum candidates are rejected.
+            # Existing SHORT positions are exit-managed above but never added to.
             direction = "LONG" if momentum >= 0 else "SHORT"
-            score_key = "long_score" if direction == "LONG" else "short_score"
+            if direction == "SHORT":
+                reject("short_entries_paused", "SHORT")
+                continue
+            # Existing LONG positions are managed above and are not closed when score falls.
+            score_key = "long_score"
             raw_score = asset.get(score_key, asset.get("score"))
             try:
                 directional_score = float(raw_score)
@@ -1008,8 +1012,8 @@ def _apply_market_data(
             if not math.isfinite(directional_score) or directional_score < 80:
                 reject("directional_score_below_80", direction)
                 continue
-            reason = "AUTO_LONG_SCORE_80" if direction == "LONG" else "AUTO_SHORT_SCORE_80"
-            opened = _open_position(db, exchange, asset, reason) if direction == "LONG" else _open_short_position(db, exchange, asset, reason)
+            reason = "AUTO_LONG_SCORE_80"
+            opened = _open_position(db, exchange, asset, reason)
             if opened:
                 diagnostic["opened_long" if direction == "LONG" else "opened_short"] += 1
                 current_positions += 1
@@ -1035,10 +1039,10 @@ async def _scan_cycle() -> None:
                 logger.warning("Direct Bybit quotes unavailable for open positions: %s", type(quote_error).__name__)
             if isinstance(bybit_payload, dict):
                 assets = bybit_payload.get("assets") or []
-                logger.info("PAPER cycle Bybit assets=%d LONG=enabled SHORT=enabled",
+                logger.info("PAPER cycle Bybit assets=%d LONG=enabled SHORT=paused",
                             len(assets) if isinstance(assets, list) else -1)
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=True,
-                                   allow_short_entries=True, position_prices=live_quotes)
+                                   allow_short_entries=False, position_prices=live_quotes)
             else:
                 errors.append("Bybit analysis unavailable; existing positions checked using direct quotes")
                 _apply_market_data("Bybit", {"assets": []}, allow_new_entries=False,
