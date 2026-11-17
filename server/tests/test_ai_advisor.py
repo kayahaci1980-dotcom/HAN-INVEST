@@ -1,0 +1,60 @@
+import unittest
+from unittest.mock import patch
+
+from app import ai_advisor
+
+
+class GeminiAdvisorTests(unittest.TestCase):
+    def test_candidate_payload_sorts_and_limits_to_twelve(self):
+        assets = [
+            {"symbol": f"COIN{i}USDT", "quote_volume_24h": i * 1000,
+             "price": 1.0, "private_field": "must_not_be_sent"}
+            for i in range(15)
+        ]
+        result = ai_advisor._candidate_payload({"assets": assets})
+        self.assertEqual(len(result), 12)
+        self.assertEqual(result[0]["symbol"], "COIN14USDT")
+        self.assertNotIn("private_field", result[0])
+
+    def test_validation_rejects_unknown_symbols_and_defaults_missing_to_wait(self):
+        candidates = [{"symbol": "BTCUSDT"}, {"symbol": "ETHUSDT"}]
+        raw = {
+            "market_bias": "mixed",
+            "decisions": [
+                {"symbol": "BTCUSDT", "action": "SHORT", "confidence": 130,
+                 "reason": "downtrend"},
+                {"symbol": "FAKEUSDT", "action": "LONG", "confidence": 99,
+                 "reason": "not in input"},
+            ],
+        }
+        result = ai_advisor._validated_result(raw, candidates, "gemini-3.5-flash-lite")
+        by_symbol = {item["symbol"]: item for item in result["recommendations"]}
+        self.assertEqual(result["market_bias"], "MIXED")
+        self.assertEqual(by_symbol["BTCUSDT"]["action"], "SHORT")
+        self.assertEqual(by_symbol["BTCUSDT"]["confidence"], 100)
+        self.assertEqual(by_symbol["ETHUSDT"]["action"], "WAIT")
+        self.assertNotIn("FAKEUSDT", by_symbol)
+
+    def test_extract_json_accepts_gemini_candidate_text(self):
+        response = {
+            "candidates": [{
+                "content": {"parts": [{"text": '{"market_bias":"WAIT","decisions":[]}'}]}
+            }]
+        }
+        self.assertEqual(ai_advisor._extract_json(response)["market_bias"], "WAIT")
+
+    def test_missing_api_key_disables_advisor_without_network_call(self):
+        async def run():
+            with patch.dict("os.environ", {"GEMINI_API_KEY": ""}, clear=False):
+                with patch("app.ai_advisor.httpx.AsyncClient") as client:
+                    result = await ai_advisor.refresh_ai_advisor({"assets": []})
+                    client.assert_not_called()
+            self.assertEqual(result["status"], "NOT_CONFIGURED")
+            self.assertEqual(result["mode"], "SHADOW")
+
+        import asyncio
+        asyncio.run(run())
+
+
+if __name__ == "__main__":
+    unittest.main()
