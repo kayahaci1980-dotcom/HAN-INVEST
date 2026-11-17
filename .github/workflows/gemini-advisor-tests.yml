@@ -1,0 +1,36 @@
+name: Gemini advisor tests
+
+on:
+  pull_request:
+    branches:
+      - feat/atr-pro-volume-50m-100m
+    paths:
+      - "server/app/ai_advisor.py"
+      - "server/app/analysis_worker.py"
+      - "server/app/main.py"
+      - "server/tests/test_ai_advisor.py"
+      - ".github/workflows/gemini-advisor-tests.yml"
+  push:
+    branches:
+      - feature/gemini-market-advisor-shadow
+    paths:
+      - "server/app/ai_advisor.py"
+      - "server/app/analysis_worker.py"
+      - "server/app/main.py"
+      - "server/tests/test_ai_advisor.py"
+      - ".github/workflows/gemini-advisor-tests.yml"
+
+jobs:
+  advisor-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pytest
+      - run: python -m compileall -q app tests
+      - run: PYTHONPATH=. pytest -q tests/test_ai_advisor.py
