@@ -10,6 +10,7 @@ on:
       - feat/atr-pro-volume-50m-100m
       - feature/manual-buy-analysis-bybit-dark-ui
       - feature/show-2m-price-change
+      - feature/remove-continuous-loss-295s
     paths:
       - "app/**"
       - "server/**"
