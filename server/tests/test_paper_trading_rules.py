@@ -269,15 +269,12 @@ class PaperTradingRuleTests(unittest.TestCase):
         paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
         self.assertEqual(len(self.positions()), 0)
 
-    def test_short_entry_opens_at_score_80(self):
+    def test_short_entry_is_paused_even_when_score_is_80(self):
         asset = self.asset(80, 99.9)
         asset["momentum_6h_pct"] = -0.1
         asset["ma20"], asset["ma50"] = 101.0, 102.0
         paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
-        positions = self.positions()
-        self.assertEqual(len(positions), 1)
-        self.assertEqual(positions[0]["direction"], "SHORT")
-        self.assertAlmostEqual(float(positions[0]["cost_usdt"]), 100.0, places=5)
+        self.assertEqual(len(self.positions()), 0)
 
     def test_adds_equal_initial_tranches_at_each_one_percent_milestone_once(self):
         self.seed_position()
@@ -382,8 +379,27 @@ class PaperTradingRuleTests(unittest.TestCase):
         short_asset["ma20"], short_asset["ma50"], short_asset["daily_open"] = 0, 0, 0
         paper._apply_market_data("Bybit", {"assets": [long_asset, short_asset]}, False, False)
         positions = {row["symbol"]: row["direction"] for row in self.positions()}
-        self.assertEqual(positions, {"LOWVOLUSDT": "LONG", "SHORTUSDT": "SHORT"})
+        self.assertEqual(positions, {"LOWVOLUSDT": "LONG"})
 
+
+
+    def test_existing_short_position_is_exit_managed_but_not_scaled_in(self):
+        self.seed_position("SHORT")
+        with paper._connect() as db:
+            before = db.execute(
+                "SELECT COUNT(*) AS n FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT'"
+            ).fetchone()["n"]
+        asset = self.asset(80, 98.0)
+        asset["momentum_6h_pct"] = -2.0
+        asset["ma20"], asset["ma50"] = 101.0, 102.0
+        paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
+        with paper._connect() as db:
+            after = db.execute(
+                "SELECT COUNT(*) AS n FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT'"
+            ).fetchone()["n"]
+        self.assertEqual(before, 1)
+        self.assertEqual(after, 1)
+        self.assertEqual(len(self.positions()), 1)
 
     def test_long_remains_open_after_295_seconds_of_negative_pnl_without_cooldown(self):
         self.seed_position("LONG")
