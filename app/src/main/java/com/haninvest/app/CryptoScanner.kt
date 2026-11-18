@@ -461,7 +461,7 @@ class CryptoScanner(private val context: Context) {
             if (selectedTab == "HISTORY") {
                 val remoteHistory = serverPaperState?.optJSONArray("history") ?: JSONArray()
                 if (remoteHistory.length() == 0) content.addView(label("История серверных сделок пока пуста или ещё загружается.", 13f, muted))
-                for (i in remoteHistory.length() - 1 downTo maxOf(0, remoteHistory.length() - 100)) {
+                for (i in 0 until minOf(remoteHistory.length(), 100)) {
                     val trade = remoteHistory.optJSONObject(i) ?: continue
                     val tradeSide = trade.optString("side")
                     val sideLabel = when (tradeSide) {
@@ -1000,9 +1000,12 @@ class CryptoScanner(private val context: Context) {
                         val connection = URL("https://api.bybit.com/v5/market/tickers?category=spot").openConnection() as HttpURLConnection
                         val json = try {
                             connection.requestMethod = "GET"
+                            connection.useCaches = false
                             connection.connectTimeout = 15000
                             connection.readTimeout = 20000
                             connection.setRequestProperty("Accept", "application/json")
+                            connection.setRequestProperty("Cache-Control", "no-cache, no-store, max-age=0")
+                            connection.setRequestProperty("Pragma", "no-cache")
                             if (connection.responseCode !in 200..299) throw Exception("HTTP ${connection.responseCode}")
                             JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
                         } finally {
