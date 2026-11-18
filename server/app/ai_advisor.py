@@ -205,6 +205,16 @@ def _validated_result(raw: dict[str, Any], candidates: list[dict[str, Any]],
         })
         for symbol in sorted(allowed)
     ]
+    action_counts = {
+        action: sum(1 for item in recommendations if item["action"] == action)
+        for action in ("LONG", "SHORT", "WAIT")
+    }
+    logger.info(
+        "%s advisory counts: submitted_pairs=%d; validated_model_decisions=%d; LONG=%d; SHORT=%d; WAIT=%d; missing_default_WAIT=%d",
+        provider, len(candidates), len(decisions),
+        action_counts["LONG"], action_counts["SHORT"], action_counts["WAIT"],
+        max(0, len(allowed) - len(decisions)),
+    )
     bias = str(raw.get("market_bias") or "WAIT").upper()
     if bias not in {"LONG", "SHORT", "MIXED", "WAIT"}:
         bias = "WAIT"
