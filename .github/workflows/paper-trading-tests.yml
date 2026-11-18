@@ -20,6 +20,8 @@ on:
       - feat/atr-pro-volume-50m-100m
     paths:
       - "server/app/paper_trading.py"
+      - "server/app/ai_advisor.py"
+      - "server/tests/test_gemini_retry.py"
       - "server/tests/test_paper_trading_rules.py"
       - "server/tests/test_paper_account_snapshot.py"
       - ".github/workflows/paper-trading-tests.yml"
