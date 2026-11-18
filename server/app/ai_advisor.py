@@ -3,9 +3,7 @@ import hashlib
 import json
 import logging
 import os
-import re
 from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -20,74 +18,6 @@ _TIMEOUT_SECONDS = 25
 _MAX_RETRIES = 2
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
-# Shared cooldown prevents market analysis and PAPER exit review from
-# hammering Groq after a rate-limit response.
-_GROQ_RATE_LIMIT_COOLDOWN_SECONDS = 180
-_groq_cooldown_until: datetime | None = None
-
-
-def _groq_cooldown_remaining(now: datetime | None = None) -> float:
-    current = now or datetime.now(timezone.utc)
-    if _groq_cooldown_until is None:
-        return 0.0
-    return max(0.0, (_groq_cooldown_until - current).total_seconds())
-
-
-def _duration_header_seconds(value: str | None) -> float:
-    """Parse Groq reset headers such as 7.6s, 2m59s, or 1h2m."""
-    if not value:
-        return 0.0
-    raw = value.strip().lower()
-    try:
-        return max(0.0, float(raw))
-    except ValueError:
-        pass
-    units = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
-    parts = re.findall(r"(\d+(?:\.\d+)?)(ms|s|m|h|d)", raw)
-    if not parts or "".join(number + unit for number, unit in parts) != raw.replace(" ", ""):
-        return 0.0
-    return sum(float(number) * units[unit] for number, unit in parts)
-
-
-def _set_groq_rate_limit_cooldown(
-    retry_after: str | None = None,
-    response_headers: Any | None = None,
-) -> float:
-    """Respect Groq's retry hint and any exhausted request/token reset windows."""
-    global _groq_cooldown_until
-    delays = [_GROQ_RATE_LIMIT_COOLDOWN_SECONDS]
-    if retry_after:
-        try:
-            delays.append(max(0.0, float(retry_after)))
-        except (TypeError, ValueError):
-            try:
-                retry_at = parsedate_to_datetime(retry_after)
-                if retry_at.tzinfo is None:
-                    retry_at = retry_at.replace(tzinfo=timezone.utc)
-                delays.append(max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds()))
-            except (TypeError, ValueError, OverflowError):
-                pass
-    if response_headers is not None:
-        remaining_tokens = str(response_headers.get("x-ratelimit-remaining-tokens", "")).strip()
-        remaining_requests = str(response_headers.get("x-ratelimit-remaining-requests", "")).strip()
-        if remaining_tokens == "0":
-            delays.append(_duration_header_seconds(response_headers.get("x-ratelimit-reset-tokens")))
-        if remaining_requests == "0":
-            delays.append(_duration_header_seconds(response_headers.get("x-ratelimit-reset-requests")))
-    delay = min(86400.0, max(delays))
-    _groq_cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=delay)
-    return delay
-
-
-def _groq_rate_limit_summary(response_headers: Any) -> str:
-    """Return non-sensitive rate-limit metadata; never include response bodies or keys."""
-    names = (
-        "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests",
-        "x-ratelimit-reset-requests", "x-ratelimit-limit-tokens",
-        "x-ratelimit-remaining-tokens", "x-ratelimit-reset-tokens",
-        "retry-after",
-    )
-    return " ".join(f"{name}={response_headers.get(name, 'n/a')}" for name in names)
 _MAX_ASSETS = 500
 _last_success_fingerprint: str | None = None
 _last_success_result: dict[str, Any] | None = None
@@ -114,7 +44,7 @@ def _candidate_payload(market: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(item, dict) or not item.get("symbol") or item.get("trade_ready") is not True:
             continue
         try:
-            if max(float(item.get("long_score") or 0), float(item.get("short_score") or 0)) < 85:
+            if max(float(item.get("long_score") or 0), float(item.get("short_score") or 0)) < 80:
                 continue
             volume = float(item.get("quote_volume_24h") or 0)
             if volume <= 0:
@@ -238,39 +168,25 @@ async def _gemini_fallback(candidates: list[dict[str, Any]], body: dict[str, Any
 
 
 async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
-    """Ask Groq when configured, otherwise Gemini; advisory only."""
+    """Use Google Gemini as the sole advisory model; never place orders."""
     global _latest, _last_success_fingerprint, _last_success_result
-    groq_key = os.getenv("GROQ_API_KEY", "").strip()
-    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
-    use_groq = bool(groq_key)
-    provider = "Groq" if use_groq else "Google Gemini"
-    api_key = groq_key if use_groq else gemini_key
-    model = (
-        os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
-        if use_groq else
-        (os.getenv("GEMINI_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL)
-    )
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    model = os.getenv("GEMINI_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL
+    provider = "Google Gemini"
     if not api_key:
         _latest = {
-            **_latest,
-            "available": False,
-            "mode": "SHADOW",
-            "model": model,
-            "status": "NOT_CONFIGURED",
-            "recommendations": [],
+            **_latest, "available": False, "mode": "SHADOW", "provider": provider,
+            "model": model, "status": "NOT_CONFIGURED", "recommendations": [],
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "message": "Добавьте GROQ_API_KEY или GEMINI_API_KEY в секреты Render.",
+            "message": "Добавьте GEMINI_API_KEY в секреты сервера Render.",
         }
         return dict(_latest)
 
     candidates = _candidate_payload(market)
     if not candidates:
         _latest = {
-            **_latest,
-            "available": False,
-            "model": model,
-            "status": "NO_MARKET_DATA",
-            "recommendations": [],
+            **_latest, "available": False, "mode": "SHADOW", "provider": provider,
+            "model": model, "status": "NO_MARKET_DATA", "recommendations": [],
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "message": "Нет подходящих рыночных данных для анализа.",
         }
@@ -280,32 +196,28 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
     candidate_fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
     if candidate_fingerprint == _last_success_fingerprint and _last_success_result is not None:
         _latest = {**_last_success_result, "reused": True,
-                   "message": "Использован сохранённый результат Groq: состав и показатели отобранных монет не изменились."}
-        logger.info("AI analysis reused saved %s result; selected assets unchanged", provider)
+                   "message": "Использован последний результат Gemini: данные выбранных монет не изменились."}
         return dict(_latest)
 
     prompt = {
         "task": (
-            "Evaluate each supplied Bybit Spot USDT asset for a short-term "
-            "directional setup. Return LONG, SHORT, or WAIT per asset. "
-            "Use only supplied fields; do not invent news, prices, or indicators. "
-            "Prefer WAIT when evidence conflicts or is insufficient. "
-            "Confidence is a qualitative score from 0 to 100, not a probability "
-            "or guarantee. Do not give leverage or position-size instructions."
+            "Evaluate each supplied Bybit Spot USDT asset for a short-term directional setup. "
+            "Return LONG, SHORT, or WAIT per asset. Use only supplied fields; do not invent "
+            "news, prices, indicators, or expected returns. Consider whether a setup has "
+            "positive expected net value after the supplied trading fees; if fee data is not "
+            "available, be conservative and prefer WAIT. Prefer WAIT when evidence conflicts "
+            "or is insufficient. Confidence is a qualitative score from 0 to 100, not a "
+            "probability or guarantee. Do not give leverage or position-size instructions."
         ),
         "btc_market_filter": market.get("btc_market_filter", {}),
         "assets": candidates,
     }
     body = {
-        "system_instruction": {
-            "parts": [{
-                "text": (
-                    "You are the market-analysis component of HAN INVEST. "
-                    "You only provide advisory signals. You cannot place orders. "
-                    "Respect the supplied market data and return strict JSON."
-                )
-            }]
-        },
+        "system_instruction": {"parts": [{"text": (
+            "You are HAN INVEST's sole market-analysis component. You only provide advisory "
+            "signals and cannot place orders. Respect the supplied Bybit Spot data and return "
+            "strict JSON. Use WAIT unless the evidence supports a clear directional setup."
+        )}]},
         "contents": [{"role": "user", "parts": [{"text": json.dumps(prompt, separators=(",", ":"))}]}],
         "generationConfig": {
             "responseMimeType": "application/json",
@@ -313,168 +225,63 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
                 "type": "OBJECT",
                 "properties": {
                     "market_bias": {"type": "STRING", "enum": ["LONG", "SHORT", "MIXED", "WAIT"]},
-                    "decisions": {
-                        "type": "ARRAY",
-                        "items": {
-                            "type": "OBJECT",
-                            "properties": {
-                                "symbol": {"type": "STRING"},
-                                "action": {"type": "STRING", "enum": ["LONG", "SHORT", "WAIT"]},
-                                "confidence": {"type": "INTEGER"},
-                                "reason": {"type": "STRING"},
-                            },
-                            "required": ["symbol", "action", "confidence", "reason"],
+                    "decisions": {"type": "ARRAY", "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "symbol": {"type": "STRING"},
+                            "action": {"type": "STRING", "enum": ["LONG", "SHORT", "WAIT"]},
+                            "confidence": {"type": "INTEGER"},
+                            "reason": {"type": "STRING"},
                         },
-                    },
+                        "required": ["symbol", "action", "confidence", "reason"],
+                    }},
                 },
                 "required": ["market_bias", "decisions"],
             },
         },
     }
-    cooldown_remaining = _groq_cooldown_remaining()
-    if use_groq and cooldown_remaining > 0:
-        if gemini_key:
-            try:
-                _latest = await _gemini_fallback(candidates, body, gemini_key)
-                _latest["message"] = "Groq временно ограничил запросы; использован резервный анализ Gemini."
-                logger.info("Groq market analysis skipped during cooldown; Gemini fallback supplied advisory analysis")
-                return dict(_latest)
-            except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
-                logger.warning("Gemini fallback failed during Groq cooldown: %s", type(fallback_exc).__name__)
-        _latest = {
-            "available": False, "mode": "SHADOW", "provider": "Groq",
-            "model": model, "status": "RATE_LIMITED", "market_bias": "WAIT",
-            "recommendations": [], "updated_at": datetime.now(timezone.utc).isoformat(),
-            "retry_in_seconds": int(cooldown_remaining),
-            "message": "Groq временно ограничил запросы; новые AI-входы ждут следующей проверки.",
-        }
-        return dict(_latest)
-
-    if use_groq:
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        request_body = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": (
-                    "You are the market-analysis component of HAN INVEST. "
-                    "Only provide advisory signals, never place orders. "
-                    "Use only supplied market data. Return strict JSON with "
-                    "market_bias and decisions fields."
-                )},
-                {"role": "user", "content": json.dumps(prompt, separators=(",", ":"))},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1,
-        }
-        request_headers = {"Authorization": f"Bearer {api_key}"}
-    else:
-        url = f"{_API_ROOT}/{model}:generateContent"
-        request_body = body
-        request_headers = {"x-goog-api-key": api_key}
-
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
             for attempt in range(_MAX_RETRIES + 1):
                 try:
                     response = await client.post(
-                        url,
-                        headers=request_headers,
-                        json=request_body,
+                        f"{_API_ROOT}/{model}:generateContent",
+                        headers={"x-goog-api-key": api_key}, json=body,
                     )
                     response.raise_for_status()
-                    response_json = response.json()
-                    if use_groq:
-                        choices = response_json.get("choices") or []
-                        content = choices[0].get("message", {}).get("content", "") if choices else ""
-                        parsed = json.loads(content)
-                        if not isinstance(parsed, dict):
-                            raise ValueError("Groq response must be a JSON object")
-                    else:
-                        parsed = _extract_json(response_json)
+                    parsed = _extract_json(response.json())
                     break
                 except httpx.HTTPStatusError as exc:
-                    status_code = exc.response.status_code
-                    if use_groq and status_code == 429:
-                        retry_after = exc.response.headers.get("retry-after")
-                        cooldown = _set_groq_rate_limit_cooldown(retry_after, exc.response.headers)
-                        logger.warning(
-                            "Groq rate limited; shared cooldown %.1fs; %s; using Gemini fallback when configured",
-                            cooldown, _groq_rate_limit_summary(exc.response.headers),
-                        )
+                    if exc.response.status_code not in _RETRYABLE_STATUS_CODES or attempt >= _MAX_RETRIES:
                         raise
-                    if status_code not in _RETRYABLE_STATUS_CODES or attempt >= _MAX_RETRIES:
-                        raise
-                    retry_after = exc.response.headers.get("retry-after")
-                    delay = _retry_delay_seconds(retry_after, attempt)
-                    logger.warning(
-                        "%s temporary HTTP status=%s; retry %s/%s in %.1fs",
-                        provider, status_code, attempt + 1, _MAX_RETRIES, delay,
-                    )
-                    await asyncio.sleep(delay)
-                except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                    await asyncio.sleep(_retry_delay_seconds(exc.response.headers.get("retry-after"), attempt))
+                except (httpx.TimeoutException, httpx.NetworkError):
                     if attempt >= _MAX_RETRIES:
                         raise
-                    delay = _retry_delay_seconds(None, attempt)
-                    logger.warning(
-                        "%s temporary network error=%s; retry %s/%s in %.1fs",
-                        provider, type(exc).__name__, attempt + 1, _MAX_RETRIES, delay,
-                    )
-                    await asyncio.sleep(delay)
+                    await asyncio.sleep(_retry_delay_seconds(None, attempt))
         _latest = _validated_result(parsed, candidates, model, provider)
         _latest["candidate_fingerprint"] = candidate_fingerprint
         _latest["reused"] = False
         _last_success_fingerprint = candidate_fingerprint
         _last_success_result = dict(_latest)
-        logger.info("%s analysis succeeded for %d prefiltered Bybit pairs", provider, len(candidates))
+        logger.info("Google Gemini analysis succeeded for %d prefiltered Bybit pairs", len(candidates))
     except httpx.HTTPStatusError as exc:
-        if use_groq and gemini_key:
-            try:
-                _latest = await _gemini_fallback(candidates, body, gemini_key)
-                logger.warning("Groq unavailable; Gemini fallback supplied advisory analysis")
-                return dict(_latest)
-            except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
-                logger.warning("Gemini fallback failed: %s", type(fallback_exc).__name__)
-        # Log only the HTTP status and retry hint. Never log provider bodies or credentials.
-        status_code = exc.response.status_code
-        retry_after = exc.response.headers.get("retry-after")
-        logger.warning(
-            "%s market analysis failed: HTTP status=%s retry_after=%s",
-            provider, status_code, retry_after or "not-provided",
-        )
         _latest = {
-            "available": False,
-            "mode": "SHADOW",
-            "provider": provider,
-            "model": model,
-            "status": "ERROR",
-            "error_http_status": status_code,
-            "retry_after": retry_after,
-            "market_bias": "WAIT",
-            "recommendations": [],
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "message": f"{provider} API вернул HTTP {status_code}; PAPER продолжает работу, новые входы ждут свежего AI-подтверждения.",
+            "available": False, "mode": "SHADOW", "provider": provider, "model": model,
+            "status": "RATE_LIMITED" if exc.response.status_code == 429 else "ERROR",
+            "error_http_status": exc.response.status_code, "market_bias": "WAIT",
+            "recommendations": [], "updated_at": datetime.now(timezone.utc).isoformat(),
+            "message": f"Gemini API вернул HTTP {exc.response.status_code}; новые PAPER-входы ожидают свежего подтверждения.",
         }
+        logger.warning("Google Gemini market analysis failed: HTTP status=%s", exc.response.status_code)
     except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
-        if use_groq and gemini_key:
-            try:
-                _latest = await _gemini_fallback(candidates, body, gemini_key)
-                logger.warning("Groq unavailable; Gemini fallback supplied advisory analysis")
-                return dict(_latest)
-            except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
-                logger.warning("Gemini fallback failed: %s", type(fallback_exc).__name__)
-        # Never expose provider response bodies or credentials in logs/API output.
-        logger.warning("%s market analysis failed: %s", provider, type(exc).__name__)
         _latest = {
-            "available": False,
-            "mode": "SHADOW",
-            "provider": provider,
-            "model": model,
-            "status": "ERROR",
-            "market_bias": "WAIT",
-            "recommendations": [],
+            "available": False, "mode": "SHADOW", "provider": provider, "model": model,
+            "status": "ERROR", "market_bias": "WAIT", "recommendations": [],
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "message": f"{provider} временно недоступен; PAPER продолжает работу, новые входы ждут свежего AI-подтверждения.",
+            "message": f"Gemini не смог завершить анализ ({type(exc).__name__}); новые PAPER-входы ожидают свежего подтверждения.",
         }
+        logger.warning("Google Gemini market analysis failed: %s", type(exc).__name__)
     return dict(_latest)
 
 
@@ -484,17 +291,14 @@ def get_ai_advisor_state() -> dict[str, Any]:
 
 
 
-# Open-position exit review is advisory-only until explicitly promoted after testing.
+
+# Open-position exit review is advisory-only; it never executes or closes trades.
 _EXIT_REVIEW_INTERVAL_SECONDS = 110
 _last_exit_review_at: datetime | None = None
 _latest_exit_review: dict[str, Any] = {
-    "available": False,
-    "mode": "SHADOW",
-    "provider": "Groq",
-    "status": "NOT_RUN",
-    "recommendations": [],
-    "updated_at": None,
-    "message": "Проверка открытых позиций Groq ещё не выполнялась.",
+    "available": False, "mode": "SHADOW", "provider": "Google Gemini",
+    "status": "NOT_RUN", "recommendations": [], "updated_at": None,
+    "message": "Проверка открытых позиций Gemini ещё не выполнялась.",
 }
 
 
@@ -502,44 +306,31 @@ async def refresh_ai_exit_advisor(
     open_positions: list[dict[str, Any]],
     market_assets: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Review existing PAPER positions with Groq; never execute or close trades."""
+    """Review existing PAPER positions with Gemini; recommendations only, never orders."""
     global _last_exit_review_at, _latest_exit_review
     now = datetime.now(timezone.utc)
     if not open_positions:
         _latest_exit_review = {
-            "available": True, "mode": "SHADOW", "provider": "Groq",
+            "available": True, "mode": "SHADOW", "provider": "Google Gemini",
             "status": "NO_OPEN_POSITIONS", "recommendations": [],
             "updated_at": now.isoformat(),
-            "message": "Открытых PAPER-позиций нет; запрос Groq не требуется.",
+            "message": "Открытых PAPER-позиций нет; запрос Gemini не требуется.",
         }
         _last_exit_review_at = now
         return dict(_latest_exit_review)
-
-    # Avoid extra Groq requests on every fast PAPER worker cycle.
     if (_last_exit_review_at is not None and
             (now - _last_exit_review_at).total_seconds() < _EXIT_REVIEW_INTERVAL_SECONDS and
             _latest_exit_review.get("status") in {"OK", "NO_OPEN_POSITIONS"}):
         return {**_latest_exit_review, "reused": True}
 
-    groq_key = os.getenv("GROQ_API_KEY", "").strip()
-    model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip() or "openai/gpt-oss-120b"
-    cooldown_remaining = _groq_cooldown_remaining(now)
-    if cooldown_remaining > 0:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    model = os.getenv("GEMINI_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL
+    if not api_key:
         _latest_exit_review = {
-            "available": False, "mode": "SHADOW", "provider": "Groq",
-            "model": model, "status": "RATE_LIMITED", "recommendations": [],
-            "updated_at": now.isoformat(), "retry_in_seconds": int(cooldown_remaining),
-            "message": "Groq временно ограничил запросы; повторная проверка отложена. Stop Loss и защита PAPER работают независимо.",
-        }
-        _last_exit_review_at = now
-        logger.info("Groq PAPER exit review skipped during shared rate-limit cooldown (%.1fs remaining)", cooldown_remaining)
-        return dict(_latest_exit_review)
-    if not groq_key:
-        _latest_exit_review = {
-            "available": False, "mode": "SHADOW", "provider": "Groq",
+            "available": False, "mode": "SHADOW", "provider": "Google Gemini",
             "model": model, "status": "NOT_CONFIGURED", "recommendations": [],
             "updated_at": now.isoformat(),
-            "message": "GROQ_API_KEY не настроен; защитные правила PAPER продолжают работать.",
+            "message": "GEMINI_API_KEY не настроен; защитные правила PAPER продолжают работать.",
         }
         _last_exit_review_at = now
         return dict(_latest_exit_review)
@@ -560,8 +351,7 @@ async def refresh_ai_exit_advisor(
         asset = assets_by_symbol.get(symbol, {})
         allowed[symbol] = direction
         positions.append({
-            "symbol": symbol,
-            "direction": direction,
+            "symbol": symbol, "direction": direction,
             "entry_price": item.get("average_entry_price", item.get("entry_price")),
             "current_price": item.get("last_price"),
             "unrealized_pnl_usdt": item.get("unrealized_pnl_usdt"),
@@ -572,17 +362,14 @@ async def refresh_ai_exit_advisor(
             "momentum_6h_pct": asset.get("momentum_6h_pct"),
             "momentum_24h_pct": asset.get("momentum_24h_pct"),
             "relative_strength_vs_btc_24h_pct": asset.get("relative_strength_vs_btc_24h_pct"),
-            "volume_ratio": asset.get("volume_ratio"),
-            "volume_confirmed": asset.get("volume_confirmed"),
-            "ma20": asset.get("ma20"),
-            "ma50": asset.get("ma50"),
-            "rsi_14": asset.get("rsi_14"),
-            "long_score": asset.get("long_score"),
+            "volume_ratio": asset.get("volume_ratio"), "volume_confirmed": asset.get("volume_confirmed"),
+            "ma20": asset.get("ma20"), "ma50": asset.get("ma50"),
+            "rsi_14": asset.get("rsi_14"), "long_score": asset.get("long_score"),
             "short_score": asset.get("short_score"),
         })
     if not positions:
         _latest_exit_review = {
-            "available": False, "mode": "SHADOW", "provider": "Groq",
+            "available": False, "mode": "SHADOW", "provider": "Google Gemini",
             "model": model, "status": "NO_VALID_POSITIONS", "recommendations": [],
             "updated_at": now.isoformat(),
             "message": "Не удалось собрать проверяемые данные открытых позиций.",
@@ -592,43 +379,39 @@ async def refresh_ai_exit_advisor(
 
     prompt = {
         "task": (
-            "Review ONLY these already-open virtual Bybit Spot PAPER positions. "
-            "For each position return HOLD or SELL. Recommend SELL only when supplied "
-            "evidence indicates a meaningful adverse trend or deteriorating momentum "
-            "for that position's direction. A small ordinary fluctuation is not enough. "
-            "Never invent missing indicators or prices. If data is incomplete, mixed, "
-            "or not clearly adverse, choose HOLD. This is advisory analysis, not an order."
+            "Review only these already-open virtual Bybit Spot PAPER positions. For each return "
+            "HOLD or SELL. Recommend SELL only with clear meaningful adverse evidence. "
+            "If data is incomplete, mixed, or not clearly adverse, choose HOLD. "
+            "This is advisory analysis, not an order."
         ),
         "positions": positions,
     }
-    request_body = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": (
-                "You are HAN INVEST's PAPER open-position risk reviewer. "
-                "Do not place orders. Return strict JSON only with a recommendations array. "
-                "Each item must contain symbol, direction, action (HOLD or SELL), "
-                "confidence (integer 0-100), and reason."
-            )},
-            {"role": "user", "content": json.dumps(prompt, separators=(",", ":"), allow_nan=False, default=float)},
-        ],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.1,
+    body = {
+        "system_instruction": {"parts": [{"text": (
+            "You are HAN INVEST's PAPER open-position risk reviewer. Never place orders. "
+            "Return strict JSON with a recommendations array. Each item must contain symbol, "
+            "direction, action (HOLD or SELL), confidence (integer 0-100), and reason."
+        )}]},
+        "contents": [{"role": "user", "parts": [{"text": json.dumps(prompt, separators=(",", ":"), allow_nan=False, default=float)}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": {"type": "OBJECT", "properties": {
+                "recommendations": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+                    "symbol": {"type": "STRING"}, "direction": {"type": "STRING", "enum": ["LONG", "SHORT"]},
+                    "action": {"type": "STRING", "enum": ["HOLD", "SELL"]},
+                    "confidence": {"type": "INTEGER"}, "reason": {"type": "STRING"},
+                }, "required": ["symbol", "direction", "action", "confidence", "reason"]}},
+            }, "required": ["recommendations"]},
+        },
     }
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
             response = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {groq_key}"},
-                json=request_body,
+                f"{_API_ROOT}/{model}:generateContent",
+                headers={"x-goog-api-key": api_key}, json=body,
             )
             response.raise_for_status()
-        choices = response.json().get("choices") or []
-        content = choices[0].get("message", {}).get("content", "") if choices else ""
-        parsed = json.loads(content)
-        if not isinstance(parsed, dict):
-            raise ValueError("Groq exit review must be a JSON object")
-
+        parsed = _extract_json(response.json())
         decisions = {}
         for decision in parsed.get("recommendations", []):
             if not isinstance(decision, dict):
@@ -651,50 +434,41 @@ async def refresh_ai_exit_advisor(
         recommendations = [
             decisions.get(symbol, {
                 "symbol": symbol, "direction": direction, "action": "HOLD",
-                "confidence": 0, "reason": "Нет проверенной рекомендации Groq; позиция не затрагивается.",
+                "confidence": 0, "reason": "Нет проверенной рекомендации Gemini; позиция не затрагивается.",
             })
             for symbol, direction in sorted(allowed.items())
         ]
         _latest_exit_review = {
-            "available": True, "mode": "SHADOW", "provider": "Groq",
+            "available": True, "mode": "SHADOW", "provider": "Google Gemini",
             "model": model, "status": "OK", "recommendations": recommendations,
             "updated_at": now.isoformat(), "auto_close_enabled": False,
-            "message": "Только рекомендации. Groq не закрывает позиции; Stop Loss и защита PAPER работают независимо.",
+            "message": "Только рекомендации Gemini. Автоматическое закрытие отключено; защитные правила PAPER работают независимо.",
         }
-        sells = sum(1 for item in recommendations if item["action"] == "SELL")
-        logger.info("Groq PAPER exit review succeeded for %d open positions; SELL recommendations=%d (shadow only)",
-                    len(recommendations), sells)
+        logger.info("Gemini PAPER exit review succeeded for %d positions; SELL recommendations=%d (shadow only)",
+                    len(recommendations), sum(1 for item in recommendations if item["action"] == "SELL"))
     except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 429:
-            cooldown = _set_groq_rate_limit_cooldown(
-                exc.response.headers.get("retry-after"), exc.response.headers
-            )
-            logger.warning(
-                "Groq PAPER exit review rate limited; shared cooldown %.1fs; %s",
-                cooldown, _groq_rate_limit_summary(exc.response.headers),
-            )
         _latest_exit_review = {
-            "available": False, "mode": "SHADOW", "provider": "Groq",
+            "available": False, "mode": "SHADOW", "provider": "Google Gemini",
             "model": model, "status": "RATE_LIMITED" if exc.response.status_code == 429 else "ERROR",
             "recommendations": [], "updated_at": now.isoformat(),
-            "retry_in_seconds": int(_groq_cooldown_remaining()),
-            "message": "Groq временно ограничил запросы; проверка отложена. Stop Loss и защита PAPER работают независимо." if exc.response.status_code == 429 else f"Groq не смог проверить открытые позиции ({type(exc).__name__}); защитные правила PAPER продолжают работать.",
+            "message": f"Gemini не смог проверить позиции (HTTP {exc.response.status_code}); защитные правила PAPER продолжают работать.",
         }
-        logger.warning("Groq PAPER exit review failed: HTTP status=%s", exc.response.status_code)
+        logger.warning("Gemini PAPER exit review failed: HTTP status=%s", exc.response.status_code)
     except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
         _latest_exit_review = {
-            "available": False, "mode": "SHADOW", "provider": "Groq",
+            "available": False, "mode": "SHADOW", "provider": "Google Gemini",
             "model": model, "status": "ERROR", "recommendations": [],
             "updated_at": now.isoformat(),
-            "message": f"Groq не смог проверить открытые позиции ({type(exc).__name__}); защитные правила PAPER продолжают работать.",
+            "message": f"Gemini не смог проверить позиции ({type(exc).__name__}); защитные правила PAPER продолжают работать.",
         }
-        logger.warning("Groq PAPER exit review failed: %s", type(exc).__name__)
+        logger.warning("Gemini PAPER exit review failed: %s", type(exc).__name__)
     _last_exit_review_at = now
     return dict(_latest_exit_review)
 
 
 def get_ai_exit_advisor_state() -> dict[str, Any]:
     return dict(_latest_exit_review)
+
 
 
 @router.get("/exits/latest")
