@@ -502,7 +502,7 @@ async def refresh_ai_exit_advisor(
                 "Each item must contain symbol, direction, action (HOLD or SELL), "
                 "confidence (integer 0-100), and reason."
             )},
-            {"role": "user", "content": json.dumps(prompt, separators=(",", ":"), allow_nan=False)},
+            {"role": "user", "content": json.dumps(prompt, separators=(",", ":"), allow_nan=False, default=float)},
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0.1,
