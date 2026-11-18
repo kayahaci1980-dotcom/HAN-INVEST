@@ -246,8 +246,6 @@ def _init_db() -> None:
 
 def _account_snapshot() -> dict[str, Any]:
     _init_db()
-    native_exit_fallback_active = isinstance(ai_advisor, dict) and not _gemini_advisor_is_fresh(ai_advisor)
-
     with _connect() as db:
         account = db.execute("SELECT * FROM paper_account WHERE id=1").fetchone()
         positions = db.execute(
@@ -899,6 +897,8 @@ def _apply_market_data(
         exchange, len(assets),
         sum(1 for item in assets if isinstance(item, dict) and item.get("trade_ready") is True),
     )
+    native_exit_fallback_active = isinstance(ai_advisor, dict) and not _gemini_advisor_is_fresh(ai_advisor)
+
     by_symbol = {
         str(asset.get("symbol")): asset
         for asset in assets
