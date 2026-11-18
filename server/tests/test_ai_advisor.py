@@ -5,6 +5,21 @@ from app import ai_advisor
 
 
 class GeminiAdvisorTests(unittest.TestCase):
+    def test_groq_reset_headers_are_parsed_and_respected(self):
+        from datetime import datetime, timezone
+        self.assertAlmostEqual(ai_advisor._duration_header_seconds("7.6s"), 7.6)
+        self.assertAlmostEqual(ai_advisor._duration_header_seconds("2m59.5s"), 179.5)
+        self.assertEqual(ai_advisor._duration_header_seconds("invalid"), 0.0)
+        headers = {
+            "x-ratelimit-remaining-tokens": "0",
+            "x-ratelimit-reset-tokens": "7.6s",
+            "x-ratelimit-remaining-requests": "20",
+        }
+        delay = ai_advisor._set_groq_rate_limit_cooldown(response_headers=headers)
+        self.assertAlmostEqual(delay, 180.0)
+        remaining = ai_advisor._groq_cooldown_remaining(datetime.now(timezone.utc))
+        self.assertGreater(remaining, 170.0)
+
     def test_candidate_payload_sorts_and_limits_to_500(self):
         assets = [
             {"symbol": f"COIN{i}USDT", "quote_volume_24h": i * 1000,
