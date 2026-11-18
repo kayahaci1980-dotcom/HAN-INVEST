@@ -259,21 +259,104 @@ async def _gemini_fallback(candidates: list[dict[str, Any]], body: dict[str, Any
     return _validated_result(parsed, candidates, model, "Google Gemini (fallback)")
 
 
+_MARKET_REVIEW_INTERVAL_SECONDS = max(60, int(os.getenv("GEMINI_MARKET_REVIEW_INTERVAL_SECONDS", "940")))
+_last_market_review_attempt: datetime | None = None
+
+
 async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
-    """External AI providers are disabled; Bybit data is the sole source."""
-    global _latest
-    _latest = {
-        "available": False,
-        "mode": "DISABLED",
-        "provider": "Bybit Spot",
-        "model": "native-market-analysis",
-        "status": "DISABLED",
-        "market_bias": "WAIT",
-        "recommendations": [],
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "message": "Groq и Gemini отключены. Используются только рыночные данные и оценки Bybit Spot.",
+    """Ask Gemini to analyze Bybit Spot candidates; PAPER remains the only execution layer."""
+    global _latest, _last_market_review_attempt
+    now = datetime.now(timezone.utc)
+    if _last_market_review_attempt is not None:
+        elapsed = (now - _last_market_review_attempt).total_seconds()
+        if elapsed < _MARKET_REVIEW_INTERVAL_SECONDS:
+            return dict(_latest)
+
+    _last_market_review_attempt = now
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        _latest = {
+            "available": False, "mode": "SHADOW", "provider": "Google Gemini",
+            "model": os.getenv("GEMINI_MODEL", _DEFAULT_MODEL), "status": "MISSING_API_KEY",
+            "market_bias": "WAIT", "recommendations": [], "updated_at": now.isoformat(),
+            "message": "Не задан GEMINI_API_KEY; PAPER не открывает новые позиции без анализа Gemini.",
+        }
+        logger.error("Gemini market analysis unavailable: GEMINI_API_KEY is not configured")
+        return dict(_latest)
+
+    candidates = _candidate_payload(market if isinstance(market, dict) else {})
+    if not candidates:
+        _latest = {
+            "available": True, "mode": "SHADOW", "provider": "Google Gemini",
+            "model": os.getenv("GEMINI_MODEL", _DEFAULT_MODEL), "status": "OK",
+            "market_bias": "WAIT", "recommendations": [], "updated_at": now.isoformat(),
+            "message": "В данных Bybit Spot пока нет пар, прошедших предварительный фильтр score 80 и trade_ready.",
+        }
+        return dict(_latest)
+
+    prompt = {
+        "task": (
+            "Analyze only the supplied Bybit Spot USDT market data. For each pair choose LONG, SHORT, or WAIT. "
+            "LONG means a favorable upward setup; SHORT means a favorable downward setup; WAIT means no clear edge. "
+            "Evaluate trend alignment (MA20/MA50), momentum, relative strength, volume confirmation, ATR volatility, "
+            "24h change, and the supplied directional scores. Do not invent data or use outside prices/news. "
+            "Prefer WAIT when indicators conflict, liquidity/volume confirmation is weak, or evidence is incomplete. "
+            "A LONG recommendation must be consistent with long_score; SHORT must be consistent with short_score. "
+            "Return confidence 0-100 and a concise evidence-based reason for every supplied symbol."
+        ),
+        "source": "Bybit Spot",
+        "candidates": candidates,
     }
-    return dict(_latest)
+    body = {
+        "system_instruction": {"parts": [{
+            "text": (
+                "You are HAN INVEST's market analyst. Analyze Bybit Spot data and return strict JSON only. "
+                "You do not place orders. PAPER will independently enforce score >= 80, confidence >= 80, "
+                "market permissions, position limits, cooldowns, valid ATR protection and risk sizing."
+            )
+        }]},
+        "contents": [{"role": "user", "parts": [{
+            "text": json.dumps(prompt, separators=(",", ":"), allow_nan=False, default=float)
+        }]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": {
+                "type": "OBJECT",
+                "properties": {
+                    "market_bias": {"type": "STRING", "enum": ["LONG", "SHORT", "MIXED", "WAIT"]},
+                    "decisions": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "symbol": {"type": "STRING"},
+                                "action": {"type": "STRING", "enum": ["LONG", "SHORT", "WAIT"]},
+                                "confidence": {"type": "INTEGER"},
+                                "reason": {"type": "STRING"},
+                            },
+                            "required": ["symbol", "action", "confidence", "reason"],
+                        },
+                    },
+                },
+                "required": ["market_bias", "decisions"],
+            },
+        },
+    }
+    try:
+        result = await _gemini_fallback(candidates, body, api_key)
+        result["mode"] = "SHADOW"
+        result["message"] = "Gemini проанализировал данные Bybit Spot. PAPER получает только рекомендации; реальные ордера не отправляются."
+        _latest = result
+        return dict(_latest)
+    except Exception as exc:
+        logger.exception("Gemini Bybit Spot market analysis failed")
+        _latest = {
+            "available": False, "mode": "SHADOW", "provider": "Google Gemini",
+            "model": os.getenv("GEMINI_MODEL", _DEFAULT_MODEL), "status": "ERROR",
+            "market_bias": "WAIT", "recommendations": [], "updated_at": now.isoformat(),
+            "message": f"Gemini временно недоступен ({type(exc).__name__}); PAPER не открывает новые позиции.",
+        }
+        return dict(_latest)
 
 
 def get_ai_advisor_state() -> dict[str, Any]:
