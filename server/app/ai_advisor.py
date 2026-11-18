@@ -139,6 +139,17 @@ def _retry_delay_seconds(retry_after: str | None, attempt: int) -> float:
     return min(15.0, float(2 ** (attempt + 1)))
 
 
+async def _gemini_fallback(candidates: list[dict[str, Any]], body: dict[str, Any],
+                           api_key: str) -> dict[str, Any]:
+    model = os.getenv("GEMINI_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL
+    url = f"{_API_ROOT}/{model}:generateContent"
+    async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+        response = await client.post(url, headers={"x-goog-api-key": api_key}, json=body)
+        response.raise_for_status()
+        parsed = _extract_json(response.json())
+    return _validated_result(parsed, candidates, model, "Google Gemini (fallback)")
+
+
 async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
     """Ask Groq when configured, otherwise Gemini; advisory only."""
     global _latest
@@ -289,6 +300,13 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
                     await asyncio.sleep(delay)
         _latest = _validated_result(parsed, candidates, model, provider)
     except httpx.HTTPStatusError as exc:
+        if use_groq and gemini_key:
+            try:
+                _latest = await _gemini_fallback(candidates, body, gemini_key)
+                logger.warning("Groq unavailable; Gemini fallback supplied advisory analysis")
+                return dict(_latest)
+            except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
+                logger.warning("Gemini fallback failed: %s", type(fallback_exc).__name__)
         # Log only the HTTP status and retry hint. Never log provider bodies or credentials.
         status_code = exc.response.status_code
         retry_after = exc.response.headers.get("retry-after")
@@ -310,6 +328,13 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
             "message": f"{provider} API вернул HTTP {status_code}; рекомендации не обновлены.",
         }
     except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
+        if use_groq and gemini_key:
+            try:
+                _latest = await _gemini_fallback(candidates, body, gemini_key)
+                logger.warning("Groq unavailable; Gemini fallback supplied advisory analysis")
+                return dict(_latest)
+            except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
+                logger.warning("Gemini fallback failed: %s", type(fallback_exc).__name__)
         # Never expose provider response bodies or credentials in logs/API output.
         logger.warning("%s market analysis failed: %s", provider, type(exc).__name__)
         _latest = {
