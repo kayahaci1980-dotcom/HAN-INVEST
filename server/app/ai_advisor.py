@@ -3,7 +3,7 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 
@@ -35,7 +35,7 @@ def _groq_cooldown_remaining(now: datetime | None = None) -> float:
 def _set_groq_rate_limit_cooldown(retry_after: str | None = None) -> float:
     global _groq_cooldown_until
     delay = max(_GROQ_RATE_LIMIT_COOLDOWN_SECONDS, _retry_delay_seconds(retry_after, 4))
-    _groq_cooldown_until = datetime.now(timezone.utc) + __import__("datetime").timedelta(seconds=delay)
+    _groq_cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=delay)
     return delay
 _MAX_ASSETS = 12
 _last_success_fingerprint: str | None = None
@@ -231,6 +231,25 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
         _latest = {**_last_success_result, "reused": True,
                    "message": "Использован сохранённый результат Groq: состав и показатели отобранных монет не изменились."}
         logger.info("AI analysis reused saved %s result; selected assets unchanged", provider)
+        return dict(_latest)
+
+    cooldown_remaining = _groq_cooldown_remaining()
+    if use_groq and cooldown_remaining > 0:
+        if gemini_key:
+            try:
+                _latest = await _gemini_fallback(candidates, body, gemini_key)
+                _latest["message"] = "Groq временно ограничил запросы; использован резервный анализ Gemini."
+                logger.info("Groq market analysis skipped during cooldown; Gemini fallback supplied advisory analysis")
+                return dict(_latest)
+            except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
+                logger.warning("Gemini fallback failed during Groq cooldown: %s", type(fallback_exc).__name__)
+        _latest = {
+            "available": False, "mode": "SHADOW", "provider": "Groq",
+            "model": model, "status": "RATE_LIMITED", "market_bias": "WAIT",
+            "recommendations": [], "updated_at": datetime.now(timezone.utc).isoformat(),
+            "retry_in_seconds": int(cooldown_remaining),
+            "message": "Groq временно ограничил запросы; новые AI-входы ждут следующей проверки.",
+        }
         return dict(_latest)
 
     prompt = {
