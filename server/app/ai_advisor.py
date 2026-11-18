@@ -300,6 +300,9 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
             "LONG means a favorable upward setup; SHORT means a favorable downward setup; WAIT means no clear edge. "
             "Evaluate trend alignment (MA20/MA50), momentum, relative strength, volume confirmation, ATR volatility, "
             "24h change, and the supplied directional scores. Do not invent data or use outside prices/news. "
+            "Only recommend LONG or SHORT when the setup has a clear, plausible positive net-profit edge after entry/exit fees, "
+            "with trend and momentum aligned, volume confirmation, and enough expected movement relative to ATR-based risk. "
+            "Do not claim or imply guaranteed profit. If the expected edge is unclear, marginal, or fees may consume it, choose WAIT. "
             "Prefer WAIT when indicators conflict, liquidity/volume confirmation is weak, or evidence is incomplete. "
             "A LONG recommendation must be consistent with long_score; SHORT must be consistent with short_score. "
             "Return confidence 0-100 and a concise evidence-based reason for every supplied symbol."
@@ -311,8 +314,9 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
         "system_instruction": {"parts": [{
             "text": (
                 "You are HAN INVEST's market analyst. Analyze Bybit Spot data and return strict JSON only. "
-                "You do not place orders. PAPER will independently enforce score >= 80, confidence >= 80, "
-                "market permissions, position limits, cooldowns, valid ATR protection and risk sizing."
+                "You do not place orders. Recommend only the strongest potentially profitable setups and use WAIT otherwise. "
+                "PAPER independently enforces directional score >= 80, Gemini confidence >= 80, market permissions, "
+                "position limits, cooldowns, valid ATR protection and risk sizing. Never guarantee profits."
             )
         }]},
         "contents": [{"role": "user", "parts": [{
