@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -22,7 +23,67 @@ _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 # Shared cooldown prevents market analysis and PAPER exit review from
 # hammering Groq after a rate-limit response.
 _GROQ_RATE_LIMIT_COOLDOWN_SECONDS = 180
+_GROQ_MAX_RATE_LIMIT_COOLDOWN_SECONDS = 86400
 _groq_cooldown_until: datetime | None = None
+
+_GROQ_RATE_LIMIT_HEADERS = (
+    "x-ratelimit-limit-requests",
+    "x-ratelimit-remaining-requests",
+    "x-ratelimit-reset-requests",
+    "x-ratelimit-limit-tokens",
+    "x-ratelimit-remaining-tokens",
+    "x-ratelimit-reset-tokens",
+)
+
+
+def _parse_provider_delay(value: str | None) -> float | None:
+    """Parse Retry-After seconds/date and Groq reset durations such as '1m2.5s'."""
+    if not value:
+        return None
+    raw = str(value).strip()
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        pass
+    try:
+        retry_at = parsedate_to_datetime(raw)
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+    except (TypeError, ValueError, OverflowError):
+        pass
+
+    parts = re.findall(r"(\\d+(?:\\.\\d+)?)\\s*(ms|s|m|h)", raw.lower())
+    if not parts or "".join(number + unit for number, unit in parts).replace(" ", "") != re.sub(r"\\s+", "", raw.lower()):
+        return None
+    multipliers = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+    return sum(float(number) * multipliers[unit] for number, unit in parts)
+
+
+def _groq_rate_limit_diagnostics(headers: Any) -> dict[str, str]:
+    """Return only documented rate-limit headers; never log credentials or response bodies."""
+    diagnostics: dict[str, str] = {}
+    for name in ("retry-after",) + _GROQ_RATE_LIMIT_HEADERS:
+        value = headers.get(name)
+        if value is not None:
+            diagnostics[name] = str(value)[:80]
+    return diagnostics
+
+
+def _groq_cooldown_delay(retry_after: str | None, headers: Any = None) -> float:
+    delays: list[float] = []
+    retry_delay = _parse_provider_delay(retry_after)
+    if retry_delay is not None:
+        delays.append(retry_delay)
+    if headers is not None:
+        for name in ("x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"):
+            reset_delay = _parse_provider_delay(headers.get(name))
+            if reset_delay is not None:
+                delays.append(reset_delay)
+    # Respect the provider's longest reset hint. Use the safety fallback only
+    # when Groq supplied no parseable timing information.
+    delay = max(delays) if delays else float(_GROQ_RATE_LIMIT_COOLDOWN_SECONDS)
+    return min(float(_GROQ_MAX_RATE_LIMIT_COOLDOWN_SECONDS), max(1.0, delay))
 
 
 def _groq_cooldown_remaining(now: datetime | None = None) -> float:
@@ -32,9 +93,11 @@ def _groq_cooldown_remaining(now: datetime | None = None) -> float:
     return max(0.0, (_groq_cooldown_until - current).total_seconds())
 
 
-def _set_groq_rate_limit_cooldown(retry_after: str | None = None) -> float:
+def _set_groq_rate_limit_cooldown(
+    retry_after: str | None = None, headers: Any = None
+) -> float:
     global _groq_cooldown_until
-    delay = max(_GROQ_RATE_LIMIT_COOLDOWN_SECONDS, _retry_delay_seconds(retry_after, 4))
+    delay = _groq_cooldown_delay(retry_after, headers)
     _groq_cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=delay)
     return delay
 _MAX_ASSETS = 12
@@ -345,8 +408,11 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
                     status_code = exc.response.status_code
                     if use_groq and status_code == 429:
                         retry_after = exc.response.headers.get("retry-after")
-                        cooldown = _set_groq_rate_limit_cooldown(retry_after)
-                        logger.warning("Groq rate limited; shared cooldown %.1fs; using Gemini fallback when configured", cooldown)
+                        cooldown = _set_groq_rate_limit_cooldown(retry_after, exc.response.headers)
+                        logger.warning(
+                            "Groq rate limited; shared cooldown %.1fs; rate_limit_headers=%s; using Gemini fallback when configured",
+                            cooldown, _groq_rate_limit_diagnostics(exc.response.headers),
+                        )
                         raise
                     if status_code not in _RETRYABLE_STATUS_CODES or attempt >= _MAX_RETRIES:
                         raise
@@ -383,6 +449,11 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
         # Log only the HTTP status and retry hint. Never log provider bodies or credentials.
         status_code = exc.response.status_code
         retry_after = exc.response.headers.get("retry-after")
+        if use_groq and status_code == 429:
+            logger.warning(
+                "Groq market analysis 429 diagnostics: %s",
+                _groq_rate_limit_diagnostics(exc.response.headers),
+            )
         logger.warning(
             "%s market analysis failed: HTTP status=%s retry_after=%s",
             provider, status_code, retry_after or "not-provided",
@@ -612,8 +683,13 @@ async def refresh_ai_exit_advisor(
                     len(recommendations), sells)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 429:
-            cooldown = _set_groq_rate_limit_cooldown(exc.response.headers.get("retry-after"))
-            logger.warning("Groq PAPER exit review rate limited; shared cooldown %.1fs", cooldown)
+            cooldown = _set_groq_rate_limit_cooldown(
+                exc.response.headers.get("retry-after"), exc.response.headers
+            )
+            logger.warning(
+                "Groq PAPER exit review rate limited; shared cooldown %.1fs; rate_limit_headers=%s",
+                cooldown, _groq_rate_limit_diagnostics(exc.response.headers),
+            )
         _latest_exit_review = {
             "available": False, "mode": "SHADOW", "provider": "Groq",
             "model": model, "status": "RATE_LIMITED" if exc.response.status_code == 429 else "ERROR",
