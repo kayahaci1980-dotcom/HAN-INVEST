@@ -25,7 +25,7 @@ class PaperTradingRuleTests(unittest.TestCase):
         paper._STORAGE_PERSISTENT = self.old_storage_persistent
         self.temp_dir.cleanup()
 
-    def asset(self, score=83, price=100.0, symbol="BTCUSDT", volume=20_000_000):
+    def asset(self, score=85, price=100.0, symbol="BTCUSDT", volume=20_000_000):
         return {
             "symbol": symbol,
             "price": price,
@@ -33,6 +33,8 @@ class PaperTradingRuleTests(unittest.TestCase):
             "atr_14_1h": 1.0,
             "atr_candle_time": "2026-11-15T10:00:00Z",
             "score": score,
+            "long_score": score,
+            "short_score": score,
             "trade_ready": True,
             "ma20": 99.0,
             "ma50": 98.0,
@@ -65,29 +67,30 @@ class PaperTradingRuleTests(unittest.TestCase):
             self.assertTrue(opened)
             db.execute("UPDATE paper_account SET cash=5000 WHERE id=1")
 
-    def test_long_entry_requires_score_80(self):
-        paper._apply_market_data("Bybit", {"assets": [self.asset(79)]}, True)
+    def test_long_entry_requires_score_85(self):
+        paper._apply_market_data("Bybit", {"assets": [self.asset(79)]}, True, True, True)
         self.assertEqual(len(self.positions()), 0)
 
-    def test_long_entry_opens_at_score_80(self):
-        paper._apply_market_data("Bybit", {"assets": [self.asset(80)]}, True)
+    def test_long_entry_opens_at_score_85(self):
+        paper._apply_market_data("Bybit", {"assets": [self.asset(85)]}, True, True, True)
         self.assertEqual(len(self.positions()), 1)
 
     def _gemini_advice(self, action="LONG", confidence=90, symbol="BTCUSDT", age_seconds=0):
         from datetime import timedelta
         return {
             "available": True, "mode": "SHADOW", "status": "OK",
+            "provider": "Google Gemini (fallback)",
             "updated_at": (paper._now() - timedelta(seconds=age_seconds)).isoformat(),
             "recommendations": [{"symbol": symbol, "action": action, "confidence": confidence, "reason": "test"}],
         }
 
     def test_gemini_wait_blocks_new_paper_entry(self):
-        paper._apply_market_data("Bybit", {"assets": [self.asset(90)]}, True, True,
+        paper._apply_market_data("Bybit", {"assets": [self.asset(90)]}, True, True, True,
                                  ai_advisor=self._gemini_advice("WAIT", 95))
         self.assertEqual(len(self.positions()), 0)
 
     def test_gemini_high_confidence_long_allows_paper_entry(self):
-        paper._apply_market_data("Bybit", {"assets": [self.asset(90)]}, True, True,
+        paper._apply_market_data("Bybit", {"assets": [self.asset(90)]}, True, True, True,
                                  ai_advisor=self._gemini_advice("LONG", 85))
         positions = self.positions()
         self.assertEqual(len(positions), 1)
@@ -96,7 +99,7 @@ class PaperTradingRuleTests(unittest.TestCase):
     def test_gemini_high_confidence_short_allows_paper_entry(self):
         asset = self.asset(90)
         asset["momentum_6h_pct"] = 0.5
-        paper._apply_market_data("Bybit", {"assets": [asset]}, True, True,
+        paper._apply_market_data("Bybit", {"assets": [asset]}, True, True, True,
                                  ai_advisor=self._gemini_advice("SHORT", 85))
         positions = self.positions()
         self.assertEqual(len(positions), 1)
@@ -250,7 +253,7 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.seed_position("SHORT")
         asset = self.asset(price=101.5)
         asset["ma20"], asset["ma50"] = 101.0, 102.0
-        paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
+        paper._apply_market_data("Bybit", {"assets": [asset]}, True, True, False)
         self.assertEqual(len(self.positions()), 0)
         with paper._connect() as db:
             trade = db.execute("SELECT * FROM paper_trades WHERE side='SHORT_COVER' ORDER BY id DESC LIMIT 1").fetchone()
@@ -299,21 +302,21 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.assertIsNone(self.cooldown("ETHUSDT"))
 
     def test_daily_atr_chase_condition_does_not_block_long_entry(self):
-        asset = self.asset(80, 101.0)
+        asset = self.asset(85, 101.0)
         asset["daily_open"] = 100.0
         asset["atr_14_1h"] = 2.0
-        paper._apply_market_data("Bybit", {"assets": [asset]}, False, False)
+        paper._apply_market_data("Bybit", {"assets": [asset]}, True, True, True)
         self.assertEqual(len(self.positions()), 1)
 
-    def test_short_entry_requires_score_80(self):
+    def test_short_entry_requires_score_85(self):
         asset = self.asset(79, 99.9)
         asset["momentum_6h_pct"] = -0.1
         asset["ma20"], asset["ma50"] = 101.0, 102.0
-        paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
+        paper._apply_market_data("Bybit", {"assets": [asset]}, True, True, False)
         self.assertEqual(len(self.positions()), 0)
 
-    def test_short_entry_opens_at_score_80(self):
-        asset = self.asset(80, 99.9)
+    def test_short_entry_opens_at_score_85(self):
+        asset = self.asset(85, 99.9)
         asset["momentum_6h_pct"] = -0.1
         asset["ma20"], asset["ma50"] = 101.0, 102.0
         paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
@@ -402,28 +405,28 @@ class PaperTradingRuleTests(unittest.TestCase):
                 self.assertFalse(paper._is_stablecoin_pair(symbol))
 
     def test_stablecoin_candidate_is_not_filtered_out(self):
-        asset = self.asset(80, 100.0, symbol="USDCUSDT")
-        paper._apply_market_data("Bybit", {"assets": [asset]}, False, False)
+        asset = self.asset(85, 100.0, symbol="USDCUSDT")
+        paper._apply_market_data("Bybit", {"assets": [asset]}, True, True, True)
         self.assertEqual(len(self.positions()), 1)
 
     def test_volume_minimum_three_million_has_no_upper_cap(self):
-        low_edge = self.asset(80, 100.0, symbol="EDGE3USDT", volume=3_000_000)
-        high_volume = self.asset(80, 100.0, symbol="HIGH40USDT", volume=40_000_001)
-        paper._apply_market_data("Bybit", {"assets": [low_edge, high_volume]}, True)
+        low_edge = self.asset(85, 100.0, symbol="EDGE3USDT", volume=3_000_000)
+        high_volume = self.asset(85, 100.0, symbol="HIGH40USDT", volume=40_000_001)
+        paper._apply_market_data("Bybit", {"assets": [low_edge, high_volume]}, True, True, True)
         self.assertEqual(len(self.positions()), 2)
 
     def test_volume_below_three_million_is_not_excluded(self):
-        below = self.asset(80, 100.0, symbol="LOWUSDT", volume=2_999_999)
-        paper._apply_market_data("Bybit", {"assets": [below]}, False, False)
+        below = self.asset(85, 100.0, symbol="LOWUSDT", volume=2_999_999)
+        paper._apply_market_data("Bybit", {"assets": [below]}, True, True, True)
         self.assertEqual(len(self.positions()), 1)
 
     def test_direction_entries_ignore_breadth_and_technical_indicators(self):
-        long_asset = self.asset(score=80, symbol="LOWVOLUSDT", volume=1)
+        long_asset = self.asset(score=85, symbol="LOWVOLUSDT", volume=1)
         long_asset["ma20"], long_asset["ma50"], long_asset["daily_open"] = 0, 0, 0
-        short_asset = self.asset(score=80, symbol="SHORTUSDT", volume=1)
+        short_asset = self.asset(score=85, symbol="SHORTUSDT", volume=1)
         short_asset["momentum_6h_pct"] = -0.5
         short_asset["ma20"], short_asset["ma50"], short_asset["daily_open"] = 0, 0, 0
-        paper._apply_market_data("Bybit", {"assets": [long_asset, short_asset]}, False, False)
+        paper._apply_market_data("Bybit", {"assets": [long_asset, short_asset]}, True, True, True)
         positions = {row["symbol"]: row["direction"] for row in self.positions()}
         self.assertEqual(positions, {"LOWVOLUSDT": "LONG", "SHORTUSDT": "SHORT"})
 

@@ -962,7 +962,7 @@ def _apply_market_data(
                 age_seconds = (_now() - updated_at).total_seconds()
                 advisor_ready = (ai_advisor.get("available") is True and ai_advisor.get("status") == "OK"
                                  and str(ai_advisor.get("mode") or "").upper() == "SHADOW"
-                                 and str(ai_advisor.get("provider") or "").strip().lower() == "groq"
+                                 and str(ai_advisor.get("provider") or "").strip().lower() in {"groq", "google gemini (fallback)"}
                                  and -5 <= age_seconds <= 300)
                 if advisor_ready:
                     advisor_decisions = {str(item.get("symbol") or "").upper(): item
@@ -970,7 +970,7 @@ def _apply_market_data(
                                          if isinstance(item, dict) and item.get("symbol")}
             except (TypeError, ValueError):
                 advisor_ready = False
-            diagnostic["ai_gate"] = "GROQ_READY" if advisor_ready else "GROQ_UNAVAILABLE_STALE_OR_FALLBACK"
+            diagnostic["ai_gate"] = "AI_READY" if advisor_ready else "AI_UNAVAILABLE_STALE_OR_FALLBACK"
             diagnostic["ai_provider"] = str(ai_advisor.get("provider") or "unknown")
             diagnostic["ai_min_confidence"] = 80
             diagnostic["ai_max_age_seconds"] = 300

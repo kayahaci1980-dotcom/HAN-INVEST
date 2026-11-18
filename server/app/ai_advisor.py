@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -32,12 +33,62 @@ def _groq_cooldown_remaining(now: datetime | None = None) -> float:
     return max(0.0, (_groq_cooldown_until - current).total_seconds())
 
 
-def _set_groq_rate_limit_cooldown(retry_after: str | None = None) -> float:
+def _duration_header_seconds(value: str | None) -> float:
+    """Parse Groq reset headers such as 7.6s, 2m59s, or 1h2m."""
+    if not value:
+        return 0.0
+    raw = value.strip().lower()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    units = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+    parts = re.findall(r"(\d+(?:\.\d+)?)(ms|s|m|h|d)", raw)
+    if not parts or "".join(number + unit for number, unit in parts) != raw.replace(" ", ""):
+        return 0.0
+    return sum(float(number) * units[unit] for number, unit in parts)
+
+
+def _set_groq_rate_limit_cooldown(
+    retry_after: str | None = None,
+    response_headers: Any | None = None,
+) -> float:
+    """Respect Groq's retry hint and any exhausted request/token reset windows."""
     global _groq_cooldown_until
-    delay = max(_GROQ_RATE_LIMIT_COOLDOWN_SECONDS, _retry_delay_seconds(retry_after, 4))
+    delays = [_GROQ_RATE_LIMIT_COOLDOWN_SECONDS]
+    if retry_after:
+        try:
+            delays.append(max(0.0, float(retry_after)))
+        except (TypeError, ValueError):
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                delays.append(max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds()))
+            except (TypeError, ValueError, OverflowError):
+                pass
+    if response_headers is not None:
+        remaining_tokens = str(response_headers.get("x-ratelimit-remaining-tokens", "")).strip()
+        remaining_requests = str(response_headers.get("x-ratelimit-remaining-requests", "")).strip()
+        if remaining_tokens == "0":
+            delays.append(_duration_header_seconds(response_headers.get("x-ratelimit-reset-tokens")))
+        if remaining_requests == "0":
+            delays.append(_duration_header_seconds(response_headers.get("x-ratelimit-reset-requests")))
+    delay = min(86400.0, max(delays))
     _groq_cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=delay)
     return delay
-_MAX_ASSETS = 12
+
+
+def _groq_rate_limit_summary(response_headers: Any) -> str:
+    """Return non-sensitive rate-limit metadata; never include response bodies or keys."""
+    names = (
+        "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests",
+        "x-ratelimit-reset-requests", "x-ratelimit-limit-tokens",
+        "x-ratelimit-remaining-tokens", "x-ratelimit-reset-tokens",
+        "retry-after",
+    )
+    return " ".join(f"{name}={response_headers.get(name, 'n/a')}" for name in names)
+_MAX_ASSETS = 500
 _last_success_fingerprint: str | None = None
 _last_success_result: dict[str, Any] | None = None
 _latest: dict[str, Any] = {
@@ -233,25 +284,6 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
         logger.info("AI analysis reused saved %s result; selected assets unchanged", provider)
         return dict(_latest)
 
-    cooldown_remaining = _groq_cooldown_remaining()
-    if use_groq and cooldown_remaining > 0:
-        if gemini_key:
-            try:
-                _latest = await _gemini_fallback(candidates, body, gemini_key)
-                _latest["message"] = "Groq временно ограничил запросы; использован резервный анализ Gemini."
-                logger.info("Groq market analysis skipped during cooldown; Gemini fallback supplied advisory analysis")
-                return dict(_latest)
-            except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
-                logger.warning("Gemini fallback failed during Groq cooldown: %s", type(fallback_exc).__name__)
-        _latest = {
-            "available": False, "mode": "SHADOW", "provider": "Groq",
-            "model": model, "status": "RATE_LIMITED", "market_bias": "WAIT",
-            "recommendations": [], "updated_at": datetime.now(timezone.utc).isoformat(),
-            "retry_in_seconds": int(cooldown_remaining),
-            "message": "Groq временно ограничил запросы; новые AI-входы ждут следующей проверки.",
-        }
-        return dict(_latest)
-
     prompt = {
         "task": (
             "Evaluate each supplied Bybit Spot USDT asset for a short-term "
@@ -299,6 +331,25 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
             },
         },
     }
+    cooldown_remaining = _groq_cooldown_remaining()
+    if use_groq and cooldown_remaining > 0:
+        if gemini_key:
+            try:
+                _latest = await _gemini_fallback(candidates, body, gemini_key)
+                _latest["message"] = "Groq временно ограничил запросы; использован резервный анализ Gemini."
+                logger.info("Groq market analysis skipped during cooldown; Gemini fallback supplied advisory analysis")
+                return dict(_latest)
+            except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
+                logger.warning("Gemini fallback failed during Groq cooldown: %s", type(fallback_exc).__name__)
+        _latest = {
+            "available": False, "mode": "SHADOW", "provider": "Groq",
+            "model": model, "status": "RATE_LIMITED", "market_bias": "WAIT",
+            "recommendations": [], "updated_at": datetime.now(timezone.utc).isoformat(),
+            "retry_in_seconds": int(cooldown_remaining),
+            "message": "Groq временно ограничил запросы; новые AI-входы ждут следующей проверки.",
+        }
+        return dict(_latest)
+
     if use_groq:
         url = "https://api.groq.com/openai/v1/chat/completions"
         request_body = {
@@ -345,8 +396,11 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
                     status_code = exc.response.status_code
                     if use_groq and status_code == 429:
                         retry_after = exc.response.headers.get("retry-after")
-                        cooldown = _set_groq_rate_limit_cooldown(retry_after)
-                        logger.warning("Groq rate limited; shared cooldown %.1fs; using Gemini fallback when configured", cooldown)
+                        cooldown = _set_groq_rate_limit_cooldown(retry_after, exc.response.headers)
+                        logger.warning(
+                            "Groq rate limited; shared cooldown %.1fs; %s; using Gemini fallback when configured",
+                            cooldown, _groq_rate_limit_summary(exc.response.headers),
+                        )
                         raise
                     if status_code not in _RETRYABLE_STATUS_CODES or attempt >= _MAX_RETRIES:
                         raise
@@ -612,8 +666,13 @@ async def refresh_ai_exit_advisor(
                     len(recommendations), sells)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 429:
-            cooldown = _set_groq_rate_limit_cooldown(exc.response.headers.get("retry-after"))
-            logger.warning("Groq PAPER exit review rate limited; shared cooldown %.1fs", cooldown)
+            cooldown = _set_groq_rate_limit_cooldown(
+                exc.response.headers.get("retry-after"), exc.response.headers
+            )
+            logger.warning(
+                "Groq PAPER exit review rate limited; shared cooldown %.1fs; %s",
+                cooldown, _groq_rate_limit_summary(exc.response.headers),
+            )
         _latest_exit_review = {
             "available": False, "mode": "SHADOW", "provider": "Groq",
             "model": model, "status": "RATE_LIMITED" if exc.response.status_code == 429 else "ERROR",
