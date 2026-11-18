@@ -700,13 +700,11 @@ def _gemini_advisor_is_fresh(ai_advisor: dict[str, Any] | None) -> bool:
         updated_at = datetime.fromisoformat(str(ai_advisor.get("updated_at") or "").replace("Z", "+00:00"))
         age_seconds = (_now() - updated_at).total_seconds()
         provider = str(ai_advisor.get("provider") or "").strip().lower()
-        btc_direction = str(ai_advisor.get("btc_direction") or "UNKNOWN").upper()
         return (
             ai_advisor.get("available") is True
             and ai_advisor.get("status") == "OK"
             and str(ai_advisor.get("mode") or "").upper() == "SHADOW"
             and provider in {"google gemini", "google gemini (fallback)"}
-            and btc_direction in {"BULLISH", "BEARISH"}
             and -5 <= age_seconds <= 300
         )
     except (TypeError, ValueError, OverflowError):
