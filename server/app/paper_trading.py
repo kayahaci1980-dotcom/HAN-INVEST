@@ -49,6 +49,7 @@ _TAKE_PROFIT_COOLDOWN_SECONDS = 1 * 60 * 60
 _TRAILING_STOP_COOLDOWN_SECONDS = 10 * 60
 _CONSECUTIVE_LOSSES_COOLDOWN_SECONDS = 8 * 60 * 60
 _SCAN_INTERVAL_SECONDS = max(10, int(os.getenv("PAPER_SCAN_INTERVAL_SECONDS", "10")))
+_NEW_ENTRIES_ENABLED = os.getenv("PAPER_NEW_ENTRIES_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 _worker_task: asyncio.Task | None = None
 _scan_requested = asyncio.Event()
 _cycle_lock = asyncio.Lock()
@@ -987,7 +988,7 @@ def _apply_market_data(
                 )
             # The configured 50% Bybit market-breadth gate applies to scale-ins too.
             direction_market_allowed = allow_long_entries if direction == "LONG" else allow_short_entries
-            allow_scale_in = scale_in_approved and direction_market_allowed
+            allow_scale_in = _NEW_ENTRIES_ENABLED and scale_in_approved and direction_market_allowed
             if direction == "LONG":
                 _manage_long_scale(db, current, price, allow_add=allow_scale_in)
             else:
@@ -1011,7 +1012,7 @@ def _apply_market_data(
                                  and str(ai_advisor.get("mode") or "").upper() == "SHADOW"
                                  and advisor_provider in {"google gemini", "google gemini (fallback)"}
                                  and btc_direction in {"BULLISH", "BEARISH"}
-                                 and -5 <= age_seconds <= 1000)
+                                 and -5 <= age_seconds <= 300)
                 if advisor_ready:
                     advisor_decisions = {str(item.get("symbol") or "").upper(): item
                                          for item in ai_advisor.get("recommendations", [])
@@ -1035,8 +1036,9 @@ def _apply_market_data(
         current_positions = db.execute("SELECT COUNT(*) AS n FROM paper_positions").fetchone()["n"]
         diagnostic["open_positions"] = int(current_positions)
         diagnostic["max_positions"] = _MAX_POSITIONS
+        diagnostic["new_entries_enabled"] = _NEW_ENTRIES_ENABLED
         candidates = sorted((x for x in assets if isinstance(x, dict)),
-                            key=lambda x: float(x.get("quote_volume_24h") or 0), reverse=True)
+                            key=lambda x: float(x.get("quote_volume_24h") or 0), reverse=True) if _NEW_ENTRIES_ENABLED else []
         diagnostic["candidates"] = len(candidates)
         for asset in candidates:
             if current_positions >= _MAX_POSITIONS:
