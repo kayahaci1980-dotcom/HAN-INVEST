@@ -246,6 +246,8 @@ def _init_db() -> None:
 
 def _account_snapshot() -> dict[str, Any]:
     _init_db()
+    native_exit_fallback_active = isinstance(ai_advisor, dict) and not _gemini_advisor_is_fresh(ai_advisor)
+
     with _connect() as db:
         account = db.execute("SELECT * FROM paper_account WHERE id=1").fetchone()
         positions = db.execute(
@@ -692,6 +694,64 @@ def _gemini_approves_scale_in(ai_advisor: dict[str, Any] | None, symbol: str, di
     return False
 
 
+def _gemini_advisor_is_fresh(ai_advisor: dict[str, Any] | None) -> bool:
+    """Return True only for a recent, valid Gemini market review."""
+    if not isinstance(ai_advisor, dict):
+        return False
+    try:
+        updated_at = datetime.fromisoformat(str(ai_advisor.get("updated_at") or "").replace("Z", "+00:00"))
+        age_seconds = (_now() - updated_at).total_seconds()
+        provider = str(ai_advisor.get("provider") or "").strip().lower()
+        btc_direction = str(ai_advisor.get("btc_direction") or "UNKNOWN").upper()
+        return (
+            ai_advisor.get("available") is True
+            and ai_advisor.get("status") == "OK"
+            and str(ai_advisor.get("mode") or "").upper() == "SHADOW"
+            and provider in {"google gemini", "google gemini (fallback)"}
+            and btc_direction in {"BULLISH", "BEARISH"}
+            and -5 <= age_seconds <= 300
+        )
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _native_exit_signal(asset: dict[str, Any] | None, direction: str) -> str | None:
+    """Require aligned opposite trend, momentum and directional score before a fallback exit."""
+    if not isinstance(asset, dict):
+        return None
+    try:
+        price = float(asset.get("price") or 0)
+        ma20 = float(asset.get("ma20") or 0)
+        ma50 = float(asset.get("ma50") or 0)
+        momentum = float(asset.get("momentum_6h_pct") or 0)
+        long_score = float(asset.get("long_score") or 0)
+        short_score = float(asset.get("short_score") or 0)
+    except (TypeError, ValueError):
+        return None
+    values = (price, ma20, ma50, momentum, long_score, short_score)
+    if not all(math.isfinite(value) for value in values) or min(price, ma20, ma50) <= 0:
+        return None
+
+    side = str(direction or "").upper()
+    if side == "LONG" and price < ma20 < ma50 and momentum <= -0.5 and short_score >= 80:
+        return "BEARISH_REVERSAL"
+    if side == "SHORT" and price > ma20 > ma50 and momentum >= 0.5 and long_score >= 80:
+        return "BULLISH_REVERSAL"
+    return None
+
+
+def _set_native_exit_cooldown(db, exchange: str, symbol: str) -> None:
+    """Prevent an immediate same-cycle re-entry after a native trend-reversal exit."""
+    blocked_until = _now().timestamp() + 30 * 60
+    db.execute(
+        """INSERT INTO paper_loss_cooldowns (exchange, symbol, blocked_until, loss_pct)
+           VALUES (?, ?, ?, 0)
+           ON CONFLICT (exchange, symbol) DO UPDATE SET
+             blocked_until=excluded.blocked_until, loss_pct=excluded.loss_pct""",
+        (exchange, symbol, blocked_until),
+    )
+
+
 def _manage_long_scale(db, position, price: float, allow_add: bool = True) -> None:
     """Apply the hard stop, add at +1% only when approved, and reduce pullbacks."""
     entry = float(position["entry_price"])
@@ -977,6 +1037,17 @@ def _apply_market_data(
                     direction, position["symbol"], peak_profit, net_pnl,
                 )
                 continue
+
+            if native_exit_fallback_active:
+                native_exit_reason = _native_exit_signal(asset, direction)
+                if native_exit_reason:
+                    _close_position(db, current, price, "NATIVE_AI_EXIT_REVERSAL")
+                    _set_native_exit_cooldown(db, exchange, position["symbol"])
+                    logger.warning(
+                        "PAPER %s %s closed by native Bybit exit fallback: %s; opposite trend, momentum and score confirmed",
+                        direction, position["symbol"], native_exit_reason,
+                    )
+                    continue
 
             scale_in_approved = _gemini_approves_scale_in(
                 ai_advisor, position["symbol"], direction
