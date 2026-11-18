@@ -512,7 +512,7 @@ def get_ai_advisor_state() -> dict[str, Any]:
 
 
 # Open-position exit review is advisory-only until explicitly promoted after testing.
-_EXIT_REVIEW_INTERVAL_SECONDS = 110
+_EXIT_REVIEW_INTERVAL_SECONDS = 940
 _last_exit_review_at: datetime | None = None
 _latest_exit_review: dict[str, Any] = {
     "available": False,
