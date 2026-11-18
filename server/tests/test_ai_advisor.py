@@ -8,12 +8,13 @@ class GeminiAdvisorTests(unittest.TestCase):
     def test_candidate_payload_sorts_and_limits_to_500(self):
         assets = [
             {"symbol": f"COIN{i}USDT", "quote_volume_24h": i * 1000,
-             "price": 1.0, "private_field": "must_not_be_sent"}
+             "price": 1.0, "trade_ready": True, "long_score": 85,
+             "short_score": 0, "private_field": "must_not_be_sent"}
             for i in range(600)
         ]
         result = ai_advisor._candidate_payload({"assets": assets})
         self.assertEqual(len(result), 500)
-        self.assertEqual(result[0]["symbol"], "COIN14USDT")
+        self.assertEqual(result[0]["symbol"], "COIN599USDT")
         self.assertNotIn("private_field", result[0])
 
     def test_validation_rejects_unknown_symbols_and_defaults_missing_to_wait(self):
