@@ -53,8 +53,8 @@ def _parse_provider_delay(value: str | None) -> float | None:
     except (TypeError, ValueError, OverflowError):
         pass
 
-    parts = re.findall(r"(\\d+(?:\\.\\d+)?)\\s*(ms|s|m|h)", raw.lower())
-    if not parts or "".join(number + unit for number, unit in parts).replace(" ", "") != re.sub(r"\\s+", "", raw.lower()):
+    parts = re.findall(r"(\d+(?:\.\d+)?)\s*(ms|s|m|h)", raw.lower())
+    if not parts or "".join(number + unit for number, unit in parts).replace(" ", "") != re.sub(r"\s+", "", raw.lower()):
         return None
     multipliers = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
     return sum(float(number) * multipliers[unit] for number, unit in parts)
