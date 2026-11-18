@@ -1051,7 +1051,7 @@ def _apply_market_data(
                     reject("short_entries_disabled", direction)
                     continue
             else:
-                # Select the stronger direction when its Bybit score reaches 70.
+                # Select the stronger direction when its Bybit score reaches 80.
                 try:
                     long_score = float(asset.get("long_score", 0) or 0)
                     short_score = float(asset.get("short_score", 0) or 0)
@@ -1059,12 +1059,12 @@ def _apply_market_data(
                     reject("directional_score_missing_or_invalid")
                     continue
                 eligible = []
-                if allow_long_entries and math.isfinite(long_score) and long_score >= 70:
+                if allow_long_entries and math.isfinite(long_score) and long_score >= 80:
                     eligible.append(("LONG", long_score))
-                if allow_short_entries and math.isfinite(short_score) and short_score >= 70:
+                if allow_short_entries and math.isfinite(short_score) and short_score >= 80:
                     eligible.append(("SHORT", short_score))
                 if not eligible:
-                    reject("directional_score_below_70")
+                    reject("directional_score_below_80")
                     continue
                 direction, _ = max(eligible, key=lambda item: item[1])
             score_key = "long_score" if direction == "LONG" else "short_score"
@@ -1074,11 +1074,11 @@ def _apply_market_data(
             except (TypeError, ValueError):
                 reject("directional_score_missing_or_invalid", direction)
                 continue
-            if not math.isfinite(directional_score) or directional_score < 70:
-                reject("directional_score_below_85", direction)
+            if not math.isfinite(directional_score) or directional_score < 80:
+                reject("directional_score_below_80", direction)
                 continue
             reason = (f"AUTO_{direction}_AI_CONF_{confidence}" if ai_advisor is not None
-                      else f"AUTO_{direction}_SCORE_70")
+                      else f"AUTO_{direction}_SCORE_80")
             opened = (_open_position(db, exchange, asset, reason) if direction == "LONG"
                       else _open_short_position(db, exchange, asset, reason))
             if opened:
