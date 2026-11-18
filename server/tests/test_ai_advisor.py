@@ -10,11 +10,11 @@ class GeminiAdvisorTests(unittest.TestCase):
             {"symbol": f"COIN{i}USDT", "quote_volume_24h": i * 1000,
              "price": 1.0, "long_score": 80, "short_score": 0,
              "trade_ready": True, "private_field": "must_not_be_sent"}
-            for i in range(15)
+            for i in range(1, 16)
         ]
         result = ai_advisor._candidate_payload({"assets": assets})
         self.assertEqual(len(result), 15)
-        self.assertEqual(result[0]["symbol"], "COIN14USDT")
+        self.assertEqual(result[0]["symbol"], "COIN15USDT")
         self.assertNotIn("private_field", result[0])
 
     def test_validation_rejects_unknown_symbols_and_defaults_missing_to_wait(self):
