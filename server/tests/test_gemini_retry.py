@@ -55,3 +55,45 @@ class GeminiTransientRetryTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeminiBtcDirectionGateTests(unittest.TestCase):
+    def setUp(self):
+        self.candidates = [{"symbol": "ETHUSDT"}, {"symbol": "SOLUSDT"}]
+
+    def test_bullish_btc_blocks_short_recommendations(self):
+        raw = {"btc_direction": "BULLISH", "market_bias": "LONG", "decisions": [
+            {"symbol": "ETHUSDT", "action": "LONG", "confidence": 95, "reason": "trend aligned"},
+            {"symbol": "SOLUSDT", "action": "SHORT", "confidence": 99, "reason": "short setup"},
+        ]}
+        result = ai_advisor._validated_result(raw, self.candidates, "test-model")
+        decisions = {item["symbol"]: item["action"] for item in result["recommendations"]}
+        self.assertEqual(result["btc_direction"], "BULLISH")
+        self.assertEqual(decisions, {"ETHUSDT": "LONG", "SOLUSDT": "WAIT"})
+
+    def test_bearish_btc_blocks_long_recommendations(self):
+        raw = {"btc_direction": "BEARISH", "market_bias": "SHORT", "decisions": [
+            {"symbol": "ETHUSDT", "action": "LONG", "confidence": 95, "reason": "countertrend"},
+            {"symbol": "SOLUSDT", "action": "SHORT", "confidence": 90, "reason": "trend aligned"},
+        ]}
+        result = ai_advisor._validated_result(raw, self.candidates, "test-model")
+        decisions = {item["symbol"]: item["action"] for item in result["recommendations"]}
+        self.assertEqual(decisions, {"ETHUSDT": "WAIT", "SOLUSDT": "SHORT"})
+
+    def test_neutral_or_unknown_btc_blocks_all_directions(self):
+        for direction in ("NEUTRAL", "UNKNOWN", None):
+            raw = {"btc_direction": direction, "market_bias": "MIXED", "decisions": [
+                {"symbol": "ETHUSDT", "action": "LONG", "confidence": 99, "reason": "test"},
+                {"symbol": "SOLUSDT", "action": "SHORT", "confidence": 99, "reason": "test"},
+            ]}
+            result = ai_advisor._validated_result(raw, self.candidates, "test-model")
+            self.assertTrue(all(item["action"] == "WAIT" for item in result["recommendations"]))
+
+    def test_btc_context_requires_valid_bybit_btc_price(self):
+        self.assertIsNone(ai_advisor._btc_market_context({"assets": []}))
+        self.assertIsNone(ai_advisor._btc_market_context({"assets": [{"symbol": "BTCUSDT", "price": 0}]}))
+        context = ai_advisor._btc_market_context({"assets": [
+            {"symbol": "BTCUSDT", "price": 67000, "change_1h_pct": 0.8, "ma20": 66500}
+        ]})
+        self.assertEqual(context["symbol"], "BTCUSDT")
+        self.assertEqual(context["price"], 67000)
