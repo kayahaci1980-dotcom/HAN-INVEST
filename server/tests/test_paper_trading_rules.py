@@ -330,7 +330,7 @@ class PaperTradingRuleTests(unittest.TestCase):
         for hour, price in ((11, 101.0), (12, 102.0), (13, 102.5)):
             asset = self.asset(price=price)
             asset["atr_candle_time"] = f"2026-11-15T{hour:02d}:00:00Z"
-            paper._apply_market_data("Bybit", {"assets": [asset]}, False, ai_advisor=self._gemini_advice("LONG"))
+            paper._apply_market_data("Bybit", {"assets": [asset]}, False, allow_long_entries=True, ai_advisor=self._gemini_advice("LONG"))
         with paper._connect() as db:
             lots = db.execute(
                 "SELECT * FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT' ORDER BY lot_index"
@@ -396,7 +396,7 @@ class PaperTradingRuleTests(unittest.TestCase):
                         "SELECT * FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT'"
                     ).fetchall()
                 self.assertEqual(len(lots), 1)
-        paper._apply_market_data("Bybit", {"assets": [asset]}, False, ai_advisor=self._gemini_advice("LONG"))
+        paper._apply_market_data("Bybit", {"assets": [asset]}, False, allow_long_entries=True, ai_advisor=self._gemini_advice("LONG"))
         with paper._connect() as db:
             lots = db.execute(
                 "SELECT * FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT'"
@@ -454,17 +454,17 @@ class PaperTradingRuleTests(unittest.TestCase):
         paper._apply_market_data("Bybit", {"assets": [below]}, allow_new_entries=True, allow_long_entries=True)
         self.assertEqual(len(self.positions()), 1)
 
-    def test_direction_entries_ignore_breadth_and_technical_indicators(self):
+    def test_direction_entries_obey_the_market_breadth_permissions(self):
         long_asset = self.asset(score=80, symbol="LOWVOLUSDT", volume=1)
-        long_asset["ma20"], long_asset["ma50"], long_asset["daily_open"] = 0, 0, 0
         short_asset = self.asset(score=80, symbol="SHORTUSDT", volume=1)
-        # Make SHORT the only eligible direction at the score-80 boundary.
         short_asset["long_score"], short_asset["short_score"] = 79, 80
         short_asset["momentum_6h_pct"] = -0.5
-        short_asset["ma20"], short_asset["ma50"], short_asset["daily_open"] = 0, 0, 0
-        paper._apply_market_data("Bybit", {"assets": [long_asset, short_asset]}, allow_new_entries=True, allow_long_entries=True, allow_short_entries=True)
+        paper._apply_market_data(
+            "Bybit", {"assets": [long_asset, short_asset]},
+            allow_new_entries=True, allow_long_entries=True, allow_short_entries=False,
+        )
         positions = {row["symbol"]: row["direction"] for row in self.positions()}
-        self.assertEqual(positions, {"LOWVOLUSDT": "LONG", "SHORTUSDT": "SHORT"})
+        self.assertEqual(positions, {"LOWVOLUSDT": "LONG"})
 
 
     def test_long_remains_open_after_295_seconds_of_negative_pnl_without_cooldown(self):
