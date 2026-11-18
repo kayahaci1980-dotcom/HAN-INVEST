@@ -401,7 +401,8 @@ class PaperTradingRuleTests(unittest.TestCase):
             lots = db.execute(
                 "SELECT * FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT'"
             ).fetchall()
-        self.assertEqual(len(lots), 2)
+        # Price is +2% from base entry, so both the +1% and +2% approved tranches are due.
+        self.assertEqual(len(lots), 3)
 
     def test_short_accounting_uses_each_lot_entry_for_unrealized_and_realized_pnl(self):
         asset = self.asset(0, 100.0)
