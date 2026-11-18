@@ -1024,7 +1024,30 @@ def _apply_market_data(
             diagnostic["ai_min_confidence"] = 80
             diagnostic["ai_max_age_seconds"] = 300
             diagnostic["btc_direction"] = str(ai_advisor.get("btc_direction") or "UNKNOWN").upper()
-        else:
+        native_fallback_active = isinstance(ai_advisor, dict) and not advisor_ready
+        native_btc_direction = "UNKNOWN"
+        if native_fallback_active:
+            # Deterministic Bybit-only fallback: use BTCUSDT as a hard market-direction gate.
+            btc = next((item for item in assets if isinstance(item, dict)
+                        and str(item.get("symbol") or "").upper() == "BTCUSDT"), None)
+            if btc is not None:
+                try:
+                    btc_price = float(btc.get("price") or 0)
+                    btc_ma20 = float(btc.get("ma20") or 0)
+                    btc_ma50 = float(btc.get("ma50") or 0)
+                    if all(math.isfinite(v) and v > 0 for v in (btc_price, btc_ma20, btc_ma50)):
+                        if btc_price > btc_ma20 > btc_ma50:
+                            native_btc_direction = "BULLISH"
+                        elif btc_price < btc_ma20 < btc_ma50:
+                            native_btc_direction = "BEARISH"
+                except (TypeError, ValueError):
+                    native_btc_direction = "UNKNOWN"
+            diagnostic["ai_gate"] = "NATIVE_BYBIT_FALLBACK"
+            diagnostic["ai_provider"] = "HAN Native Bybit"
+            diagnostic["btc_direction"] = native_btc_direction
+            diagnostic["native_fallback_reason"] = str(ai_advisor.get("status") or "GEMINI_UNAVAILABLE")
+        elif ai_advisor is None:
+            # Compatibility for internal/manual scans that intentionally omit an AI result.
             diagnostic["gemini_gate"] = "BYPASSED_BYBIT_ONLY"
         def reject(reason: str, direction: str | None = None) -> None:
             bucket = diagnostic["common_rejections"]
@@ -1072,13 +1095,9 @@ def _apply_market_data(
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
                 reject("cooldown_active")
                 continue
-            # Production requires a recent successful Gemini recommendation.
-            # Missing, stale, failed, WAIT, or low-confidence advice blocks new entries.
+            # Fresh Gemini advice is authoritative; unavailable/stale Gemini activates native Bybit fallback.
             confidence = 0
-            if ai_advisor is not None:
-                if not advisor_ready:
-                    reject("ai_advisor_unavailable_or_stale")
-                    continue
+            if advisor_ready:
                 decision = advisor_decisions.get(symbol)
                 if not decision:
                     reject("ai_advisor_decision_missing")
@@ -1107,8 +1126,29 @@ def _apply_market_data(
                 if direction == "SHORT" and not allow_short_entries:
                     reject("short_entries_disabled", direction)
                     continue
+            elif native_fallback_active:
+                # Native fallback mirrors the mandatory BTC direction + score + breadth gates.
+                try:
+                    long_score = float(asset.get("long_score", 0) or 0)
+                    short_score = float(asset.get("short_score", 0) or 0)
+                except (TypeError, ValueError):
+                    reject("directional_score_missing_or_invalid")
+                    continue
+                if native_btc_direction == "BULLISH":
+                    eligible = ([("LONG", long_score)] if allow_long_entries
+                                and math.isfinite(long_score) and long_score >= 80 else [])
+                elif native_btc_direction == "BEARISH":
+                    eligible = ([("SHORT", short_score)] if allow_short_entries
+                                and math.isfinite(short_score) and short_score >= 80 else [])
+                else:
+                    reject("native_btc_direction_not_confirmed")
+                    continue
+                if not eligible:
+                    reject("directional_score_below_80")
+                    continue
+                direction, _ = eligible[0]
             else:
-                # Select the stronger direction when its Bybit score reaches 80.
+                # Explicitly omitted advisor: retain the internal Bybit score-only path.
                 try:
                     long_score = float(asset.get("long_score", 0) or 0)
                     short_score = float(asset.get("short_score", 0) or 0)
@@ -1134,7 +1174,8 @@ def _apply_market_data(
             if not math.isfinite(directional_score) or directional_score < 80:
                 reject("directional_score_below_80", direction)
                 continue
-            reason = (f"AUTO_{direction}_AI_CONF_{confidence}" if ai_advisor is not None
+            reason = (f"AUTO_{direction}_AI_CONF_{confidence}" if advisor_ready
+                      else f"AUTO_{direction}_NATIVE_FALLBACK_SCORE_80" if native_fallback_active
                       else f"AUTO_{direction}_SCORE_80")
             opened = (_open_position(db, exchange, asset, reason) if direction == "LONG"
                       else _open_short_position(db, exchange, asset, reason))
