@@ -962,6 +962,7 @@ def _apply_market_data(
                 age_seconds = (_now() - updated_at).total_seconds()
                 advisor_ready = (ai_advisor.get("available") is True and ai_advisor.get("status") == "OK"
                                  and str(ai_advisor.get("mode") or "").upper() == "SHADOW"
+                                 and str(ai_advisor.get("provider") or "").strip().lower() == "groq"
                                  and -5 <= age_seconds <= 150)
                 if advisor_ready:
                     advisor_decisions = {str(item.get("symbol") or "").upper(): item
@@ -969,8 +970,9 @@ def _apply_market_data(
                                          if isinstance(item, dict) and item.get("symbol")}
             except (TypeError, ValueError):
                 advisor_ready = False
-            diagnostic["gemini_gate"] = "READY" if advisor_ready else "UNAVAILABLE_OR_STALE"
-            diagnostic["gemini_min_confidence"] = 80
+            diagnostic["ai_gate"] = "GROQ_READY" if advisor_ready else "GROQ_UNAVAILABLE_STALE_OR_FALLBACK"
+            diagnostic["ai_provider"] = str(ai_advisor.get("provider") or "unknown")
+            diagnostic["ai_min_confidence"] = 80
         else:
             diagnostic["gemini_gate"] = "BYPASSED_BYBIT_ONLY"
         def reject(reason: str, direction: str | None = None) -> None:
@@ -1023,11 +1025,11 @@ def _apply_market_data(
             confidence = 0
             if ai_advisor is not None:
                 if not advisor_ready:
-                    reject("gemini_unavailable_or_stale")
+                    reject("groq_unavailable_stale_or_fallback")
                     continue
                 decision = advisor_decisions.get(symbol)
                 if not decision:
-                    reject("gemini_decision_missing")
+                    reject("groq_decision_missing")
                     continue
                 ai_action = str(decision.get("action") or "WAIT").upper()
                 try:
@@ -1035,11 +1037,11 @@ def _apply_market_data(
                 except (TypeError, ValueError):
                     confidence = 0
                 if ai_action not in {"LONG", "SHORT"}:
-                    reject("gemini_wait")
+                    reject("groq_wait_or_direction_not_confirmed")
                     continue
                 direction = ai_action
                 if confidence < 80:
-                    reject("gemini_confidence_below_80", direction)
+                    reject("groq_confidence_below_80", direction)
                     continue
                 if direction == "LONG" and not allow_long_entries:
                     reject("long_entries_disabled", direction)
@@ -1074,7 +1076,7 @@ def _apply_market_data(
             if not math.isfinite(directional_score) or directional_score < 85:
                 reject("directional_score_below_85", direction)
                 continue
-            reason = (f"AUTO_{direction}_GEMINI_CONF_{confidence}" if ai_advisor is not None
+            reason = (f"AUTO_{direction}_GROQ_CONF_{confidence}" if ai_advisor is not None
                       else f"AUTO_{direction}_SCORE_85")
             opened = (_open_position(db, exchange, asset, reason) if direction == "LONG"
                       else _open_short_position(db, exchange, asset, reason))
@@ -1089,7 +1091,7 @@ def _apply_market_data(
 async def _scan_cycle() -> None:
     async with _cycle_lock:
         try:
-            # Bybit Spot only. Breadth is not used; both entry directions are enabled.
+            # Bybit Spot only. Groq is a mandatory approval gate for new PAPER entries.
             bybit_payload = await scan_bybit(limit=500, min_volume=0, capital_usdt=_INITIAL_CASH,
                                              risk_pct=_RISK_PCT, fee_rate=_FEE_RATE)
             errors = []
@@ -1103,14 +1105,18 @@ async def _scan_cycle() -> None:
                 logger.warning("Direct Bybit quotes unavailable for open positions: %s", type(quote_error).__name__)
             if isinstance(bybit_payload, dict):
                 assets = bybit_payload.get("assets") or []
-                logger.info("PAPER cycle Bybit assets=%d LONG=enabled SHORT=enabled; Gemini is not an entry dependency",
-                            len(assets) if isinstance(assets, list) else -1)
-                # PAPER decisions use Bybit Spot prices, candles, momentum and directional scores.
-                # Gemini remains available separately for advisory display, but cannot block PAPER.
+                ai_state = get_ai_advisor_state()
+                logger.info(
+                    "PAPER cycle Bybit assets=%d; AI provider=%s status=%s",
+                    len(assets) if isinstance(assets, list) else -1,
+                    ai_state.get("provider", "unknown"), ai_state.get("status", "unknown"),
+                )
+                # Existing-position exits and protections remain active regardless of AI status.
+                # New automatic entries require a fresh successful Groq recommendation.
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=True,
                                    allow_long_entries=True, allow_short_entries=True,
                                    position_prices=live_quotes,
-                                   ai_advisor=None)
+                                   ai_advisor=ai_state)
             else:
                 errors.append("Bybit analysis unavailable; existing positions checked using direct quotes")
                 _apply_market_data("Bybit", {"assets": []}, allow_new_entries=False,
