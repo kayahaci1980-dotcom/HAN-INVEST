@@ -13,6 +13,7 @@ from psycopg.rows import dict_row
 from fastapi import APIRouter, Body, HTTPException
 
 from app.bybit import fetch_spot_ticker_prices, scan_bybit
+from app.ai_advisor import refresh_ai_advisor
 from app.market_breadth import get_market_breadth
 
 logger = logging.getLogger(__name__)
@@ -962,8 +963,8 @@ def _apply_market_data(
                 advisor_provider = str(ai_advisor.get("provider") or "").strip().lower()
                 advisor_ready = (ai_advisor.get("available") is True and ai_advisor.get("status") == "OK"
                                  and str(ai_advisor.get("mode") or "").upper() == "SHADOW"
-                                 and advisor_provider in {"groq", "google gemini", "google gemini (fallback)"}
-                                 and -5 <= age_seconds <= 300)
+                                 and advisor_provider in {"google gemini", "google gemini (fallback)"}
+                                 and -5 <= age_seconds <= 1000)
                 if advisor_ready:
                     advisor_decisions = {str(item.get("symbol") or "").upper(): item
                                          for item in ai_advisor.get("recommendations", [])
@@ -1021,7 +1022,7 @@ def _apply_market_data(
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
                 reject("cooldown_active")
                 continue
-            # Production requires a fresh successful Groq or Gemini recommendation.
+            # Production requires a recent successful Gemini recommendation.
             # Missing, stale, failed, WAIT, or low-confidence advice blocks new entries.
             confidence = 0
             if ai_advisor is not None:
@@ -1042,7 +1043,7 @@ def _apply_market_data(
                     continue
                 direction = ai_action
                 if confidence < 80:
-                    reject("groq_confidence_below_80", direction)
+                    reject("gemini_confidence_below_80", direction)
                     continue
                 if direction == "LONG" and not allow_long_entries:
                     reject("long_entries_disabled", direction)
@@ -1092,9 +1093,10 @@ def _apply_market_data(
 async def _scan_cycle() -> None:
     async with _cycle_lock:
         try:
-            # Bybit Spot only. External AI providers are disabled; native Bybit scores drive entries.
+            # Bybit Spot supplies market data; Gemini evaluates eligible setups for PAPER entries.
             bybit_payload = await scan_bybit(limit=500, min_volume=0, capital_usdt=_INITIAL_CASH,
                                              risk_pct=_RISK_PCT, fee_rate=_FEE_RATE)
+            gemini_advisor = await refresh_ai_advisor(bybit_payload if isinstance(bybit_payload, dict) else {})
             errors = []
             with _connect() as db:
                 open_symbols = [str(row["symbol"]) for row in db.execute(
@@ -1107,19 +1109,20 @@ async def _scan_cycle() -> None:
             if isinstance(bybit_payload, dict):
                 assets = bybit_payload.get("assets") or []
                 logger.info(
-                    "PAPER cycle Bybit-only assets=%d; external AI providers disabled",
+                    "PAPER cycle Bybit Spot assets=%d; Gemini status=%s",
                     len(assets) if isinstance(assets, list) else -1,
+                    str(gemini_advisor.get("status") or "UNKNOWN"),
                 )
-                # PAPER entries use Bybit Spot scores only; existing stop/trailing protections remain active.
+                # Gemini recommendations gate new entries; all execution and protections stay in PAPER.
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=True,
                                    allow_long_entries=True, allow_short_entries=True,
                                    position_prices=live_quotes,
-                                   ai_advisor=None)
+                                   ai_advisor=gemini_advisor)
             else:
                 errors.append("Bybit analysis unavailable; existing positions checked using direct quotes")
                 _apply_market_data("Bybit", {"assets": []}, allow_new_entries=False,
                                    allow_short_entries=False, position_prices=live_quotes)
-            logger.info("Market-data source and PAPER trading venue: Bybit Spot only")
+            logger.info("Market-data source: Bybit Spot; PAPER entry advisor: Google Gemini")
             with _connect() as db:
                 db.execute("""UPDATE paper_account SET last_scan_at=?, last_error=?, updated_at=? WHERE id=1""",
                            (_now(), "; ".join(errors) if errors else None, _now()))
