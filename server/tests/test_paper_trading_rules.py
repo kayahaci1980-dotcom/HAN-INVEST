@@ -33,6 +33,8 @@ class PaperTradingRuleTests(unittest.TestCase):
             "atr_14_1h": 1.0,
             "atr_candle_time": "2026-11-15T10:00:00Z",
             "score": score,
+            "long_score": score,
+            "short_score": score,
             "trade_ready": True,
             "ma20": 99.0,
             "ma50": 98.0,
@@ -76,7 +78,8 @@ class PaperTradingRuleTests(unittest.TestCase):
     def _gemini_advice(self, action="LONG", confidence=90, symbol="BTCUSDT", age_seconds=0):
         from datetime import timedelta
         return {
-            "available": True, "mode": "SHADOW", "status": "OK",\n            "provider": "Google Gemini (fallback)",
+            "available": True, "mode": "SHADOW", "status": "OK",
+            "provider": "Google Gemini (fallback)",
             "updated_at": (paper._now() - timedelta(seconds=age_seconds)).isoformat(),
             "recommendations": [{"symbol": symbol, "action": action, "confidence": confidence, "reason": "test"}],
         }
