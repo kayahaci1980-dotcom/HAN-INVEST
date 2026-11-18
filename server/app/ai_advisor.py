@@ -352,7 +352,7 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
                 logger.info("Groq market analysis skipped during cooldown; Gemini fallback supplied advisory analysis")
                 return dict(_latest)
             except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
-                logger.warning("Gemini fallback failed during Groq cooldown: %s", type(fallback_exc).__name__)
+                logger.warning("Gemini fallback failed during Groq cooldown: %s%s", type(fallback_exc).__name__, f" HTTP {fallback_exc.response.status_code}" if isinstance(fallback_exc, httpx.HTTPStatusError) else "")
         _latest = {
             "available": False, "mode": "SHADOW", "provider": "Groq",
             "model": model, "status": "RATE_LIMITED", "market_bias": "WAIT",
@@ -445,7 +445,7 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
                 logger.warning("Groq unavailable; Gemini fallback supplied advisory analysis")
                 return dict(_latest)
             except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
-                logger.warning("Gemini fallback failed: %s", type(fallback_exc).__name__)
+                logger.warning("Gemini fallback failed: %s%s", type(fallback_exc).__name__, f" HTTP {fallback_exc.response.status_code}" if isinstance(fallback_exc, httpx.HTTPStatusError) else "")
         # Log only the HTTP status and retry hint. Never log provider bodies or credentials.
         status_code = exc.response.status_code
         retry_after = exc.response.headers.get("retry-after")
@@ -734,7 +734,7 @@ async def refresh_ai_exit_advisor(
                 logger.info("Groq PAPER exit review skipped during cooldown; Gemini fallback supplied advisory review (%.1fs remaining)", cooldown_remaining)
                 return dict(_latest_exit_review)
             except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
-                logger.warning("Gemini PAPER exit review fallback failed during Groq cooldown: %s", type(fallback_exc).__name__)
+                logger.warning("Gemini PAPER exit review fallback failed during Groq cooldown: %s%s", type(fallback_exc).__name__, f" HTTP {fallback_exc.response.status_code}" if isinstance(fallback_exc, httpx.HTTPStatusError) else "")
         _latest_exit_review = {
             "available": False, "mode": "SHADOW", "provider": "Groq",
             "model": model, "status": "RATE_LIMITED", "recommendations": [],
@@ -801,7 +801,7 @@ async def refresh_ai_exit_advisor(
                 logger.warning("Groq PAPER exit review unavailable (HTTP %s); Gemini fallback supplied advisory review", exc.response.status_code)
                 return dict(_latest_exit_review)
             except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
-                logger.warning("Gemini PAPER exit review fallback failed: %s", type(fallback_exc).__name__)
+                logger.warning("Gemini PAPER exit review fallback failed: %s%s", type(fallback_exc).__name__, f" HTTP {fallback_exc.response.status_code}" if isinstance(fallback_exc, httpx.HTTPStatusError) else "")
         if exc.response.status_code == 429:
             cooldown = _set_groq_rate_limit_cooldown(
                 exc.response.headers.get("retry-after"), exc.response.headers
