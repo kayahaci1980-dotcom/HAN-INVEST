@@ -657,8 +657,42 @@ def _reduce_latest_scale_lot(db, position, price: float) -> bool:
     return True
 
 
-def _manage_long_scale(db, position, price: float) -> None:
-    """Apply the hard stop, add at +1% from base entry, and reduce on 1% pullbacks from peak."""
+def _gemini_approves_scale_in(ai_advisor: dict[str, Any] | None, symbol: str, direction: str) -> bool:
+    """Require a fresh, matching Gemini approval before adding to an open position."""
+    if not isinstance(ai_advisor, dict):
+        return False
+    try:
+        updated_at = datetime.fromisoformat(str(ai_advisor.get("updated_at") or "").replace("Z", "+00:00"))
+        age_seconds = (_now() - updated_at).total_seconds()
+        provider = str(ai_advisor.get("provider") or "").strip().lower()
+        btc_direction = str(ai_advisor.get("btc_direction") or "UNKNOWN").upper()
+        if not (
+            ai_advisor.get("available") is True
+            and ai_advisor.get("status") == "OK"
+            and str(ai_advisor.get("mode") or "").upper() == "SHADOW"
+            and provider in {"google gemini", "google gemini (fallback)"}
+            and -5 <= age_seconds <= 1000
+            and ((btc_direction == "BULLISH" and direction == "LONG")
+                 or (btc_direction == "BEARISH" and direction == "SHORT"))
+        ):
+            return False
+        for decision in ai_advisor.get("recommendations", []):
+            if not isinstance(decision, dict):
+                continue
+            if str(decision.get("symbol") or "").upper() != str(symbol).upper():
+                continue
+            try:
+                confidence = int(decision.get("confidence") or 0)
+            except (TypeError, ValueError):
+                return False
+            return str(decision.get("action") or "WAIT").upper() == direction and confidence >= 80
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return False
+
+
+def _manage_long_scale(db, position, price: float, allow_add: bool = True) -> None:
+    """Apply the hard stop, add at +1% only when approved, and reduce pullbacks."""
     entry = float(position["entry_price"])
     if entry <= 0 or price <= 0:
         return
@@ -680,7 +714,7 @@ def _manage_long_scale(db, position, price: float) -> None:
 
     # Add milestones remain anchored to the original purchase price.
     next_add = int(position["next_add_level"] if "next_add_level" in position.keys() else 1)
-    while price >= entry * (1.0 + next_add / 100.0):
+    while allow_add and price >= entry * (1.0 + next_add / 100.0):
         if not _add_scale_lot(db, position, price):
             break
         next_add += 1
@@ -743,13 +777,13 @@ def _open_short_position(db, exchange: str, asset: dict[str, Any], reason: str) 
     return True
 
 
-def _manage_short_scale(db, position, price: float) -> None:
-    """Add on each favorable 1% SHORT move; reduce newest add-on on each adverse 1%."""
+def _manage_short_scale(db, position, price: float, allow_add: bool = True) -> None:
+    """Add on favorable 1% SHORT moves only when approved; reduce adverse pullbacks."""
     entry = float(position["entry_price"])
     if entry <= 0 or price <= 0:
         return
     next_add = int(position["next_add_level"] or 1)
-    while price <= entry * (1.0 - next_add / 100.0):
+    while allow_add and price <= entry * (1.0 - next_add / 100.0):
         if not _add_scale_lot(db, position, price):
             break
         next_add += 1
@@ -943,10 +977,18 @@ def _apply_market_data(
                 )
                 continue
 
+            scale_in_approved = _gemini_approves_scale_in(
+                ai_advisor, position["symbol"], direction
+            )
+            if not scale_in_approved:
+                logger.info(
+                    "PAPER %s %s scale-in blocked: fresh matching Gemini approval unavailable",
+                    direction, position["symbol"],
+                )
             if direction == "LONG":
-                _manage_long_scale(db, current, price)
+                _manage_long_scale(db, current, price, allow_add=scale_in_approved)
             else:
-                _manage_short_scale(db, current, price)
+                _manage_short_scale(db, current, price, allow_add=scale_in_approved)
 
         # No technical, score, volume, trend, daily-open, or breadth entry filters.
         # Operational checks and protective position sizing/stops remain mandatory.

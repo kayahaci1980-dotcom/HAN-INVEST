@@ -313,6 +313,16 @@ async def _gemini_fallback(candidates: list[dict[str, Any]], body: dict[str, Any
 
 
 _MARKET_REVIEW_INTERVAL_SECONDS = max(60, int(os.getenv("GEMINI_MARKET_REVIEW_INTERVAL_SECONDS", "940")))
+_MARKET_REVIEW_ERROR_RETRY_INTERVAL_SECONDS = max(
+    30, int(os.getenv("GEMINI_ERROR_RETRY_INTERVAL_SECONDS", "60"))
+)
+
+
+def _market_review_interval_seconds() -> int:
+    """Retry a failed Gemini market review sooner without shortening healthy review cadence."""
+    if str(_latest.get("status") or "").upper() == "ERROR":
+        return _MARKET_REVIEW_ERROR_RETRY_INTERVAL_SECONDS
+    return _MARKET_REVIEW_INTERVAL_SECONDS
 _last_market_review_attempt: datetime | None = None
 
 
@@ -322,7 +332,7 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     if _last_market_review_attempt is not None:
         elapsed = (now - _last_market_review_attempt).total_seconds()
-        if elapsed < _MARKET_REVIEW_INTERVAL_SECONDS:
+        if elapsed < _market_review_interval_seconds():
             return dict(_latest)
 
     _last_market_review_attempt = now
