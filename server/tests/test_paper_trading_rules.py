@@ -113,6 +113,7 @@ class PaperTradingRuleTests(unittest.TestCase):
 
     def test_native_fallback_opens_long_when_gemini_is_unavailable_and_btc_is_bullish(self):
         btc = self.asset(90, symbol="BTCUSDT")
+        btc["long_score"], btc["short_score"] = 0, 0
         candidate = self.asset(88, symbol="ETHUSDT")
         candidate["long_score"], candidate["short_score"] = 88, 72
         paper._apply_market_data(
@@ -126,6 +127,7 @@ class PaperTradingRuleTests(unittest.TestCase):
     def test_native_fallback_opens_short_only_when_btc_is_bearish(self):
         btc = self.asset(90, price=99.0, symbol="BTCUSDT")
         btc["ma20"], btc["ma50"] = 101.0, 102.0
+        btc["long_score"], btc["short_score"] = 0, 0
         candidate = self.asset(88, price=99.0, symbol="ETHUSDT")
         candidate["ma20"], candidate["ma50"] = 101.0, 102.0
         candidate["long_score"], candidate["short_score"] = 72, 88
@@ -140,6 +142,7 @@ class PaperTradingRuleTests(unittest.TestCase):
     def test_native_fallback_blocks_entries_when_btc_direction_is_unclear(self):
         btc = self.asset(90, symbol="BTCUSDT")
         btc["ma20"], btc["ma50"] = 99.0, 101.0
+        btc["long_score"], btc["short_score"] = 0, 0
         candidate = self.asset(90, symbol="ETHUSDT")
         paper._apply_market_data(
             "Bybit", {"assets": [btc, candidate]},
