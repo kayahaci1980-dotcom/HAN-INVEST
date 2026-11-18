@@ -126,7 +126,7 @@ def _candidate_payload(market: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(item, dict) or not item.get("symbol") or item.get("trade_ready") is not True:
             continue
         try:
-            if max(float(item.get("long_score") or 0), float(item.get("short_score") or 0)) < 70:
+            if max(float(item.get("long_score") or 0), float(item.get("short_score") or 0)) < 80:
                 continue
             volume = float(item.get("quote_volume_24h") or 0)
             if volume <= 0:
