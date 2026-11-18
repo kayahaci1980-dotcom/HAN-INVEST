@@ -5,15 +5,16 @@ from app import ai_advisor
 
 
 class GeminiAdvisorTests(unittest.TestCase):
-    def test_candidate_payload_sorts_and_limits_to_twelve(self):
+    def test_candidate_payload_sorts_eligible_pairs_and_limits_to_configured_max(self):
         assets = [
             {"symbol": f"COIN{i}USDT", "quote_volume_24h": i * 1000,
-             "price": 1.0, "private_field": "must_not_be_sent"}
-            for i in range(15)
+             "price": 1.0, "long_score": 80, "short_score": 0,
+             "trade_ready": True, "private_field": "must_not_be_sent"}
+            for i in range(1, 16)
         ]
         result = ai_advisor._candidate_payload({"assets": assets})
-        self.assertEqual(len(result), 12)
-        self.assertEqual(result[0]["symbol"], "COIN14USDT")
+        self.assertEqual(len(result), 15)
+        self.assertEqual(result[0]["symbol"], "COIN15USDT")
         self.assertNotIn("private_field", result[0])
 
     def test_validation_rejects_unknown_symbols_and_defaults_missing_to_wait(self):
@@ -58,7 +59,7 @@ class GeminiAdvisorTests(unittest.TestCase):
                 with patch("app.ai_advisor.httpx.AsyncClient") as client:
                     result = await ai_advisor.refresh_ai_advisor({"assets": []})
                     client.assert_not_called()
-            self.assertEqual(result["status"], "NOT_CONFIGURED")
+            self.assertEqual(result["status"], "MISSING_API_KEY")
             self.assertEqual(result["mode"], "SHADOW")
 
         import asyncio
