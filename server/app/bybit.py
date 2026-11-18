@@ -272,9 +272,12 @@ async def scan_bybit(
     capital_usdt: float | None = Query(None, gt=0),
     risk_pct: float = Query(1.0, ge=0.1, le=5.0),
     fee_rate: float = Query(0.001, ge=0, le=0.01),
+    include_symbols: list[str] | None = None,
 ):
     global _cache
-    if _cache and time.time() - _cache[0] < CACHE_TTL and _cache[1].get("cache_key") == (limit, min_volume, capital_usdt, risk_pct, fee_rate):
+    held_symbols = {str(symbol).strip().upper() for symbol in (include_symbols or []) if str(symbol).strip()}
+    cache_key = (limit, min_volume, capital_usdt, risk_pct, fee_rate, tuple(sorted(held_symbols)))
+    if _cache and time.time() - _cache[0] < CACHE_TTL and _cache[1].get("cache_key") == cache_key:
         return _cache[1]
     try:
         async with httpx.AsyncClient(timeout=20, headers={"User-Agent": "HAN-INVEST/1.0"}) as client:
@@ -314,14 +317,31 @@ async def scan_bybit(
                     }
             candidate_limit = min(limit, 500)
             selected = sorted(tickers, key=lambda x: float(x.get("turnover24h") or 0), reverse=True)[:candidate_limit]
+            selected_symbols = {str(item.get("symbol") or "").upper() for item in selected}
+            ticker_by_symbol = {
+                str(item.get("symbol") or "").upper(): item
+                for item in all_tickers
+                if str(item.get("symbol") or "").upper() in held_symbols
+                and str(item.get("symbol") or "").upper() in instruments
+            }
+            # Open PAPER positions must keep receiving technical analysis even when
+            # their turnover falls below the entry liquidity threshold. They remain
+            # exit-only and are never reintroduced as new entry candidates this cycle.
+            for symbol in sorted(held_symbols - selected_symbols):
+                held_ticker = ticker_by_symbol.get(symbol)
+                if held_ticker is not None:
+                    selected.append(held_ticker)
             semaphore = asyncio.Semaphore(5)
 
             async def limited(item):
                 async with semaphore:
-                    return await analyze(
+                    result = await analyze(
                         client, item, instruments[item["symbol"]], btc_state,
                         capital_usdt, risk_pct, fee_rate, btc_change_24h_pct,
                     )
+                    if result is not None:
+                        result["entry_eligible"] = str(item.get("symbol") or "").upper() not in held_symbols
+                    return result
 
             assets = [x for x in await asyncio.gather(*(limited(x) for x in selected)) if x]
             for asset in assets:
@@ -343,7 +363,7 @@ async def scan_bybit(
                 },
                 "btc_market_filter": btc_info, "updated_at": datetime.now(timezone.utc).isoformat(),
                 "assets": assets, "limit": candidate_limit, "candidate_limit": candidate_limit,
-                "cache_key": (limit, min_volume, capital_usdt, risk_pct, fee_rate),
+                "cache_key": cache_key,
                 "notice": (
                     "Только спотовые пары Bybit USDT. MA20, MA50 и объём рассчитаны по закрытым часовым свечам; ATR(14) для Stop Loss и Take Profit — по 14 завершённым дневным свечам (1D). "
                     "BUY требует подтверждённой пары, BULLISH BTC и всех фильтров актива. "

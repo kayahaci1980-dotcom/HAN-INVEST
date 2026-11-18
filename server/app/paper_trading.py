@@ -1150,6 +1150,10 @@ def _apply_market_data(
             except (TypeError, ValueError):
                 reject("invalid_numeric_data")
                 continue
+            # Held-position analysis rows are exit-only, never fresh entry candidates.
+            if asset.get("entry_eligible") is False:
+                reject("open_position_exit_analysis_only")
+                continue
             # Valid price and ATR candle are essential to attach the existing protective stop.
             if not symbol:
                 reject("symbol_missing")
@@ -1266,9 +1270,17 @@ async def _scan_cycle() -> None:
     global _last_market_breadth, _last_scan_diagnostics
     async with _cycle_lock:
         try:
-            # Bybit Spot supplies market data; apply the configured 3M USDT minimum liquidity.
-            bybit_payload = await scan_bybit(limit=500, min_volume=3_000_000, capital_usdt=_INITIAL_CASH,
-                                             risk_pct=_RISK_PCT, fee_rate=_FEE_RATE)
+            # Load open symbols before analysis so their technical data is retained
+            # even when a position's turnover falls below the new-entry liquidity floor.
+            with _connect() as db:
+                open_symbols = [str(row["symbol"]) for row in db.execute(
+                    "SELECT symbol FROM paper_positions WHERE exchange='Bybit'").fetchall()]
+            # Bybit Spot entry universe keeps the 3M USDT floor; held positions are
+            # appended as exit-only analysis symbols by scan_bybit.
+            bybit_payload = await scan_bybit(
+                limit=500, min_volume=3_000_000, capital_usdt=_INITIAL_CASH,
+                risk_pct=_RISK_PCT, fee_rate=_FEE_RATE, include_symbols=open_symbols,
+            )
             # Fail closed for new entries if the mandatory 50% breadth source is unavailable.
             errors = []
             allow_long_entries = False
@@ -1292,9 +1304,6 @@ async def _scan_cycle() -> None:
                 logger.warning("PAPER market breadth unavailable; entries blocked (%s)",
                                type(breadth_error).__name__)
             gemini_advisor = await refresh_ai_advisor(bybit_payload if isinstance(bybit_payload, dict) else {})
-            with _connect() as db:
-                open_symbols = [str(row["symbol"]) for row in db.execute(
-                    "SELECT symbol FROM paper_positions WHERE exchange='Bybit'").fetchall()]
             try:
                 live_quotes = await fetch_spot_ticker_prices(open_symbols)
             except Exception as quote_error:
