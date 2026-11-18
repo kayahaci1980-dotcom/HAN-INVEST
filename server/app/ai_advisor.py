@@ -102,7 +102,7 @@ def _validated_result(raw: dict[str, Any], candidates: list[dict[str, Any]],
             "symbol": symbol,
             "action": "WAIT",
             "confidence": 0,
-            "reason": "Gemini не вернул проверенное решение для этой пары.",
+            "reason": f"{provider} не вернул проверенное решение для этой пары.",
         })
         for symbol in sorted(allowed)
     ]
@@ -140,7 +140,7 @@ def _retry_delay_seconds(retry_after: str | None, attempt: int) -> float:
 
 
 async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
-    """Ask Gemini for shadow LONG/SHORT/WAIT advice; never execute trades."""
+    """Ask Groq when configured, otherwise Gemini; advisory only."""
     global _latest
     groq_key = os.getenv("GROQ_API_KEY", "").strip()
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -299,7 +299,7 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
         _latest = {
             "available": False,
             "mode": "SHADOW",
-            "provider": "Google Gemini",
+            "provider": provider,
             "model": model,
             "status": "ERROR",
             "error_http_status": status_code,
