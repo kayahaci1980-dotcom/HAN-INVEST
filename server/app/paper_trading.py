@@ -962,7 +962,7 @@ def _apply_market_data(
                 age_seconds = (_now() - updated_at).total_seconds()
                 advisor_ready = (ai_advisor.get("available") is True and ai_advisor.get("status") == "OK"
                                  and str(ai_advisor.get("mode") or "").upper() == "SHADOW"
-                                 and str(ai_advisor.get("provider") or "").strip().lower() in {"groq", "google gemini (fallback)"}
+                                 and str(ai_advisor.get("provider") or "").strip().lower() == "google gemini"
                                  and -5 <= age_seconds <= 300)
                 if advisor_ready:
                     advisor_decisions = {str(item.get("symbol") or "").upper(): item
@@ -1026,11 +1026,11 @@ def _apply_market_data(
             confidence = 0
             if ai_advisor is not None:
                 if not advisor_ready:
-                    reject("groq_unavailable_stale_or_fallback")
+                    reject("gemini_unavailable_or_stale")
                     continue
                 decision = advisor_decisions.get(symbol)
                 if not decision:
-                    reject("groq_decision_missing")
+                    reject("gemini_decision_missing")
                     continue
                 ai_action = str(decision.get("action") or "WAIT").upper()
                 try:
@@ -1038,11 +1038,11 @@ def _apply_market_data(
                 except (TypeError, ValueError):
                     confidence = 0
                 if ai_action not in {"LONG", "SHORT"}:
-                    reject("groq_wait_or_direction_not_confirmed")
+                    reject("gemini_wait_or_direction_not_confirmed")
                     continue
                 direction = ai_action
                 if confidence < 80:
-                    reject("groq_confidence_below_80", direction)
+                    reject("gemini_confidence_below_80", direction)
                     continue
                 if direction == "LONG" and not allow_long_entries:
                     reject("long_entries_disabled", direction)
@@ -1051,7 +1051,7 @@ def _apply_market_data(
                     reject("short_entries_disabled", direction)
                     continue
             else:
-                # Select the stronger direction when its Bybit score reaches 85.
+                # Select the stronger direction when its Bybit score reaches 80.
                 try:
                     long_score = float(asset.get("long_score", 0) or 0)
                     short_score = float(asset.get("short_score", 0) or 0)
@@ -1059,12 +1059,12 @@ def _apply_market_data(
                     reject("directional_score_missing_or_invalid")
                     continue
                 eligible = []
-                if allow_long_entries and math.isfinite(long_score) and long_score >= 85:
+                if allow_long_entries and math.isfinite(long_score) and long_score >= 80:
                     eligible.append(("LONG", long_score))
-                if allow_short_entries and math.isfinite(short_score) and short_score >= 85:
+                if allow_short_entries and math.isfinite(short_score) and short_score >= 80:
                     eligible.append(("SHORT", short_score))
                 if not eligible:
-                    reject("directional_score_below_85")
+                    reject("directional_score_below_80")
                     continue
                 direction, _ = max(eligible, key=lambda item: item[1])
             score_key = "long_score" if direction == "LONG" else "short_score"
@@ -1074,11 +1074,11 @@ def _apply_market_data(
             except (TypeError, ValueError):
                 reject("directional_score_missing_or_invalid", direction)
                 continue
-            if not math.isfinite(directional_score) or directional_score < 85:
+            if not math.isfinite(directional_score) or directional_score < 80:
                 reject("directional_score_below_85", direction)
                 continue
-            reason = (f"AUTO_{direction}_GROQ_CONF_{confidence}" if ai_advisor is not None
-                      else f"AUTO_{direction}_SCORE_85")
+            reason = (f"AUTO_{direction}_GEMINI_CONF_{confidence}" if ai_advisor is not None
+                      else f"AUTO_{direction}_SCORE_80")
             opened = (_open_position(db, exchange, asset, reason) if direction == "LONG"
                       else _open_short_position(db, exchange, asset, reason))
             if opened:
@@ -1113,7 +1113,7 @@ async def _scan_cycle() -> None:
                     ai_state.get("provider", "unknown"), ai_state.get("status", "unknown"),
                 )
                 # Existing-position exits and protections remain active regardless of AI status.
-                # New automatic entries require a fresh successful Groq recommendation.
+                # New automatic entries require a fresh successful Gemini recommendation.
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=True,
                                    allow_long_entries=True, allow_short_entries=True,
                                    position_prices=live_quotes,
@@ -1123,13 +1123,13 @@ async def _scan_cycle() -> None:
                 _apply_market_data("Bybit", {"assets": []}, allow_new_entries=False,
                                    allow_short_entries=False, position_prices=live_quotes)
             if isinstance(bybit_payload, dict):
-                # Groq reviews existing PAPER positions in shadow mode only; it cannot close them.
+                # Gemini reviews existing PAPER positions in shadow mode only; it cannot close them.
                 paper_snapshot = _account_snapshot()
                 exit_state = await refresh_ai_exit_advisor(
                     paper_snapshot.get("open_positions", []),
                     bybit_payload.get("assets") or [],
                 )
-                logger.info("PAPER Groq exit review status=%s; recommendations=%d; auto_close=false",
+                logger.info("PAPER Gemini exit review status=%s; recommendations=%d; auto_close=false",
                             exit_state.get("status", "unknown"),
                             len(exit_state.get("recommendations") or []))
             logger.info("Market-data source and PAPER trading venue: Bybit Spot only")
