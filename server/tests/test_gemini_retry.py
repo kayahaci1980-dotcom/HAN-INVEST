@@ -97,3 +97,21 @@ class GeminiBtcDirectionGateTests(unittest.TestCase):
         ]})
         self.assertEqual(context["symbol"], "BTCUSDT")
         self.assertEqual(context["price"], 67000)
+
+
+class GeminiMarketReviewIntervalTests(unittest.TestCase):
+    def test_failed_market_review_retries_after_short_error_cooldown(self):
+        original = ai_advisor._latest
+        try:
+            ai_advisor._latest = {"status": "ERROR"}
+            self.assertEqual(
+                ai_advisor._market_review_interval_seconds(),
+                ai_advisor._MARKET_REVIEW_ERROR_RETRY_INTERVAL_SECONDS,
+            )
+            ai_advisor._latest = {"status": "OK"}
+            self.assertEqual(
+                ai_advisor._market_review_interval_seconds(),
+                ai_advisor._MARKET_REVIEW_INTERVAL_SECONDS,
+            )
+        finally:
+            ai_advisor._latest = original
