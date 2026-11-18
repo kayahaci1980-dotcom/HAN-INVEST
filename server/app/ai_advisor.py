@@ -174,9 +174,33 @@ def _extract_json(response: dict[str, Any]) -> dict[str, Any]:
     return parsed
 
 
+def _btc_market_context(market: dict[str, Any]) -> dict[str, Any] | None:
+    """Return only observed Bybit BTCUSDT indicators; never infer missing BTC data."""
+    assets = market.get("assets") or []
+    if not isinstance(assets, list):
+        return None
+    btc = next((item for item in assets if isinstance(item, dict)
+                and str(item.get("symbol") or "").upper().replace("-", "").replace("/", "") == "BTCUSDT"), None)
+    if btc is None:
+        return None
+    fields = ("symbol", "price", "change_1h_pct", "change_24h_pct",
+              "momentum_6h_pct", "momentum_24h_pct", "ma20", "ma50",
+              "atr_14_1h", "volume_ratio", "volume_confirmed")
+    context = {key: btc.get(key) for key in fields if key in btc}
+    try:
+        if float(context.get("price") or 0) <= 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return context
+
+
 def _validated_result(raw: dict[str, Any], candidates: list[dict[str, Any]],
                       model: str, provider: str = "Google Gemini") -> dict[str, Any]:
     allowed = {str(item["symbol"]).upper() for item in candidates}
+    btc_direction = str(raw.get("btc_direction") or "UNKNOWN").upper()
+    if btc_direction not in {"BULLISH", "BEARISH", "NEUTRAL"}:
+        btc_direction = "UNKNOWN"
     decisions: dict[str, dict[str, Any]] = {}
     for item in raw.get("decisions", []):
         if not isinstance(item, dict):
@@ -189,6 +213,11 @@ def _validated_result(raw: dict[str, Any], candidates: list[dict[str, Any]],
             confidence = max(0, min(100, int(item.get("confidence", 0))))
         except (TypeError, ValueError):
             confidence = 0
+        # BTC regime is a hard directional gate: never approve a trade against it.
+        if (btc_direction == "BULLISH" and action == "SHORT") or (
+            btc_direction == "BEARISH" and action == "LONG"
+        ) or btc_direction in {"NEUTRAL", "UNKNOWN"}:
+            action = "WAIT"
         decisions[symbol] = {
             "symbol": symbol,
             "action": action,
@@ -225,6 +254,7 @@ def _validated_result(raw: dict[str, Any], candidates: list[dict[str, Any]],
         "model": model,
         "status": "OK",
         "market_bias": bias,
+        "btc_direction": btc_direction,
         "recommendations": recommendations,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "message": "Теневые рекомендации: сделки не открываются и не закрываются.",
@@ -307,19 +337,35 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
         logger.error("Gemini market analysis unavailable: GEMINI_API_KEY is not configured")
         return dict(_latest)
 
-    candidates = _candidate_payload(market if isinstance(market, dict) else {})
+    market_data = market if isinstance(market, dict) else {}
+    btc_context = _btc_market_context(market_data)
+    candidates = _candidate_payload(market_data)
+    if not btc_context:
+        _latest = {
+            "available": False, "mode": "SHADOW", "provider": "Google Gemini",
+            "model": os.getenv("GEMINI_MODEL", _DEFAULT_MODEL), "status": "BTC_DATA_UNAVAILABLE",
+            "market_bias": "WAIT", "btc_direction": "UNKNOWN", "recommendations": [],
+            "updated_at": now.isoformat(),
+            "message": "Нет достоверных данных BTCUSDT от Bybit; новые входы заблокированы.",
+        }
+        logger.warning("Gemini BTC direction gate: BTCUSDT market data unavailable; entries blocked")
+        return dict(_latest)
+
     if not candidates:
         _latest = {
             "available": True, "mode": "SHADOW", "provider": "Google Gemini",
             "model": os.getenv("GEMINI_MODEL", _DEFAULT_MODEL), "status": "OK",
-            "market_bias": "WAIT", "recommendations": [], "updated_at": now.isoformat(),
+            "market_bias": "WAIT", "btc_direction": "UNKNOWN", "recommendations": [], "updated_at": now.isoformat(),
             "message": "В данных Bybit Spot пока нет пар, прошедших предварительный фильтр score 80 и trade_ready.",
         }
         return dict(_latest)
 
     prompt = {
         "task": (
-            "Analyze only the supplied Bybit Spot USDT market data. For each pair choose LONG, SHORT, or WAIT. "
+            "First determine BTCUSDT market direction from the supplied BTC indicators: BULLISH, BEARISH, or NEUTRAL. "
+            "Use BTC direction as a mandatory market-wide gate: only consider LONG when BTC is BULLISH; "
+            "only consider SHORT when BTC is BEARISH; choose WAIT for every pair when BTC is NEUTRAL or evidence conflicts. "
+            "Then analyze only the supplied Bybit Spot USDT market data. For each pair choose LONG, SHORT, or WAIT. "
             "LONG means a favorable upward setup; SHORT means a favorable downward setup; WAIT means no clear edge. "
             "Evaluate trend alignment (MA20/MA50), momentum, relative strength, volume confirmation, ATR volatility, "
             "24h change, and the supplied directional scores. Do not invent data or use outside prices/news. "
@@ -336,8 +382,11 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
     body = {
         "system_instruction": {"parts": [{
             "text": (
-                "You are HAN INVEST's market analyst. Analyze Bybit Spot data and return strict JSON only. "
-                "You do not place orders. Recommend only the strongest potentially profitable setups and use WAIT otherwise. "
+                "You are HAN INVEST's market analyst. First classify BTCUSDT direction using only supplied BTC indicators. "
+                "Return btc_direction as BULLISH, BEARISH, or NEUTRAL. Never approve LONG against BEARISH BTC, "
+                "never approve SHORT against BULLISH BTC, and approve no direction when BTC is NEUTRAL. "
+                "Analyze Bybit Spot data and return strict JSON only. You do not place orders. "
+                "Recommend only the strongest potentially profitable setups and use WAIT otherwise. "
                 "PAPER independently enforces directional score >= 80, Gemini confidence >= 80, market permissions, "
                 "position limits, cooldowns, valid ATR protection and risk sizing. Never guarantee profits."
             )
@@ -351,6 +400,7 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
                 "type": "OBJECT",
                 "properties": {
                     "market_bias": {"type": "STRING", "enum": ["LONG", "SHORT", "MIXED", "WAIT"]},
+                    "btc_direction": {"type": "STRING", "enum": ["BULLISH", "BEARISH", "NEUTRAL"]},
                     "decisions": {
                         "type": "ARRAY",
                         "items": {
@@ -365,7 +415,7 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
                         },
                     },
                 },
-                "required": ["market_bias", "decisions"],
+                "required": ["market_bias", "btc_direction", "decisions"],
             },
         },
     }

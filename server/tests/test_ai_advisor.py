@@ -21,6 +21,7 @@ class GeminiAdvisorTests(unittest.TestCase):
         candidates = [{"symbol": "BTCUSDT"}, {"symbol": "ETHUSDT"}]
         raw = {
             "market_bias": "mixed",
+            "btc_direction": "BEARISH",
             "decisions": [
                 {"symbol": "BTCUSDT", "action": "SHORT", "confidence": 130,
                  "reason": "downtrend"},
