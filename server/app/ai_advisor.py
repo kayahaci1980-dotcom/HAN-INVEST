@@ -385,6 +385,198 @@ def get_ai_advisor_state() -> dict[str, Any]:
     return dict(_latest)
 
 
+
+
+# Open-position exit review is advisory-only until explicitly promoted after testing.
+_EXIT_REVIEW_INTERVAL_SECONDS = 110
+_last_exit_review_at: datetime | None = None
+_latest_exit_review: dict[str, Any] = {
+    "available": False,
+    "mode": "SHADOW",
+    "provider": "Groq",
+    "status": "NOT_RUN",
+    "recommendations": [],
+    "updated_at": None,
+    "message": "Проверка открытых позиций Groq ещё не выполнялась.",
+}
+
+
+async def refresh_ai_exit_advisor(
+    open_positions: list[dict[str, Any]],
+    market_assets: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Review existing PAPER positions with Groq; never execute or close trades."""
+    global _last_exit_review_at, _latest_exit_review
+    now = datetime.now(timezone.utc)
+    if not open_positions:
+        _latest_exit_review = {
+            "available": True, "mode": "SHADOW", "provider": "Groq",
+            "status": "NO_OPEN_POSITIONS", "recommendations": [],
+            "updated_at": now.isoformat(),
+            "message": "Открытых PAPER-позиций нет; запрос Groq не требуется.",
+        }
+        _last_exit_review_at = now
+        return dict(_latest_exit_review)
+
+    # Avoid extra Groq requests on every fast PAPER worker cycle.
+    if (_last_exit_review_at is not None and
+            (now - _last_exit_review_at).total_seconds() < _EXIT_REVIEW_INTERVAL_SECONDS and
+            _latest_exit_review.get("status") in {"OK", "NO_OPEN_POSITIONS"}):
+        return {**_latest_exit_review, "reused": True}
+
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip() or "openai/gpt-oss-120b"
+    if not groq_key:
+        _latest_exit_review = {
+            "available": False, "mode": "SHADOW", "provider": "Groq",
+            "model": model, "status": "NOT_CONFIGURED", "recommendations": [],
+            "updated_at": now.isoformat(),
+            "message": "GROQ_API_KEY не настроен; защитные правила PAPER продолжают работать.",
+        }
+        _last_exit_review_at = now
+        return dict(_latest_exit_review)
+
+    assets_by_symbol = {
+        str(item.get("symbol") or "").upper(): item
+        for item in (market_assets or []) if isinstance(item, dict) and item.get("symbol")
+    }
+    allowed: dict[str, str] = {}
+    positions = []
+    for item in open_positions[:20]:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").upper()
+        direction = str(item.get("side") or item.get("direction") or "LONG").upper()
+        if not symbol or direction not in {"LONG", "SHORT"}:
+            continue
+        asset = assets_by_symbol.get(symbol, {})
+        allowed[symbol] = direction
+        positions.append({
+            "symbol": symbol,
+            "direction": direction,
+            "entry_price": item.get("average_entry_price", item.get("entry_price")),
+            "current_price": item.get("last_price"),
+            "unrealized_pnl_usdt": item.get("unrealized_pnl_usdt"),
+            "market_value_usdt": item.get("market_value_usdt"),
+            "atr_14_1h": asset.get("atr_14_1h", item.get("atr_14_1h")),
+            "change_1h_pct": asset.get("change_1h_pct"),
+            "change_24h_pct": asset.get("change_24h_pct"),
+            "momentum_6h_pct": asset.get("momentum_6h_pct"),
+            "momentum_24h_pct": asset.get("momentum_24h_pct"),
+            "relative_strength_vs_btc_24h_pct": asset.get("relative_strength_vs_btc_24h_pct"),
+            "volume_ratio": asset.get("volume_ratio"),
+            "volume_confirmed": asset.get("volume_confirmed"),
+            "ma20": asset.get("ma20"),
+            "ma50": asset.get("ma50"),
+            "rsi_14": asset.get("rsi_14"),
+            "long_score": asset.get("long_score"),
+            "short_score": asset.get("short_score"),
+        })
+    if not positions:
+        _latest_exit_review = {
+            "available": False, "mode": "SHADOW", "provider": "Groq",
+            "model": model, "status": "NO_VALID_POSITIONS", "recommendations": [],
+            "updated_at": now.isoformat(),
+            "message": "Не удалось собрать проверяемые данные открытых позиций.",
+        }
+        _last_exit_review_at = now
+        return dict(_latest_exit_review)
+
+    prompt = {
+        "task": (
+            "Review ONLY these already-open virtual Bybit Spot PAPER positions. "
+            "For each position return HOLD or SELL. Recommend SELL only when supplied "
+            "evidence indicates a meaningful adverse trend or deteriorating momentum "
+            "for that position's direction. A small ordinary fluctuation is not enough. "
+            "Never invent missing indicators or prices. If data is incomplete, mixed, "
+            "or not clearly adverse, choose HOLD. This is advisory analysis, not an order."
+        ),
+        "positions": positions,
+    }
+    request_body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": (
+                "You are HAN INVEST's PAPER open-position risk reviewer. "
+                "Do not place orders. Return strict JSON only with a recommendations array. "
+                "Each item must contain symbol, direction, action (HOLD or SELL), "
+                "confidence (integer 0-100), and reason."
+            )},
+            {"role": "user", "content": json.dumps(prompt, separators=(",", ":"), allow_nan=False)},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.1,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {groq_key}"},
+                json=request_body,
+            )
+            response.raise_for_status()
+        choices = response.json().get("choices") or []
+        content = choices[0].get("message", {}).get("content", "") if choices else ""
+        parsed = json.loads(content)
+        if not isinstance(parsed, dict):
+            raise ValueError("Groq exit review must be a JSON object")
+
+        decisions = {}
+        for decision in parsed.get("recommendations", []):
+            if not isinstance(decision, dict):
+                continue
+            symbol = str(decision.get("symbol") or "").upper()
+            direction = str(decision.get("direction") or "").upper()
+            action = str(decision.get("action") or "HOLD").upper()
+            if symbol not in allowed or direction != allowed[symbol] or action not in {"HOLD", "SELL"}:
+                continue
+            try:
+                confidence = max(0, min(100, int(decision.get("confidence", 0))))
+            except (TypeError, ValueError):
+                confidence = 0
+            if action == "SELL" and confidence < 80:
+                action = "HOLD"
+            decisions[symbol] = {
+                "symbol": symbol, "direction": direction, "action": action,
+                "confidence": confidence, "reason": str(decision.get("reason") or "")[:240],
+            }
+        recommendations = [
+            decisions.get(symbol, {
+                "symbol": symbol, "direction": direction, "action": "HOLD",
+                "confidence": 0, "reason": "Нет проверенной рекомендации Groq; позиция не затрагивается.",
+            })
+            for symbol, direction in sorted(allowed.items())
+        ]
+        _latest_exit_review = {
+            "available": True, "mode": "SHADOW", "provider": "Groq",
+            "model": model, "status": "OK", "recommendations": recommendations,
+            "updated_at": now.isoformat(), "auto_close_enabled": False,
+            "message": "Только рекомендации. Groq не закрывает позиции; Stop Loss и защита PAPER работают независимо.",
+        }
+        sells = sum(1 for item in recommendations if item["action"] == "SELL")
+        logger.info("Groq PAPER exit review succeeded for %d open positions; SELL recommendations=%d (shadow only)",
+                    len(recommendations), sells)
+    except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
+        _latest_exit_review = {
+            "available": False, "mode": "SHADOW", "provider": "Groq",
+            "model": model, "status": "ERROR", "recommendations": [],
+            "updated_at": now.isoformat(),
+            "message": f"Groq не смог проверить открытые позиции ({type(exc).__name__}); защитные правила PAPER продолжают работать.",
+        }
+        logger.warning("Groq PAPER exit review failed: %s", type(exc).__name__)
+    _last_exit_review_at = now
+    return dict(_latest_exit_review)
+
+
+def get_ai_exit_advisor_state() -> dict[str, Any]:
+    return dict(_latest_exit_review)
+
+
+@router.get("/exits/latest")
+async def latest_ai_exit_advice():
+    return get_ai_exit_advisor_state()
+
+
 @router.get("/latest")
 async def latest_ai_advice():
     return get_ai_advisor_state()
