@@ -33,6 +33,8 @@ class PaperTradingRuleTests(unittest.TestCase):
             "atr_14_1h": 1.0,
             "atr_candle_time": "2026-11-15T10:00:00Z",
             "score": score,
+            "long_score": score,
+            "short_score": score,
             "trade_ready": True,
             "ma20": 99.0,
             "ma50": 98.0,
@@ -421,6 +423,8 @@ class PaperTradingRuleTests(unittest.TestCase):
         long_asset = self.asset(score=80, symbol="LOWVOLUSDT", volume=1)
         long_asset["ma20"], long_asset["ma50"], long_asset["daily_open"] = 0, 0, 0
         short_asset = self.asset(score=80, symbol="SHORTUSDT", volume=1)
+        # Make SHORT the only eligible direction at the score-80 boundary.
+        short_asset["long_score"], short_asset["short_score"] = 79, 80
         short_asset["momentum_6h_pct"] = -0.5
         short_asset["ma20"], short_asset["ma50"], short_asset["daily_open"] = 0, 0, 0
         paper._apply_market_data("Bybit", {"assets": [long_asset, short_asset]}, False, False)
