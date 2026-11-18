@@ -285,8 +285,8 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
                     retry_after = exc.response.headers.get("retry-after")
                     delay = _retry_delay_seconds(retry_after, attempt)
                     logger.warning(
-                        "Gemini temporary HTTP status=%s; retry %s/%s in %.1fs",
-                        status_code, attempt + 1, _MAX_RETRIES, delay,
+                        "%s temporary HTTP status=%s; retry %s/%s in %.1fs",
+                        provider, status_code, attempt + 1, _MAX_RETRIES, delay,
                     )
                     await asyncio.sleep(delay)
                 except (httpx.TimeoutException, httpx.NetworkError) as exc:
@@ -294,8 +294,8 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
                         raise
                     delay = _retry_delay_seconds(None, attempt)
                     logger.warning(
-                        "Gemini temporary network error=%s; retry %s/%s in %.1fs",
-                        type(exc).__name__, attempt + 1, _MAX_RETRIES, delay,
+                        "%s temporary network error=%s; retry %s/%s in %.1fs",
+                        provider, type(exc).__name__, attempt + 1, _MAX_RETRIES, delay,
                     )
                     await asyncio.sleep(delay)
         _latest = _validated_result(parsed, candidates, model, provider)
@@ -340,7 +340,7 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
         _latest = {
             "available": False,
             "mode": "SHADOW",
-            "provider": "Google Gemini",
+            "provider": provider,
             "model": model,
             "status": "ERROR",
             "market_bias": "WAIT",
