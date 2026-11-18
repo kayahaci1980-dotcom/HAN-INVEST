@@ -248,13 +248,36 @@ def _retry_delay_seconds(retry_after: str | None, attempt: int) -> float:
     return min(15.0, float(2 ** (attempt + 1)))
 
 
+async def _post_gemini_with_retry(
+    client: httpx.AsyncClient, url: str, api_key: str, body: dict[str, Any]
+) -> httpx.Response:
+    """Retry only transient Gemini overload/rate-limit responses; never bypass the AI gate."""
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            response = await client.post(
+                url, headers={"x-goog-api-key": api_key}, json=body
+            )
+            response.raise_for_status()
+            return response
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status not in _RETRYABLE_STATUS_CODES or attempt >= _MAX_RETRIES:
+                raise
+            delay = _retry_delay_seconds(exc.response.headers.get("retry-after"), attempt)
+            logger.warning(
+                "Gemini transient HTTP %s; retry %d/%d in %.1fs",
+                status, attempt + 1, _MAX_RETRIES, delay,
+            )
+            await asyncio.sleep(delay)
+    raise RuntimeError("Gemini retry loop ended unexpectedly")
+
+
 async def _gemini_fallback(candidates: list[dict[str, Any]], body: dict[str, Any],
                            api_key: str) -> dict[str, Any]:
     model = os.getenv("GEMINI_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL
     url = f"{_API_ROOT}/{model}:generateContent"
     async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
-        response = await client.post(url, headers={"x-goog-api-key": api_key}, json=body)
-        response.raise_for_status()
+        response = await _post_gemini_with_retry(client, url, api_key, body)
         parsed = _extract_json(response.json())
     return _validated_result(parsed, candidates, model, "Google Gemini (fallback)")
 
