@@ -6,7 +6,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.bybit import scan_bybit
-from app.ai_advisor import refresh_ai_advisor, get_ai_advisor_state
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,19 +29,15 @@ async def _refresh_snapshot() -> None:
             )
             if not isinstance(payload, dict) or not isinstance(payload.get("assets"), list):
                 raise ValueError("Bybit analysis returned an invalid payload")
-            # Groq analysis runs on the filtered Bybit shortlist; it never places orders.
-            await refresh_ai_advisor(payload)
             _latest_snapshot = {
                 **payload,
-                "ai_advisor": get_ai_advisor_state(),
                 "background_analysis": True,
                 "background_updated_at": datetime.now(timezone.utc).isoformat(),
                 "source": "Bybit Spot",
             }
             _snapshot_ready.set()
             _last_error = None
-            logger.info("Background Bybit/Groq analysis refreshed: %s Bybit assets; AI shortlist/reuse state=%s",
-                        len(_latest_snapshot["assets"]), get_ai_advisor_state().get("reused", False))
+            logger.info("Background Bybit-only analysis refreshed: %s Bybit assets", len(_latest_snapshot["assets"]))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
