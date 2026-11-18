@@ -200,6 +200,7 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
             "probability or guarantee. Do not give leverage or position-size instructions."
         ),
         "btc_market_filter": market.get("btc_market_filter", {}),
+        "fee_model": {"fee_rate_per_side": 0.001, "round_trip_fee_rate": 0.002, "unit": "fraction of notional"},
         "assets": candidates,
     }
     body = {
