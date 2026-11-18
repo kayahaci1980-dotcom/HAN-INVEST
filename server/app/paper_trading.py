@@ -961,9 +961,11 @@ def _apply_market_data(
                 updated_at = datetime.fromisoformat(str(ai_advisor.get("updated_at") or "").replace("Z", "+00:00"))
                 age_seconds = (_now() - updated_at).total_seconds()
                 advisor_provider = str(ai_advisor.get("provider") or "").strip().lower()
+                btc_direction = str(ai_advisor.get("btc_direction") or "UNKNOWN").upper()
                 advisor_ready = (ai_advisor.get("available") is True and ai_advisor.get("status") == "OK"
                                  and str(ai_advisor.get("mode") or "").upper() == "SHADOW"
                                  and advisor_provider in {"google gemini", "google gemini (fallback)"}
+                                 and btc_direction in {"BULLISH", "BEARISH"}
                                  and -5 <= age_seconds <= 1000)
                 if advisor_ready:
                     advisor_decisions = {str(item.get("symbol") or "").upper(): item
@@ -975,6 +977,7 @@ def _apply_market_data(
             diagnostic["ai_provider"] = str(ai_advisor.get("provider") or "unknown")
             diagnostic["ai_min_confidence"] = 80
             diagnostic["ai_max_age_seconds"] = 300
+            diagnostic["btc_direction"] = str(ai_advisor.get("btc_direction") or "UNKNOWN").upper()
         else:
             diagnostic["gemini_gate"] = "BYPASSED_BYBIT_ONLY"
         def reject(reason: str, direction: str | None = None) -> None:
@@ -1042,6 +1045,12 @@ def _apply_market_data(
                     reject("ai_advisor_wait_or_direction_not_confirmed")
                     continue
                 direction = ai_action
+                btc_direction = str(ai_advisor.get("btc_direction") or "UNKNOWN").upper()
+                if (btc_direction == "BULLISH" and direction != "LONG") or (
+                    btc_direction == "BEARISH" and direction != "SHORT"
+                ) or btc_direction not in {"BULLISH", "BEARISH"}:
+                    reject("btc_direction_not_confirmed", direction)
+                    continue
                 if confidence < 80:
                     reject("gemini_confidence_below_80", direction)
                     continue
