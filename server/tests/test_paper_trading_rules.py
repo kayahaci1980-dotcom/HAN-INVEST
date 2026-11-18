@@ -425,7 +425,7 @@ class PaperTradingRuleTests(unittest.TestCase):
         long_asset["ma20"], long_asset["ma50"], long_asset["daily_open"] = 0, 0, 0
         short_asset = self.asset(score=80, symbol="SHORTUSDT", volume=1)
         # Make SHORT the only eligible direction; equal scores intentionally tie-break LONG.
-        short_asset["long_score"], short_asset["short_score"] = 79, 80
+        short_asset["long_score"], short_asset["short_score"] = 79, 80  # Make SHORT uniquely eligible at the score-80 boundary.
         short_asset["momentum_6h_pct"] = -0.5
         short_asset["ma20"], short_asset["ma50"], short_asset["daily_open"] = 0, 0, 0
         paper._apply_market_data("Bybit", {"assets": [long_asset, short_asset]}, True, True, True)
