@@ -19,6 +19,26 @@ def mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def filter_tickers_by_min_volume(
+    tickers: list[dict[str, Any]], min_volume: float
+) -> list[dict[str, Any]]:
+    """Keep only Bybit Spot tickers meeting the configured 24h quote-turnover floor."""
+    minimum = float(min_volume)
+    if not math.isfinite(minimum) or minimum < 0:
+        raise ValueError("min_volume must be a finite non-negative number")
+    filtered: list[dict[str, Any]] = []
+    for ticker in tickers:
+        if not isinstance(ticker, dict):
+            continue
+        try:
+            turnover = float(ticker.get("turnover24h") or 0)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(turnover) and turnover >= minimum:
+            filtered.append(ticker)
+    return filtered
+
+
 def calculate_position_sizing(
     entry_price: float, stop_loss: float, take_profit: float,
     capital_usdt: float, risk_pct: float, fee_rate: float,
@@ -270,10 +290,10 @@ async def scan_bybit(
             # BTC is a market benchmark, not a trade candidate: do not apply
             # the 3–40M USDT candidate liquidity band to BTC market context.
             btc = next((x for x in all_tickers if x.get("symbol") == "BTCUSDT"), None)
-            tickers = [
-                x for x in all_tickers
-                if x.get("symbol") in instruments
-            ]
+            tickers = filter_tickers_by_min_volume(
+                [x for x in all_tickers if x.get("symbol") in instruments],
+                min_volume,
+            )
             btc_change_24h_pct = float(btc.get("price24hPcnt") or 0) * 100 if btc else 0.0
             btc_state = "UNKNOWN"
             btc_info = {"available": False, "buy_allowed": False, "market_state": "UNKNOWN"}
