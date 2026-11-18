@@ -18,6 +18,25 @@ _API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 _TIMEOUT_SECONDS = 25
 _MAX_RETRIES = 2
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+# Shared cooldown prevents market analysis and PAPER exit review from
+# hammering Groq after a rate-limit response.
+_GROQ_RATE_LIMIT_COOLDOWN_SECONDS = 180
+_groq_cooldown_until: datetime | None = None
+
+
+def _groq_cooldown_remaining(now: datetime | None = None) -> float:
+    current = now or datetime.now(timezone.utc)
+    if _groq_cooldown_until is None:
+        return 0.0
+    return max(0.0, (_groq_cooldown_until - current).total_seconds())
+
+
+def _set_groq_rate_limit_cooldown(retry_after: str | None = None) -> float:
+    global _groq_cooldown_until
+    delay = max(_GROQ_RATE_LIMIT_COOLDOWN_SECONDS, _retry_delay_seconds(retry_after, 4))
+    _groq_cooldown_until = datetime.now(timezone.utc) + __import__("datetime").timedelta(seconds=delay)
+    return delay
 _MAX_ASSETS = 12
 _last_success_fingerprint: str | None = None
 _last_success_result: dict[str, Any] | None = None
@@ -305,6 +324,11 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
                     break
                 except httpx.HTTPStatusError as exc:
                     status_code = exc.response.status_code
+                    if use_groq and status_code == 429:
+                        retry_after = exc.response.headers.get("retry-after")
+                        cooldown = _set_groq_rate_limit_cooldown(retry_after)
+                        logger.warning("Groq rate limited; shared cooldown %.1fs; using Gemini fallback when configured", cooldown)
+                        raise
                     if status_code not in _RETRYABLE_STATUS_CODES or attempt >= _MAX_RETRIES:
                         raise
                     retry_after = exc.response.headers.get("retry-after")
@@ -426,6 +450,17 @@ async def refresh_ai_exit_advisor(
 
     groq_key = os.getenv("GROQ_API_KEY", "").strip()
     model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip() or "openai/gpt-oss-120b"
+    cooldown_remaining = _groq_cooldown_remaining(now)
+    if cooldown_remaining > 0:
+        _latest_exit_review = {
+            "available": False, "mode": "SHADOW", "provider": "Groq",
+            "model": model, "status": "RATE_LIMITED", "recommendations": [],
+            "updated_at": now.isoformat(), "retry_in_seconds": int(cooldown_remaining),
+            "message": "Groq временно ограничил запросы; повторная проверка отложена. Stop Loss и защита PAPER работают независимо.",
+        }
+        _last_exit_review_at = now
+        logger.info("Groq PAPER exit review skipped during shared rate-limit cooldown (%.1fs remaining)", cooldown_remaining)
+        return dict(_latest_exit_review)
     if not groq_key:
         _latest_exit_review = {
             "available": False, "mode": "SHADOW", "provider": "Groq",
@@ -556,6 +591,18 @@ async def refresh_ai_exit_advisor(
         sells = sum(1 for item in recommendations if item["action"] == "SELL")
         logger.info("Groq PAPER exit review succeeded for %d open positions; SELL recommendations=%d (shadow only)",
                     len(recommendations), sells)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 429:
+            cooldown = _set_groq_rate_limit_cooldown(exc.response.headers.get("retry-after"))
+            logger.warning("Groq PAPER exit review rate limited; shared cooldown %.1fs", cooldown)
+        _latest_exit_review = {
+            "available": False, "mode": "SHADOW", "provider": "Groq",
+            "model": model, "status": "RATE_LIMITED" if exc.response.status_code == 429 else "ERROR",
+            "recommendations": [], "updated_at": now.isoformat(),
+            "retry_in_seconds": int(_groq_cooldown_remaining()),
+            "message": "Groq временно ограничил запросы; проверка отложена. Stop Loss и защита PAPER работают независимо." if exc.response.status_code == 429 else f"Groq не смог проверить открытые позиции ({type(exc).__name__}); защитные правила PAPER продолжают работать.",
+        }
+        logger.warning("Groq PAPER exit review failed: HTTP status=%s", exc.response.status_code)
     except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
         _latest_exit_review = {
             "available": False, "mode": "SHADOW", "provider": "Groq",
