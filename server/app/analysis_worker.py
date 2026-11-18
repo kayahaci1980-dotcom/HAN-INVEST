@@ -30,7 +30,7 @@ async def _refresh_snapshot() -> None:
             )
             if not isinstance(payload, dict) or not isinstance(payload.get("assets"), list):
                 raise ValueError("Bybit analysis returned an invalid payload")
-            # Groq analysis runs on the filtered Bybit shortlist; it never places orders.
+            # Gemini analyzes the filtered Bybit shortlist; it never places orders.
             await refresh_ai_advisor(payload)
             _latest_snapshot = {
                 **payload,
@@ -41,7 +41,7 @@ async def _refresh_snapshot() -> None:
             }
             _snapshot_ready.set()
             _last_error = None
-            logger.info("Background Bybit/Groq analysis refreshed: %s Bybit assets; AI shortlist/reuse state=%s",
+            logger.info("Background Bybit/Gemini analysis refreshed: %s Bybit assets; AI shortlist/reuse state=%s",
                         len(_latest_snapshot["assets"]), get_ai_advisor_state().get("reused", False))
         except asyncio.CancelledError:
             raise
