@@ -1075,7 +1075,7 @@ def _apply_market_data(
                 reject("directional_score_missing_or_invalid", direction)
                 continue
             if not math.isfinite(directional_score) or directional_score < 80:
-                reject("directional_score_below_85", direction)
+                reject("directional_score_below_80", direction)
                 continue
             reason = (f"AUTO_{direction}_GEMINI_CONF_{confidence}" if ai_advisor is not None
                       else f"AUTO_{direction}_SCORE_80")
@@ -1092,7 +1092,7 @@ def _apply_market_data(
 async def _scan_cycle() -> None:
     async with _cycle_lock:
         try:
-            # Bybit Spot only. Groq is a mandatory approval gate for new PAPER entries.
+            # Bybit Spot only. Gemini is the sole approval gate for new PAPER entries.
             bybit_payload = await scan_bybit(limit=500, min_volume=0, capital_usdt=_INITIAL_CASH,
                                              risk_pct=_RISK_PCT, fee_rate=_FEE_RATE)
             errors = []
