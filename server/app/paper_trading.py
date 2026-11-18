@@ -14,7 +14,6 @@ from fastapi import APIRouter, Body, HTTPException
 
 from app.bybit import fetch_spot_ticker_prices, scan_bybit
 from app.market_breadth import get_market_breadth
-from app.ai_advisor import get_ai_advisor_state, refresh_ai_exit_advisor
 
 logger = logging.getLogger(__name__)
 
@@ -1093,7 +1092,7 @@ def _apply_market_data(
 async def _scan_cycle() -> None:
     async with _cycle_lock:
         try:
-            # Bybit Spot only. Groq is a mandatory approval gate for new PAPER entries.
+            # Bybit Spot only. External AI providers are disabled; native Bybit scores drive entries.
             bybit_payload = await scan_bybit(limit=500, min_volume=0, capital_usdt=_INITIAL_CASH,
                                              risk_pct=_RISK_PCT, fee_rate=_FEE_RATE)
             errors = []
@@ -1107,32 +1106,19 @@ async def _scan_cycle() -> None:
                 logger.warning("Direct Bybit quotes unavailable for open positions: %s", type(quote_error).__name__)
             if isinstance(bybit_payload, dict):
                 assets = bybit_payload.get("assets") or []
-                ai_state = get_ai_advisor_state()
                 logger.info(
-                    "PAPER cycle Bybit assets=%d; AI provider=%s status=%s",
+                    "PAPER cycle Bybit-only assets=%d; external AI providers disabled",
                     len(assets) if isinstance(assets, list) else -1,
-                    ai_state.get("provider", "unknown"), ai_state.get("status", "unknown"),
                 )
-                # Existing-position exits and protections remain active regardless of AI status.
-                # New automatic entries require a fresh successful Groq or Gemini recommendation.
+                # PAPER entries use Bybit Spot scores only; existing stop/trailing protections remain active.
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=True,
                                    allow_long_entries=True, allow_short_entries=True,
                                    position_prices=live_quotes,
-                                   ai_advisor=ai_state)
+                                   ai_advisor=None)
             else:
                 errors.append("Bybit analysis unavailable; existing positions checked using direct quotes")
                 _apply_market_data("Bybit", {"assets": []}, allow_new_entries=False,
                                    allow_short_entries=False, position_prices=live_quotes)
-            if isinstance(bybit_payload, dict):
-                # Groq reviews existing PAPER positions in shadow mode only; it cannot close them.
-                paper_snapshot = _account_snapshot()
-                exit_state = await refresh_ai_exit_advisor(
-                    paper_snapshot.get("open_positions", []),
-                    bybit_payload.get("assets") or [],
-                )
-                logger.info("PAPER Groq exit review status=%s; recommendations=%d; auto_close=false",
-                            exit_state.get("status", "unknown"),
-                            len(exit_state.get("recommendations") or []))
             logger.info("Market-data source and PAPER trading venue: Bybit Spot only")
             with _connect() as db:
                 db.execute("""UPDATE paper_account SET last_scan_at=?, last_error=?, updated_at=? WHERE id=1""",
