@@ -43,7 +43,7 @@ def _duration_header_seconds(value: str | None) -> float:
     except ValueError:
         pass
     units = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
-    parts = re.findall(r"(\\d+(?:\\.\\d+)?)(ms|s|m|h|d)", raw)
+    parts = re.findall(r"(\d+(?:\.\d+)?)(ms|s|m|h|d)", raw)
     if not parts or "".join(number + unit for number, unit in parts) != raw.replace(" ", ""):
         return 0.0
     return sum(float(number) * units[unit] for number, unit in parts)
