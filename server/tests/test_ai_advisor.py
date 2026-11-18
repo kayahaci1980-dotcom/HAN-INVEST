@@ -53,6 +53,48 @@ class GeminiAdvisorTests(unittest.TestCase):
     def test_retryable_status_codes_cover_rate_limit_and_server_overload(self):
         self.assertEqual(ai_advisor._RETRYABLE_STATUS_CODES, {429, 500, 502, 503, 504})
 
+    def test_groq_cooldown_uses_gemini_with_prebuilt_request_body(self):
+        async def run():
+            from datetime import datetime, timedelta, timezone
+
+            candidates = [{
+                "symbol": "BTCUSDT", "quote_volume_24h": 10_000_000,
+                "price": 100.0, "trade_ready": True, "long_score": 90,
+                "short_score": 0,
+            }]
+            async def fake_gemini(received_candidates, body, api_key):
+                self.assertEqual(received_candidates, ai_advisor._candidate_payload({"assets": candidates}))
+                self.assertIn("contents", body)
+                self.assertEqual(api_key, "gemini-test-key")
+                return {
+                    "available": True, "mode": "SHADOW",
+                    "provider": "Google Gemini (fallback)", "model": "test",
+                    "status": "OK", "market_bias": "LONG",
+                    "recommendations": [{
+                        "symbol": "BTCUSDT", "action": "LONG",
+                        "confidence": 90, "reason": "test",
+                    }],
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+            ai_advisor._last_success_fingerprint = None
+            ai_advisor._last_success_result = None
+            with patch.dict("os.environ", {
+                "GROQ_API_KEY": "groq-test-key",
+                "GEMINI_API_KEY": "gemini-test-key",
+            }, clear=False), patch.object(
+                ai_advisor, "_groq_cooldown_until",
+                datetime.now(timezone.utc) + timedelta(seconds=60),
+            ), patch.object(ai_advisor, "_gemini_fallback", side_effect=fake_gemini) as fallback:
+                result = await ai_advisor.refresh_ai_advisor({"assets": candidates})
+                fallback.assert_awaited_once()
+            self.assertEqual(result["status"], "OK")
+            self.assertEqual(result["provider"], "Google Gemini (fallback)")
+            self.assertEqual(result["recommendations"][0]["action"], "LONG")
+
+        import asyncio
+        asyncio.run(run())
+
     def test_missing_api_key_disables_advisor_without_network_call(self):
         async def run():
             with patch.dict("os.environ", {"GEMINI_API_KEY": ""}, clear=False):
