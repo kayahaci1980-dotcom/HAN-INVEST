@@ -515,6 +515,108 @@ _latest_exit_review: dict[str, Any] = {
 }
 
 
+async def _gemini_exit_review_fallback(
+    positions: list[dict[str, Any]],
+    allowed: dict[str, str],
+    api_key: str,
+    now: datetime,
+) -> dict[str, Any]:
+    """Review the same PAPER positions with Gemini; recommendations remain shadow-only."""
+    model = os.getenv("GEMINI_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL
+    prompt = {
+        "task": (
+            "Review ONLY these already-open virtual Bybit Spot PAPER positions. "
+            "For each position return HOLD or SELL. Recommend SELL only when supplied "
+            "evidence indicates a meaningful adverse trend or deteriorating momentum "
+            "for that position's direction. A small ordinary fluctuation is not enough. "
+            "Never invent missing indicators or prices. If data is incomplete, mixed, "
+            "or not clearly adverse, choose HOLD. This is advisory analysis, not an order."
+        ),
+        "positions": positions,
+    }
+    body = {
+        "system_instruction": {"parts": [{
+            "text": (
+                "You are HAN INVEST's PAPER open-position risk reviewer. "
+                "Do not place orders. Return strict JSON only with a recommendations array. "
+                "Each item must contain symbol, direction, action (HOLD or SELL), "
+                "confidence (integer 0-100), and reason."
+            )
+        }]},
+        "contents": [{"role": "user", "parts": [{
+            "text": json.dumps(prompt, separators=(",", ":"), allow_nan=False, default=float)
+        }]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": {
+                "type": "OBJECT",
+                "properties": {
+                    "recommendations": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "symbol": {"type": "STRING"},
+                                "direction": {"type": "STRING", "enum": ["LONG", "SHORT"]},
+                                "action": {"type": "STRING", "enum": ["HOLD", "SELL"]},
+                                "confidence": {"type": "INTEGER"},
+                                "reason": {"type": "STRING"},
+                            },
+                            "required": ["symbol", "direction", "action", "confidence", "reason"],
+                        },
+                    }
+                },
+                "required": ["recommendations"],
+            },
+        },
+    }
+    url = f"{_API_ROOT}/{model}:generateContent"
+    async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+        response = await client.post(url, headers={"x-goog-api-key": api_key}, json=body)
+        response.raise_for_status()
+        parsed = _extract_json(response.json())
+
+    decisions: dict[str, dict[str, Any]] = {}
+    for item in parsed.get("recommendations", []):
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").upper()
+        direction = str(item.get("direction") or "").upper()
+        action = str(item.get("action") or "HOLD").upper()
+        if symbol not in allowed or direction != allowed[symbol] or action not in {"HOLD", "SELL"}:
+            continue
+        try:
+            confidence = max(0, min(100, int(item.get("confidence", 0))))
+        except (TypeError, ValueError):
+            confidence = 0
+        if action == "SELL" and confidence < 80:
+            action = "HOLD"
+        decisions[symbol] = {
+            "symbol": symbol, "direction": direction, "action": action,
+            "confidence": confidence, "reason": str(item.get("reason") or "")[:240],
+        }
+
+    recommendations = [
+        decisions.get(symbol, {
+            "symbol": symbol, "direction": direction, "action": "HOLD",
+            "confidence": 0,
+            "reason": "Gemini не вернул проверенную рекомендацию; позиция не затрагивается.",
+        })
+        for symbol, direction in sorted(allowed.items())
+    ]
+    sells = sum(1 for item in recommendations if item["action"] == "SELL")
+    logger.info(
+        "Gemini PAPER exit review fallback succeeded for %d open positions; SELL recommendations=%d (shadow only)",
+        len(recommendations), sells,
+    )
+    return {
+        "available": True, "mode": "SHADOW", "provider": "Google Gemini (fallback)",
+        "model": model, "status": "OK", "recommendations": recommendations,
+        "updated_at": now.isoformat(), "auto_close_enabled": False,
+        "message": "Резервные рекомендации Gemini. Сделки не закрываются автоматически; Stop Loss и защита PAPER работают независимо.",
+    }
+
+
 async def refresh_ai_exit_advisor(
     open_positions: list[dict[str, Any]],
     market_assets: list[dict[str, Any]] | None = None,
@@ -541,16 +643,7 @@ async def refresh_ai_exit_advisor(
     groq_key = os.getenv("GROQ_API_KEY", "").strip()
     model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip() or "openai/gpt-oss-120b"
     cooldown_remaining = _groq_cooldown_remaining(now)
-    if cooldown_remaining > 0:
-        _latest_exit_review = {
-            "available": False, "mode": "SHADOW", "provider": "Groq",
-            "model": model, "status": "RATE_LIMITED", "recommendations": [],
-            "updated_at": now.isoformat(), "retry_in_seconds": int(cooldown_remaining),
-            "message": "Groq временно ограничил запросы; повторная проверка отложена. Stop Loss и защита PAPER работают независимо.",
-        }
-        _last_exit_review_at = now
-        logger.info("Groq PAPER exit review skipped during shared rate-limit cooldown (%.1fs remaining)", cooldown_remaining)
-        return dict(_latest_exit_review)
+    force_gemini_fallback = cooldown_remaining > 0
     if not groq_key:
         _latest_exit_review = {
             "available": False, "mode": "SHADOW", "provider": "Groq",
@@ -632,6 +725,25 @@ async def refresh_ai_exit_advisor(
         "response_format": {"type": "json_object"},
         "temperature": 0.1,
     }
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if force_gemini_fallback:
+        if gemini_key:
+            try:
+                _latest_exit_review = await _gemini_exit_review_fallback(positions, allowed, gemini_key, now)
+                _last_exit_review_at = now
+                logger.info("Groq PAPER exit review skipped during cooldown; Gemini fallback supplied advisory review (%.1fs remaining)", cooldown_remaining)
+                return dict(_latest_exit_review)
+            except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
+                logger.warning("Gemini PAPER exit review fallback failed during Groq cooldown: %s", type(fallback_exc).__name__)
+        _latest_exit_review = {
+            "available": False, "mode": "SHADOW", "provider": "Groq",
+            "model": model, "status": "RATE_LIMITED", "recommendations": [],
+            "updated_at": now.isoformat(), "retry_in_seconds": int(cooldown_remaining),
+            "message": "Groq временно ограничил запросы, а Gemini недоступен; Stop Loss и защита PAPER работают независимо.",
+        }
+        _last_exit_review_at = now
+        return dict(_latest_exit_review)
+
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
             response = await client.post(
@@ -682,6 +794,14 @@ async def refresh_ai_exit_advisor(
         logger.info("Groq PAPER exit review succeeded for %d open positions; SELL recommendations=%d (shadow only)",
                     len(recommendations), sells)
     except httpx.HTTPStatusError as exc:
+        if gemini_key:
+            try:
+                _latest_exit_review = await _gemini_exit_review_fallback(positions, allowed, gemini_key, now)
+                _last_exit_review_at = now
+                logger.warning("Groq PAPER exit review unavailable (HTTP %s); Gemini fallback supplied advisory review", exc.response.status_code)
+                return dict(_latest_exit_review)
+            except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
+                logger.warning("Gemini PAPER exit review fallback failed: %s", type(fallback_exc).__name__)
         if exc.response.status_code == 429:
             cooldown = _set_groq_rate_limit_cooldown(
                 exc.response.headers.get("retry-after"), exc.response.headers
@@ -699,6 +819,14 @@ async def refresh_ai_exit_advisor(
         }
         logger.warning("Groq PAPER exit review failed: HTTP status=%s", exc.response.status_code)
     except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
+        if gemini_key:
+            try:
+                _latest_exit_review = await _gemini_exit_review_fallback(positions, allowed, gemini_key, now)
+                _last_exit_review_at = now
+                logger.warning("Groq PAPER exit review failed (%s); Gemini fallback supplied advisory review", type(exc).__name__)
+                return dict(_latest_exit_review)
+            except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
+                logger.warning("Gemini PAPER exit review fallback failed: %s", type(fallback_exc).__name__)
         _latest_exit_review = {
             "available": False, "mode": "SHADOW", "provider": "Groq",
             "model": model, "status": "ERROR", "recommendations": [],
