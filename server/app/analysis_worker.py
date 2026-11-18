@@ -14,6 +14,7 @@ _SCAN_INTERVAL_SECONDS = 110
 _worker_task: asyncio.Task | None = None
 _scan_lock = asyncio.Lock()
 _latest_snapshot: dict[str, Any] | None = None
+_snapshot_ready = asyncio.Event()
 _last_error: str | None = None
 
 
@@ -38,6 +39,7 @@ async def _refresh_snapshot() -> None:
                 "background_updated_at": datetime.now(timezone.utc).isoformat(),
                 "source": "Bybit Spot",
             }
+            _snapshot_ready.set()
             _last_error = None
             logger.info("Background Bybit/Groq analysis refreshed: %s Bybit assets; AI shortlist/reuse state=%s",
                         len(_latest_snapshot["assets"]), get_ai_advisor_state().get("reused", False))
@@ -82,12 +84,27 @@ async def latest_bybit_analysis(
                                     capital_usdt=capital_usdt, risk_pct=risk_pct)
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Данные Bybit Spot временно недоступны.") from exc
+    # The Android app may request data before the first background scan finishes.
+    # Wait for that in-flight scan instead of immediately returning a cold-start 503.
+    if _latest_snapshot is None:
+        try:
+            await asyncio.wait_for(_snapshot_ready.wait(), timeout=45)
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "Фоновый анализ Bybit ещё не завершён.",
+                    "last_error": _last_error,
+                    "retry_after_seconds": 10,
+                },
+            )
     if _latest_snapshot is None:
         raise HTTPException(
             status_code=503,
             detail={
-                "message": "Фоновый анализ Bybit ещё выполняется.",
+                "message": "Фоновый анализ Bybit временно недоступен.",
                 "last_error": _last_error,
+                "retry_after_seconds": 10,
             },
         )
     return _latest_snapshot
