@@ -302,7 +302,7 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.assertIsNone(self.cooldown("ETHUSDT"))
 
     def test_daily_atr_chase_condition_does_not_block_long_entry(self):
-        asset = self.asset(85, 101.0)
+        asset = self.asset(80, 101.0)
         asset["daily_open"] = 100.0
         asset["atr_14_1h"] = 2.0
         paper._apply_market_data("Bybit", {"assets": [asset]}, True, True, True)
@@ -316,7 +316,7 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.assertEqual(len(self.positions()), 0)
 
     def test_short_entry_opens_at_score_80(self):
-        asset = self.asset(85, 99.9)
+        asset = self.asset(80, 99.9)
         asset["momentum_6h_pct"] = -0.1
         asset["ma20"], asset["ma50"] = 101.0, 102.0
         paper._apply_market_data("Bybit", {"assets": [asset]}, False, True)
@@ -405,25 +405,25 @@ class PaperTradingRuleTests(unittest.TestCase):
                 self.assertFalse(paper._is_stablecoin_pair(symbol))
 
     def test_stablecoin_candidate_is_not_filtered_out(self):
-        asset = self.asset(85, 100.0, symbol="USDCUSDT")
+        asset = self.asset(80, 100.0, symbol="USDCUSDT")
         paper._apply_market_data("Bybit", {"assets": [asset]}, True, True, True)
         self.assertEqual(len(self.positions()), 1)
 
     def test_volume_minimum_three_million_has_no_upper_cap(self):
-        low_edge = self.asset(85, 100.0, symbol="EDGE3USDT", volume=3_000_000)
-        high_volume = self.asset(85, 100.0, symbol="HIGH40USDT", volume=40_000_001)
+        low_edge = self.asset(80, 100.0, symbol="EDGE3USDT", volume=3_000_000)
+        high_volume = self.asset(80, 100.0, symbol="HIGH40USDT", volume=40_000_001)
         paper._apply_market_data("Bybit", {"assets": [low_edge, high_volume]}, True, True, True)
         self.assertEqual(len(self.positions()), 2)
 
     def test_volume_below_three_million_is_not_excluded(self):
-        below = self.asset(85, 100.0, symbol="LOWUSDT", volume=2_999_999)
+        below = self.asset(80, 100.0, symbol="LOWUSDT", volume=2_999_999)
         paper._apply_market_data("Bybit", {"assets": [below]}, True, True, True)
         self.assertEqual(len(self.positions()), 1)
 
     def test_direction_entries_ignore_breadth_and_technical_indicators(self):
         long_asset = self.asset(score=80, symbol="LOWVOLUSDT", volume=1)
         long_asset["ma20"], long_asset["ma50"], long_asset["daily_open"] = 0, 0, 0
-        short_asset = self.asset(score=85, symbol="SHORTUSDT", volume=1)
+        short_asset = self.asset(score=80, symbol="SHORTUSDT", volume=1)
         short_asset["momentum_6h_pct"] = -0.5
         short_asset["ma20"], short_asset["ma50"], short_asset["daily_open"] = 0, 0, 0
         paper._apply_market_data("Bybit", {"assets": [long_asset, short_asset]}, True, True, True)
