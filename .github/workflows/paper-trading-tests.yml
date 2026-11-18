@@ -5,11 +5,14 @@ on:
     branches:
       - feature/paper-scale-in-0-5-stop
       - feat/atr-pro-volume-50m-100m
+      - fix/paper-market-breadth-volume-gates
       - feat/paper-profit-trailing-stop-1usdt
       - diagnostics/paper-entry-filters
       - paper-no-entry-filters
     paths:
       - "server/app/paper_trading.py"
+      - "server/app/bybit.py"
+      - "server/tests/test_bybit_filters.py"
       - "server/app/ai_advisor.py"
       - "server/tests/test_gemini_retry.py"
       - "server/tests/test_ai_advisor.py"
@@ -21,6 +24,8 @@ on:
       - feat/atr-pro-volume-50m-100m
     paths:
       - "server/app/paper_trading.py"
+      - "server/app/bybit.py"
+      - "server/tests/test_bybit_filters.py"
       - "server/app/ai_advisor.py"
       - "server/tests/test_gemini_retry.py"
       - "server/tests/test_ai_advisor.py"
@@ -40,4 +45,4 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt pytest
-      - run: PYTHONPATH=. pytest -q tests/test_paper_trading_rules.py tests/test_paper_account_snapshot.py tests/test_gemini_retry.py
+      - run: PYTHONPATH=. pytest -q tests/test_paper_trading_rules.py tests/test_paper_account_snapshot.py tests/test_gemini_retry.py tests/test_bybit_filters.py

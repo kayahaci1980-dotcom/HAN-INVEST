@@ -985,12 +985,15 @@ def _apply_market_data(
                     "PAPER %s %s scale-in blocked: fresh matching Gemini approval unavailable",
                     direction, position["symbol"],
                 )
+            # The configured 50% Bybit market-breadth gate applies to scale-ins too.
+            direction_market_allowed = allow_long_entries if direction == "LONG" else allow_short_entries
+            allow_scale_in = scale_in_approved and direction_market_allowed
             if direction == "LONG":
-                _manage_long_scale(db, current, price, allow_add=scale_in_approved)
+                _manage_long_scale(db, current, price, allow_add=allow_scale_in)
             else:
-                _manage_short_scale(db, current, price, allow_add=scale_in_approved)
+                _manage_short_scale(db, current, price, allow_add=allow_scale_in)
 
-        # No technical, score, volume, trend, daily-open, or breadth entry filters.
+        # New entries and scale-ins require the configured market-breadth direction gate.
         # Operational checks and protective position sizing/stops remain mandatory.
         diagnostic = {"assets": len(assets), "candidates": 0, "opened_long": 0, "opened_short": 0,
                       "common_rejections": {}, "long_rejections": {}, "short_rejections": {},
@@ -1142,13 +1145,35 @@ def _apply_market_data(
         logger.info("PAPER entry diagnostics %s", diagnostic)
 
 async def _scan_cycle() -> None:
+    global _last_market_breadth
     async with _cycle_lock:
         try:
-            # Bybit Spot supplies market data; Gemini evaluates eligible setups for PAPER entries.
-            bybit_payload = await scan_bybit(limit=500, min_volume=0, capital_usdt=_INITIAL_CASH,
+            # Bybit Spot supplies market data; apply the configured 3M USDT minimum liquidity.
+            bybit_payload = await scan_bybit(limit=500, min_volume=3_000_000, capital_usdt=_INITIAL_CASH,
                                              risk_pct=_RISK_PCT, fee_rate=_FEE_RATE)
-            gemini_advisor = await refresh_ai_advisor(bybit_payload if isinstance(bybit_payload, dict) else {})
+            # Fail closed for new entries if the mandatory 50% breadth source is unavailable.
             errors = []
+            allow_long_entries = False
+            allow_short_entries = False
+            try:
+                breadth = await get_market_breadth()
+                if not isinstance(breadth, dict) or breadth.get("available") is not True:
+                    raise ValueError("Bybit market breadth unavailable")
+                _last_market_breadth = dict(breadth)
+                allow_long_entries = breadth.get("allow_long_entries") is True
+                allow_short_entries = breadth.get("allow_short_entries") is True
+            except Exception as breadth_error:
+                _last_market_breadth = {
+                    "available": False, "status": "UNAVAILABLE",
+                    "allow_new_entries": False, "allow_long_entries": False,
+                    "allow_short_entries": False,
+                    "reason": "Market breadth unavailable; new PAPER entries and scale-ins are blocked.",
+                    "updated_at": _now().isoformat(),
+                }
+                errors.append("Bybit market breadth unavailable; new entries blocked")
+                logger.warning("PAPER market breadth unavailable; entries blocked (%s)",
+                               type(breadth_error).__name__)
+            gemini_advisor = await refresh_ai_advisor(bybit_payload if isinstance(bybit_payload, dict) else {})
             with _connect() as db:
                 open_symbols = [str(row["symbol"]) for row in db.execute(
                     "SELECT symbol FROM paper_positions WHERE exchange='Bybit'").fetchall()]
@@ -1166,7 +1191,8 @@ async def _scan_cycle() -> None:
                 )
                 # Gemini recommendations gate new entries; all execution and protections stay in PAPER.
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=True,
-                                   allow_long_entries=True, allow_short_entries=True,
+                                   allow_long_entries=allow_long_entries,
+                                   allow_short_entries=allow_short_entries,
                                    position_prices=live_quotes,
                                    ai_advisor=gemini_advisor)
             else:
@@ -1273,7 +1299,7 @@ async def buy_paper_position(payload: dict[str, Any] = Body(...)):
     async with _cycle_lock:
         _init_db()
         try:
-            market = await scan_bybit(limit=500, min_volume=0, capital_usdt=_INITIAL_CASH,
+            market = await scan_bybit(limit=500, min_volume=3_000_000, capital_usdt=_INITIAL_CASH,
                                       risk_pct=_RISK_PCT, fee_rate=_FEE_RATE)
         except Exception as exc:
             logger.exception("Manual Bybit PAPER market scan failed")
