@@ -76,7 +76,7 @@ def _extract_json(response: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validated_result(raw: dict[str, Any], candidates: list[dict[str, Any]],
-                      model: str) -> dict[str, Any]:
+                      model: str, provider: str = "Google Gemini") -> dict[str, Any]:
     allowed = {str(item["symbol"]).upper() for item in candidates}
     decisions: dict[str, dict[str, Any]] = {}
     for item in raw.get("decisions", []):
@@ -112,7 +112,7 @@ def _validated_result(raw: dict[str, Any], candidates: list[dict[str, Any]],
     return {
         "available": True,
         "mode": "SHADOW",
-        "provider": "Google Gemini",
+        "provider": provider,
         "model": model,
         "status": "OK",
         "market_bias": bias,
@@ -142,8 +142,16 @@ def _retry_delay_seconds(retry_after: str | None, attempt: int) -> float:
 async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
     """Ask Gemini for shadow LONG/SHORT/WAIT advice; never execute trades."""
     global _latest
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    model = os.getenv("GEMINI_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    use_groq = bool(groq_key)
+    provider = "Groq" if use_groq else "Google Gemini"
+    api_key = groq_key if use_groq else gemini_key
+    model = (
+        os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
+        if use_groq else
+        (os.getenv("GEMINI_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL)
+    )
     if not api_key:
         _latest = {
             **_latest,
@@ -153,7 +161,7 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
             "status": "NOT_CONFIGURED",
             "recommendations": [],
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "message": "Gemini API key is not configured on the server.",
+            "message": "Добавьте GROQ_API_KEY или GEMINI_API_KEY в секреты Render.",
         }
         return dict(_latest)
 
@@ -217,18 +225,47 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
             },
         },
     }
-    url = f"{_API_ROOT}/{model}:generateContent"
+    if use_groq:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        request_body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": (
+                    "You are the market-analysis component of HAN INVEST. "
+                    "Only provide advisory signals, never place orders. "
+                    "Use only supplied market data. Return strict JSON with "
+                    "market_bias and decisions fields."
+                )},
+                {"role": "user", "content": json.dumps(prompt, separators=(",", ":"))},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.1,
+        }
+        request_headers = {"Authorization": f"Bearer {api_key}"}
+    else:
+        url = f"{_API_ROOT}/{model}:generateContent"
+        request_body = body
+        request_headers = {"x-goog-api-key": api_key}
+
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
             for attempt in range(_MAX_RETRIES + 1):
                 try:
                     response = await client.post(
                         url,
-                        headers={"x-goog-api-key": api_key},
-                        json=body,
+                        headers=request_headers,
+                        json=request_body,
                     )
                     response.raise_for_status()
-                    parsed = _extract_json(response.json())
+                    response_json = response.json()
+                    if use_groq:
+                        choices = response_json.get("choices") or []
+                        content = choices[0].get("message", {}).get("content", "") if choices else ""
+                        parsed = json.loads(content)
+                        if not isinstance(parsed, dict):
+                            raise ValueError("Groq response must be a JSON object")
+                    else:
+                        parsed = _extract_json(response_json)
                     break
                 except httpx.HTTPStatusError as exc:
                     status_code = exc.response.status_code
@@ -250,15 +287,14 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
                         type(exc).__name__, attempt + 1, _MAX_RETRIES, delay,
                     )
                     await asyncio.sleep(delay)
-        _latest = _validated_result(parsed, candidates, model)
+        _latest = _validated_result(parsed, candidates, model, provider)
     except httpx.HTTPStatusError as exc:
         # Log only the HTTP status and retry hint. Never log provider bodies or credentials.
         status_code = exc.response.status_code
         retry_after = exc.response.headers.get("retry-after")
         logger.warning(
-            "Gemini market analysis failed: HTTP status=%s retry_after=%s",
-            status_code,
-            retry_after or "not-provided",
+            "%s market analysis failed: HTTP status=%s retry_after=%s",
+            provider, status_code, retry_after or "not-provided",
         )
         _latest = {
             "available": False,
@@ -271,11 +307,11 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
             "market_bias": "WAIT",
             "recommendations": [],
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "message": f"Gemini API вернул HTTP {status_code}; рекомендации не обновлены.",
+            "message": f"{provider} API вернул HTTP {status_code}; рекомендации не обновлены.",
         }
     except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
         # Never expose provider response bodies or credentials in logs/API output.
-        logger.warning("Gemini market analysis failed: %s", type(exc).__name__)
+        logger.warning("%s market analysis failed: %s", provider, type(exc).__name__)
         _latest = {
             "available": False,
             "mode": "SHADOW",
@@ -285,7 +321,7 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
             "market_bias": "WAIT",
             "recommendations": [],
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "message": "Gemini временно недоступен; рекомендации не обновлены.",
+            "message": f"{provider} временно недоступен; рекомендации не обновлены.",
         }
     return dict(_latest)
 
