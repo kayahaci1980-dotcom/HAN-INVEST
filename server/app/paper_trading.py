@@ -960,9 +960,10 @@ def _apply_market_data(
             try:
                 updated_at = datetime.fromisoformat(str(ai_advisor.get("updated_at") or "").replace("Z", "+00:00"))
                 age_seconds = (_now() - updated_at).total_seconds()
+                advisor_provider = str(ai_advisor.get("provider") or "").strip().lower()
                 advisor_ready = (ai_advisor.get("available") is True and ai_advisor.get("status") == "OK"
                                  and str(ai_advisor.get("mode") or "").upper() == "SHADOW"
-                                 and str(ai_advisor.get("provider") or "").strip().lower() == "groq"
+                                 and advisor_provider in {"groq", "google gemini", "google gemini (fallback)"}
                                  and -5 <= age_seconds <= 300)
                 if advisor_ready:
                     advisor_decisions = {str(item.get("symbol") or "").upper(): item
@@ -970,7 +971,7 @@ def _apply_market_data(
                                          if isinstance(item, dict) and item.get("symbol")}
             except (TypeError, ValueError):
                 advisor_ready = False
-            diagnostic["ai_gate"] = "GROQ_READY" if advisor_ready else "GROQ_UNAVAILABLE_STALE_OR_FALLBACK"
+            diagnostic["ai_gate"] = "AI_ADVISOR_READY" if advisor_ready else "AI_ADVISOR_UNAVAILABLE_OR_STALE"
             diagnostic["ai_provider"] = str(ai_advisor.get("provider") or "unknown")
             diagnostic["ai_min_confidence"] = 80
             diagnostic["ai_max_age_seconds"] = 300
@@ -1021,16 +1022,16 @@ def _apply_market_data(
             if cooldown and float(cooldown["blocked_until"]) > _now().timestamp():
                 reject("cooldown_active")
                 continue
-            # Production supplies fresh Gemini advice. Missing, stale, failed, WAIT,
-            # or low-confidence advice blocks new entries; existing exits above remain active.
+            # Production requires a fresh successful Groq or Gemini recommendation.
+            # Missing, stale, failed, WAIT, or low-confidence advice blocks new entries.
             confidence = 0
             if ai_advisor is not None:
                 if not advisor_ready:
-                    reject("groq_unavailable_stale_or_fallback")
+                    reject("ai_advisor_unavailable_or_stale")
                     continue
                 decision = advisor_decisions.get(symbol)
                 if not decision:
-                    reject("groq_decision_missing")
+                    reject("ai_advisor_decision_missing")
                     continue
                 ai_action = str(decision.get("action") or "WAIT").upper()
                 try:
@@ -1038,7 +1039,7 @@ def _apply_market_data(
                 except (TypeError, ValueError):
                     confidence = 0
                 if ai_action not in {"LONG", "SHORT"}:
-                    reject("groq_wait_or_direction_not_confirmed")
+                    reject("ai_advisor_wait_or_direction_not_confirmed")
                     continue
                 direction = ai_action
                 if confidence < 80:
@@ -1077,7 +1078,7 @@ def _apply_market_data(
             if not math.isfinite(directional_score) or directional_score < 85:
                 reject("directional_score_below_85", direction)
                 continue
-            reason = (f"AUTO_{direction}_GROQ_CONF_{confidence}" if ai_advisor is not None
+            reason = (f"AUTO_{direction}_AI_CONF_{confidence}" if ai_advisor is not None
                       else f"AUTO_{direction}_SCORE_85")
             opened = (_open_position(db, exchange, asset, reason) if direction == "LONG"
                       else _open_short_position(db, exchange, asset, reason))
@@ -1113,7 +1114,7 @@ async def _scan_cycle() -> None:
                     ai_state.get("provider", "unknown"), ai_state.get("status", "unknown"),
                 )
                 # Existing-position exits and protections remain active regardless of AI status.
-                # New automatic entries require a fresh successful Groq recommendation.
+                # New automatic entries require a fresh successful Groq or Gemini recommendation.
                 _apply_market_data("Bybit", bybit_payload, allow_new_entries=True,
                                    allow_long_entries=True, allow_short_entries=True,
                                    position_prices=live_quotes,
