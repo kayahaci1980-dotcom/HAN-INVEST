@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -18,6 +19,8 @@ _TIMEOUT_SECONDS = 25
 _MAX_RETRIES = 2
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _MAX_ASSETS = 12
+_last_success_fingerprint: str | None = None
+_last_success_result: dict[str, Any] | None = None
 _latest: dict[str, Any] = {
     "available": False,
     "mode": "SHADOW",
@@ -35,8 +38,22 @@ def _candidate_payload(market: dict[str, Any]) -> list[dict[str, Any]]:
     assets = market.get("assets") or []
     if not isinstance(assets, list):
         return []
+    # AI receives only Bybit pairs that already passed the app's directional score gate.
+    eligible = []
+    for item in assets:
+        if not isinstance(item, dict) or not item.get("symbol") or item.get("trade_ready") is not True:
+            continue
+        try:
+            if max(float(item.get("long_score") or 0), float(item.get("short_score") or 0)) < 85:
+                continue
+            volume = float(item.get("quote_volume_24h") or 0)
+            if volume <= 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        eligible.append(item)
     selected = sorted(
-        (item for item in assets if isinstance(item, dict)),
+        eligible,
         key=lambda item: float(item.get("quote_volume_24h") or 0),
         reverse=True,
     )[:_MAX_ASSETS]
@@ -152,7 +169,7 @@ async def _gemini_fallback(candidates: list[dict[str, Any]], body: dict[str, Any
 
 async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
     """Ask Groq when configured, otherwise Gemini; advisory only."""
-    global _latest
+    global _latest, _last_success_fingerprint, _last_success_result
     groq_key = os.getenv("GROQ_API_KEY", "").strip()
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
     use_groq = bool(groq_key)
@@ -187,6 +204,14 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "message": "Нет подходящих рыночных данных для анализа.",
         }
+        return dict(_latest)
+
+    fingerprint_source = json.dumps(candidates, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    candidate_fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
+    if candidate_fingerprint == _last_success_fingerprint and _last_success_result is not None:
+        _latest = {**_last_success_result, "reused": True,
+                   "message": "Использован сохранённый результат Groq: состав и показатели отобранных монет не изменились."}
+        logger.info("AI analysis reused saved %s result; selected assets unchanged", provider)
         return dict(_latest)
 
     prompt = {
@@ -299,6 +324,11 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
                     )
                     await asyncio.sleep(delay)
         _latest = _validated_result(parsed, candidates, model, provider)
+        _latest["candidate_fingerprint"] = candidate_fingerprint
+        _latest["reused"] = False
+        _last_success_fingerprint = candidate_fingerprint
+        _last_success_result = dict(_latest)
+        logger.info("%s analysis succeeded for %d prefiltered Bybit pairs", provider, len(candidates))
     except httpx.HTTPStatusError as exc:
         if use_groq and gemini_key:
             try:
@@ -325,7 +355,7 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
             "market_bias": "WAIT",
             "recommendations": [],
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "message": f"{provider} API вернул HTTP {status_code}; рекомендации не обновлены.",
+            "message": f"{provider} API вернул HTTP {status_code}; PAPER продолжает работу, новые входы ждут свежего AI-подтверждения.",
         }
     except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
         if use_groq and gemini_key:
@@ -346,7 +376,7 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
             "market_bias": "WAIT",
             "recommendations": [],
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "message": f"{provider} временно недоступен; рекомендации не обновлены.",
+            "message": f"{provider} временно недоступен; PAPER продолжает работу, новые входы ждут свежего AI-подтверждения.",
         }
     return dict(_latest)
 
