@@ -100,7 +100,7 @@ def _set_groq_rate_limit_cooldown(
     delay = _groq_cooldown_delay(retry_after, headers)
     _groq_cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=delay)
     return delay
-_MAX_ASSETS = 12
+_MAX_ASSETS = 500
 _last_success_fingerprint: str | None = None
 _last_success_result: dict[str, Any] | None = None
 _latest: dict[str, Any] = {
