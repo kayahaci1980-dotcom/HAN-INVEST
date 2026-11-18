@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -154,17 +155,6 @@ def _retry_delay_seconds(retry_after: str | None, attempt: int) -> float:
             except (TypeError, ValueError, OverflowError):
                 pass
     return min(15.0, float(2 ** (attempt + 1)))
-
-
-async def _gemini_fallback(candidates: list[dict[str, Any]], body: dict[str, Any],
-                           api_key: str) -> dict[str, Any]:
-    model = os.getenv("GEMINI_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL
-    url = f"{_API_ROOT}/{model}:generateContent"
-    async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
-        response = await client.post(url, headers={"x-goog-api-key": api_key}, json=body)
-        response.raise_for_status()
-        parsed = _extract_json(response.json())
-    return _validated_result(parsed, candidates, model, "Google Gemini (fallback)")
 
 
 async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
