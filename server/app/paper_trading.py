@@ -56,6 +56,10 @@ _cycle_lock = asyncio.Lock()
 _last_market_breadth: dict[str, Any] = {
     "available": False, "status": "NOT_SCANNED", "allow_new_entries": False
 }
+_last_scan_diagnostics: dict[str, Any] = {
+    "status": "NOT_SCANNED",
+    "message": "Ожидание первого полного цикла PAPER.",
+}
 
 
 class _PostgresCompatConnection:
@@ -382,6 +386,7 @@ def _account_snapshot() -> dict[str, Any]:
         "last_scan_at": account["last_scan_at"],
         "last_error": account["last_error"],
         "market_breadth": dict(_last_market_breadth),
+        "scan_diagnostics": dict(_last_scan_diagnostics),
         "storage": "supabase_postgres" if _DATABASE_URL else ("persistent_disk" if _STORAGE_PERSISTENT else "temporary_container_storage"),
         "storage_persistent_configured": _STORAGE_PERSISTENT,
         "scan_interval_seconds": _SCAN_INTERVAL_SECONDS,
@@ -1255,9 +1260,10 @@ def _apply_market_data(
             else:
                 reject("protected_position_creation_rejected", direction)
         logger.info("PAPER entry diagnostics %s", diagnostic)
+        return diagnostic
 
 async def _scan_cycle() -> None:
-    global _last_market_breadth
+    global _last_market_breadth, _last_scan_diagnostics
     async with _cycle_lock:
         try:
             # Bybit Spot supplies market data; apply the configured 3M USDT minimum liquidity.
@@ -1296,26 +1302,69 @@ async def _scan_cycle() -> None:
                 logger.warning("Direct Bybit quotes unavailable for open positions: %s", type(quote_error).__name__)
             if isinstance(bybit_payload, dict):
                 assets = bybit_payload.get("assets") or []
+                asset_symbols = {
+                    str(item.get("symbol") or "").upper()
+                    for item in assets if isinstance(item, dict)
+                } if isinstance(assets, list) else set()
+                missing_analysis_symbols = sorted(set(open_symbols) - asset_symbols)
                 logger.info(
-                    "PAPER cycle Bybit Spot assets=%d; Gemini status=%s",
+                    "PAPER cycle Bybit Spot assets=%d; Gemini status=%s; open_positions=%d; live_quotes=%d; positions_missing_analysis=%d",
                     len(assets) if isinstance(assets, list) else -1,
                     str(gemini_advisor.get("status") or "UNKNOWN"),
+                    len(open_symbols), len(live_quotes), len(missing_analysis_symbols),
                 )
-                # Gemini recommendations gate new entries; all execution and protections stay in PAPER.
-                _apply_market_data("Bybit", bybit_payload, allow_new_entries=True,
-                                   allow_long_entries=allow_long_entries,
-                                   allow_short_entries=allow_short_entries,
-                                   position_prices=live_quotes,
-                                   ai_advisor=gemini_advisor)
+                scan_diagnostics = _apply_market_data(
+                    "Bybit", bybit_payload, allow_new_entries=True,
+                    allow_long_entries=allow_long_entries,
+                    allow_short_entries=allow_short_entries,
+                    position_prices=live_quotes,
+                    ai_advisor=gemini_advisor,
+                ) or {}
+                scan_diagnostics.update({
+                    "status": "COMPLETED",
+                    "scanned_assets": len(assets) if isinstance(assets, list) else 0,
+                    "open_positions_at_scan_start": len(open_symbols),
+                    "live_quotes_received": len(live_quotes),
+                    "live_quotes_missing": sorted(set(open_symbols) - set(live_quotes)),
+                    "positions_missing_analysis": missing_analysis_symbols,
+                    "gemini_status": str(gemini_advisor.get("status") or "UNKNOWN"),
+                    "gemini_provider": str(gemini_advisor.get("provider") or "unknown"),
+                    "breadth_status": _last_market_breadth.get("status"),
+                    "breadth_rising_pct": _last_market_breadth.get("rising_pct"),
+                    "breadth_falling_pct": _last_market_breadth.get("falling_pct"),
+                    "breadth_allow_long": allow_long_entries,
+                    "breadth_allow_short": allow_short_entries,
+                    "last_cycle_error": "; ".join(errors) if errors else None,
+                    "updated_at": _now().isoformat(),
+                })
+                _last_scan_diagnostics = scan_diagnostics
+                logger.info("PAPER cycle diagnostics %s", scan_diagnostics)
             else:
                 errors.append("Bybit analysis unavailable; existing positions checked using direct quotes")
-                _apply_market_data("Bybit", {"assets": []}, allow_new_entries=False,
-                                   allow_short_entries=False, position_prices=live_quotes)
+                scan_diagnostics = _apply_market_data(
+                    "Bybit", {"assets": []}, allow_new_entries=False,
+                    allow_short_entries=False, position_prices=live_quotes,
+                ) or {}
+                scan_diagnostics.update({
+                    "status": "BYBIT_ANALYSIS_UNAVAILABLE",
+                    "live_quotes_received": len(live_quotes),
+                    "live_quotes_missing": sorted(set(open_symbols) - set(live_quotes)),
+                    "gemini_status": str(gemini_advisor.get("status") or "UNKNOWN"),
+                    "updated_at": _now().isoformat(),
+                })
+                _last_scan_diagnostics = scan_diagnostics
+                logger.error("PAPER cycle diagnostics %s", scan_diagnostics)
             logger.info("Market-data source: Bybit Spot; PAPER entry advisor: Google Gemini")
             with _connect() as db:
                 db.execute("""UPDATE paper_account SET last_scan_at=?, last_error=?, updated_at=? WHERE id=1""",
                            (_now(), "; ".join(errors) if errors else None, _now()))
         except Exception as exc:
+            _last_scan_diagnostics = {
+                "status": "CYCLE_ERROR",
+                "error": type(exc).__name__,
+                "message": str(exc)[:500],
+                "updated_at": _now().isoformat(),
+            }
             logger.exception("HAN INVEST paper trading cycle failed")
             with _connect() as db:
                 db.execute("UPDATE paper_account SET last_error=?, updated_at=? WHERE id=1",
