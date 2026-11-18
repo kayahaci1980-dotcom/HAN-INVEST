@@ -80,6 +80,7 @@ class PaperTradingRuleTests(unittest.TestCase):
         return {
             "available": True, "mode": "SHADOW", "status": "OK", "provider": "Google Gemini",
             "updated_at": (paper._now() - timedelta(seconds=age_seconds)).isoformat(),
+            "btc_direction": "BEARISH" if action == "SHORT" else "BULLISH",
             "recommendations": [{"symbol": symbol, "action": action, "confidence": confidence, "reason": "test"}],
         }
 
