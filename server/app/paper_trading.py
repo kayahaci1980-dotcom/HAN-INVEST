@@ -963,7 +963,7 @@ def _apply_market_data(
                 advisor_ready = (ai_advisor.get("available") is True and ai_advisor.get("status") == "OK"
                                  and str(ai_advisor.get("mode") or "").upper() == "SHADOW"
                                  and str(ai_advisor.get("provider") or "").strip().lower() == "groq"
-                                 and -5 <= age_seconds <= 150)
+                                 and -5 <= age_seconds <= 300)
                 if advisor_ready:
                     advisor_decisions = {str(item.get("symbol") or "").upper(): item
                                          for item in ai_advisor.get("recommendations", [])
@@ -973,6 +973,7 @@ def _apply_market_data(
             diagnostic["ai_gate"] = "GROQ_READY" if advisor_ready else "GROQ_UNAVAILABLE_STALE_OR_FALLBACK"
             diagnostic["ai_provider"] = str(ai_advisor.get("provider") or "unknown")
             diagnostic["ai_min_confidence"] = 80
+            diagnostic["ai_max_age_seconds"] = 300
         else:
             diagnostic["gemini_gate"] = "BYPASSED_BYBIT_ONLY"
         def reject(reason: str, direction: str | None = None) -> None:
