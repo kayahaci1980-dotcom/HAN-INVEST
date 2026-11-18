@@ -330,7 +330,7 @@ class PaperTradingRuleTests(unittest.TestCase):
         for hour, price in ((11, 101.0), (12, 102.0), (13, 102.5)):
             asset = self.asset(price=price)
             asset["atr_candle_time"] = f"2026-11-15T{hour:02d}:00:00Z"
-            paper._apply_market_data("Bybit", {"assets": [asset]}, False)
+            paper._apply_market_data("Bybit", {"assets": [asset]}, False, ai_advisor=self._gemini_advice("LONG"))
         with paper._connect() as db:
             lots = db.execute(
                 "SELECT * FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT' ORDER BY lot_index"
@@ -346,7 +346,7 @@ class PaperTradingRuleTests(unittest.TestCase):
         self.assertAlmostEqual(float(lots[2]["cost_usdt"]), float(lots[0]["cost_usdt"]), places=6)
         repeat = self.asset(price=102.5)
         repeat["atr_candle_time"] = "2026-11-15T13:00:00Z"
-        paper._apply_market_data("Bybit", {"assets": [repeat]}, False)
+        paper._apply_market_data("Bybit", {"assets": [repeat]}, False, ai_advisor=self._gemini_advice("LONG"))
         with paper._connect() as db:
             trades_after = db.execute(
                 "SELECT COUNT(*) AS n FROM paper_trades WHERE reason LIKE 'SCALE_IN_%'"
@@ -364,11 +364,44 @@ class PaperTradingRuleTests(unittest.TestCase):
             update = self.asset(0, price)
             update["ma20"], update["ma50"] = 101.0, 102.0
             update["atr_candle_time"] = f"2026-11-15T{hour:02d}:00:00Z"
-            paper._apply_market_data("Bybit", {"assets": [update]}, False, True)
+            paper._apply_market_data("Bybit", {"assets": [update]}, False, True, ai_advisor=self._gemini_advice("SHORT"))
         with paper._connect() as db:
             lots = db.execute("SELECT * FROM paper_position_lots ORDER BY lot_index").fetchall()
         self.assertEqual(len(lots), 3)
         self.assertAlmostEqual(float(lots[1]["cost_usdt"]), float(lots[0]["cost_usdt"]), places=5)
+
+    def test_scale_in_is_blocked_without_fresh_matching_gemini_approval(self):
+        self.seed_position("LONG")
+        asset = self.asset(price=102.0)
+        paper._apply_market_data("Bybit", {"assets": [asset]}, False, ai_advisor=None)
+        with paper._connect() as db:
+            lots = db.execute(
+                "SELECT * FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT'"
+            ).fetchall()
+        self.assertEqual(len(lots), 1)
+
+    def test_scale_in_requires_gemini_approval_for_same_symbol_and_direction(self):
+        self.seed_position("LONG")
+        asset = self.asset(price=102.0)
+        for advice in (
+            self._gemini_advice("SHORT"),
+            self._gemini_advice("LONG", confidence=79),
+            self._gemini_advice("LONG", symbol="ETHUSDT"),
+            {"available": False, "status": "ERROR", "mode": "SHADOW"},
+        ):
+            with self.subTest(advice=advice):
+                paper._apply_market_data("Bybit", {"assets": [asset]}, False, ai_advisor=advice)
+                with paper._connect() as db:
+                    lots = db.execute(
+                        "SELECT * FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT'"
+                    ).fetchall()
+                self.assertEqual(len(lots), 1)
+        paper._apply_market_data("Bybit", {"assets": [asset]}, False, ai_advisor=self._gemini_advice("LONG"))
+        with paper._connect() as db:
+            lots = db.execute(
+                "SELECT * FROM paper_position_lots WHERE exchange='Bybit' AND symbol='BTCUSDT'"
+            ).fetchall()
+        self.assertEqual(len(lots), 2)
 
     def test_short_accounting_uses_each_lot_entry_for_unrealized_and_realized_pnl(self):
         asset = self.asset(0, 100.0)
