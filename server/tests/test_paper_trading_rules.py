@@ -158,6 +158,67 @@ class PaperTradingRuleTests(unittest.TestCase):
                                  ai_advisor={"available": False, "status": "ERROR", "mode": "SHADOW"})
         self.assertEqual(len(self.positions()), 0)
 
+    def test_native_exit_fallback_closes_long_on_confirmed_bearish_reversal_when_gemini_is_unavailable(self):
+        self.seed_position("LONG")
+        asset = self.asset(price=99.8)
+        asset["ma20"], asset["ma50"] = 100.5, 101.0
+        asset["momentum_6h_pct"] = -0.8
+        asset["long_score"], asset["short_score"] = 20, 86
+        paper._apply_market_data(
+            "Bybit", {"assets": [asset]}, False, False,
+            position_prices={"BTCUSDT": 99.8},
+            ai_advisor={"available": False, "status": "ERROR", "mode": "SHADOW"},
+        )
+        self.assertEqual(len(self.positions()), 0)
+        with paper._connect() as db:
+            trade = db.execute("SELECT * FROM paper_trades WHERE pnl_usdt IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(trade["reason"], "NATIVE_AI_EXIT_REVERSAL")
+        cooldown = self.cooldown()
+        self.assertIsNotNone(cooldown)
+        self.assertGreater(float(cooldown["blocked_until"]) - paper._now().timestamp(), 1700)
+
+    def test_native_exit_fallback_covers_short_on_confirmed_bullish_reversal_when_gemini_is_unavailable(self):
+        self.seed_position("SHORT")
+        asset = self.asset(price=100.2)
+        asset["ma20"], asset["ma50"] = 99.5, 99.0
+        asset["momentum_6h_pct"] = 0.8
+        asset["long_score"], asset["short_score"] = 86, 20
+        paper._apply_market_data(
+            "Bybit", {"assets": [asset]}, False, False,
+            position_prices={"BTCUSDT": 100.2},
+            ai_advisor={"available": False, "status": "ERROR", "mode": "SHADOW"},
+        )
+        self.assertEqual(len(self.positions()), 0)
+        with paper._connect() as db:
+            trade = db.execute("SELECT * FROM paper_trades WHERE side='SHORT_COVER' ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(trade["reason"], "NATIVE_AI_EXIT_REVERSAL")
+
+    def test_native_exit_fallback_does_not_close_on_incomplete_or_weak_reversal(self):
+        self.seed_position("LONG")
+        asset = self.asset(price=99.8)
+        asset["ma20"], asset["ma50"] = 100.5, 101.0
+        asset["momentum_6h_pct"] = -0.2
+        asset["short_score"] = 79
+        paper._apply_market_data(
+            "Bybit", {"assets": [asset]}, False, False,
+            position_prices={"BTCUSDT": 99.8},
+            ai_advisor={"available": False, "status": "ERROR", "mode": "SHADOW"},
+        )
+        self.assertEqual(len(self.positions()), 1)
+
+    def test_native_exit_fallback_is_not_used_when_gemini_advice_is_fresh(self):
+        self.seed_position("LONG")
+        asset = self.asset(price=99.8)
+        asset["ma20"], asset["ma50"] = 100.5, 101.0
+        asset["momentum_6h_pct"] = -0.8
+        asset["long_score"], asset["short_score"] = 20, 86
+        paper._apply_market_data(
+            "Bybit", {"assets": [asset]}, False, False,
+            position_prices={"BTCUSDT": 99.8},
+            ai_advisor=self._gemini_advice("LONG", 85),
+        )
+        self.assertEqual(len(self.positions()), 1)
+
     def test_score_change_does_not_close_existing_position(self):
         self.seed_position()
         paper._apply_market_data("Bybit", {"assets": [self.asset(1, 100.0)]}, False)
