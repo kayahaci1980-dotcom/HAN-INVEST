@@ -37,7 +37,7 @@ def _set_groq_rate_limit_cooldown(retry_after: str | None = None) -> float:
     delay = max(_GROQ_RATE_LIMIT_COOLDOWN_SECONDS, _retry_delay_seconds(retry_after, 4))
     _groq_cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=delay)
     return delay
-_MAX_ASSETS = 12
+_MAX_ASSETS = 500
 _last_success_fingerprint: str | None = None
 _last_success_result: dict[str, Any] | None = None
 _latest: dict[str, Any] = {
@@ -233,25 +233,6 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
         logger.info("AI analysis reused saved %s result; selected assets unchanged", provider)
         return dict(_latest)
 
-    cooldown_remaining = _groq_cooldown_remaining()
-    if use_groq and cooldown_remaining > 0:
-        if gemini_key:
-            try:
-                _latest = await _gemini_fallback(candidates, body, gemini_key)
-                _latest["message"] = "Groq временно ограничил запросы; использован резервный анализ Gemini."
-                logger.info("Groq market analysis skipped during cooldown; Gemini fallback supplied advisory analysis")
-                return dict(_latest)
-            except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
-                logger.warning("Gemini fallback failed during Groq cooldown: %s", type(fallback_exc).__name__)
-        _latest = {
-            "available": False, "mode": "SHADOW", "provider": "Groq",
-            "model": model, "status": "RATE_LIMITED", "market_bias": "WAIT",
-            "recommendations": [], "updated_at": datetime.now(timezone.utc).isoformat(),
-            "retry_in_seconds": int(cooldown_remaining),
-            "message": "Groq временно ограничил запросы; новые AI-входы ждут следующей проверки.",
-        }
-        return dict(_latest)
-
     prompt = {
         "task": (
             "Evaluate each supplied Bybit Spot USDT asset for a short-term "
@@ -299,6 +280,25 @@ async def refresh_ai_advisor(market: dict[str, Any]) -> dict[str, Any]:
             },
         },
     }
+    cooldown_remaining = _groq_cooldown_remaining()
+    if use_groq and cooldown_remaining > 0:
+        if gemini_key:
+            try:
+                _latest = await _gemini_fallback(candidates, body, gemini_key)
+                _latest["message"] = "Groq временно ограничил запросы; использован резервный анализ Gemini."
+                logger.info("Groq market analysis skipped during cooldown; Gemini fallback supplied advisory analysis")
+                return dict(_latest)
+            except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as fallback_exc:
+                logger.warning("Gemini fallback failed during Groq cooldown: %s", type(fallback_exc).__name__)
+        _latest = {
+            "available": False, "mode": "SHADOW", "provider": "Groq",
+            "model": model, "status": "RATE_LIMITED", "market_bias": "WAIT",
+            "recommendations": [], "updated_at": datetime.now(timezone.utc).isoformat(),
+            "retry_in_seconds": int(cooldown_remaining),
+            "message": "Groq временно ограничил запросы; новые AI-входы ждут следующей проверки.",
+        }
+        return dict(_latest)
+
     if use_groq:
         url = "https://api.groq.com/openai/v1/chat/completions"
         request_body = {
