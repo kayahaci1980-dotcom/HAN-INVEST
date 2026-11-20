@@ -892,6 +892,9 @@ def _apply_market_data(
     position_prices: dict[str, float] | None = None,
     ai_advisor: dict[str, Any] | None = None,
 ) -> None:
+    # LONG-only trading: never open SHORT positions or add to existing SHORT positions.
+    # Existing SHORT positions remain eligible for protective exits and manual closure.
+    allow_short_entries = False
     assets = payload.get("assets") or []
     if not isinstance(assets, list):
         return
@@ -1303,6 +1306,13 @@ async def _scan_cycle() -> None:
                 errors.append("Bybit market breadth unavailable; new entries blocked")
                 logger.warning("PAPER market breadth unavailable; entries blocked (%s)",
                                type(breadth_error).__name__)
+            # Disable SHORT entries regardless of market breadth or Gemini recommendations.
+            allow_short_entries = False
+            _last_market_breadth = {
+                **_last_market_breadth,
+                "allow_short_entries": False,
+                "short_trading_enabled": False,
+            }
             gemini_advisor = await refresh_ai_advisor(bybit_payload if isinstance(bybit_payload, dict) else {})
             try:
                 live_quotes = await fetch_spot_ticker_prices(open_symbols)
